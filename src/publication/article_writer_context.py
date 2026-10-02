@@ -5,7 +5,7 @@ import json
 import re
 from collections import Counter, defaultdict
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from src.publication.article_context import (
@@ -35,10 +35,15 @@ _SUPPORT_STORY_ID_RE = re.compile(r"story:(?:[^:]+|\d+)")
 # expansion, and the 65,536-token Event-First writer completion ceiling while
 # allowing broad city-life editions to retain every selected Story packet.
 ARTICLE_WRITER_CONTEXT_MAX_CHARS = 500_000
+ARTICLE_WRITER_CONTEXT_VERSION = "event-article-context-v2-evidence-inventory"
 _SUPPORT_FACT_MAX_CHARS = 900
 _SUPPORT_SOURCE_MAX_CHARS = 1_800
 _SUPPORT_COMPACT_FACT_MAX_CHARS = 360
 _QUOTE_ALLOWLIST_MAX_CHARS = 12_000
+_ARTICLE_EVIDENCE_BEGIN = "<<<ARTICLE_EVIDENCE_INVENTORY_BEGIN>>>"
+_ARTICLE_EVIDENCE_END = "<<<ARTICLE_EVIDENCE_INVENTORY_END>>>"
+_ARTICLE_QUOTE_BEGIN = "<<<ARTICLE_QUOTE_ALLOWLIST_BEGIN>>>"
+_ARTICLE_QUOTE_END = "<<<ARTICLE_QUOTE_ALLOWLIST_END>>>"
 ArticleWriterMaterializationMode = Literal["packetized", "holistic", "brief"]
 
 
@@ -194,65 +199,23 @@ def _support_story_id(support_id: str) -> str:
     return match.group(0) if match else ""
 
 
-def _extract_story_microdetails(
-    story_id: str,
-    support_ids: Sequence[str],
-    context: ArticleEditorialContext | None,
-    material_projection: ArticleMaterialProjection | None = None,
-) -> list[str]:
-    if context is None or not hasattr(context, "support_by_id"):
-        return []
-    details: list[str] = []
-    seen: set[str] = set()
-    for sid in support_ids:
-        sup = context.support_by_id.get(sid)
-        if not sup:
-            continue
-        if material_projection is not None:
-            if sid in material_projection.text_by_support_id:
-                if material_projection.actions_by_support_id.get(sid) == "SUPPRESS_PROMOTION_ONLY":
-                    continue
-                raw = material_projection.text_by_support_id[sid]
-            else:
-                raw = ""
-        else:
-            # Prefer rich source text if it provides concrete details, otherwise text
-            raw = (
-                sup.source_text
-                if (sup.source_text and len(sup.source_text.strip()) > 10)
-                else sup.text
-            )
-        if not raw:
-            continue
-        cleaned = sanitize_writer_source_text(raw) if material_projection is None else raw
-        # Collapse multiple spaces / newlines
-        cleaned = " ".join(cleaned.split()).strip()
-        if len(cleaned) > 130:
-            cleaned = cleaned[:127] + "..."
-        if cleaned and cleaned not in seen:
-            seen.add(cleaned)
-            details.append(cleaned)
-    return details[:3]
-
-
 def _render_coverage_plan(
     plan: ArticleCoveragePlan,
     context: ArticleEditorialContext | None = None,
     material_projection: ArticleMaterialProjection | None = None,
 ) -> str:
-    lines = ["ARTICLE COVERAGE PLAN"]
+    lines = [
+        "ARTICLE COVERAGE MAP (navigation only; exact evidence appears once in the inventory).",
+        "Depth controls space, not eligibility. Keep each Story's evidence, place, service and time distinct unless a supported relation is given.",
+    ]
     suppressed = set(material_projection.suppressed_story_ids) if material_projection else set()
     develop_stories = [
         s for s in plan.stories if s.prominence == "DEVELOP" and s.story_id not in suppressed
     ]
     if develop_stories:
         lines.append(
-            "\nОБЯЗАТЕЛЬНЫЕ КЛЮЧЕВЫЕ ТЕМЫ (DEVELOP) — КАЖДАЯ ДОЛЖНА БЫТЬ ПОДРОБНО ОТРАЖЕНА В ТЕКСТЕ:"
+            "\nDEVELOP lines are the main editorial threads; depth is guidance, not a coverage quota."
         )
-        for ds in develop_stories:
-            lines.append(f"★ DEVELOP {ds.story_id}: {ds.topic}")
-            if ds.support_ids:
-                lines.append(f"  Опорные факты: {', '.join(ds.support_ids[:4])}")
 
     if plan.sections:
         lines.append(f"\nTHEMATIC SECTIONS COUNT: {len(plan.sections)}")
@@ -272,42 +235,12 @@ def _render_coverage_plan(
             for a in visible_assignments:
                 item = plan_by_id.get(a.story_id)
                 topic = item.topic if item else a.story_id
-                sups = item.support_ids if item else a.primary_evidence_ids
-                det_sups = item.detail_support_ids if item else ()
                 lines.append(f"- {a.depth} {a.story_id}: {topic}")
-                lines.append(f"  SUPPORTS: {', '.join(sups)}")
-                if det_sups:
-                    lines.append(f"  DETAIL SUPPORTS: {', '.join(det_sups)}")
-
-                # Extract rich human-readable microdetails
-                micro_targets = list(det_sups) if det_sups else list(sups[:2])
-                micro_details = _extract_story_microdetails(
-                    a.story_id, micro_targets, context, material_projection
-                )
-                if not micro_details and a.concrete_details:
-                    micro_details = [
-                        d
-                        for d in a.concrete_details
-                        if not d.startswith("story:") and not d.startswith("op:")
-                    ]
-                if micro_details:
-                    lines.append(f"  MICRODETAILS: {' | '.join(micro_details)}")
     else:
         for item in plan.stories:
             if item.story_id in suppressed:
                 continue
             lines.append(f"- {item.prominence} {item.story_id}: {item.topic}")
-            lines.append(f"  SUPPORTS: {', '.join(item.support_ids)}")
-            if item.detail_support_ids:
-                lines.append(f"  DETAIL SUPPORTS: {', '.join(item.detail_support_ids)}")
-            micro_details = _extract_story_microdetails(
-                item.story_id,
-                item.detail_support_ids or item.support_ids[:2],
-                context,
-                material_projection,
-            )
-            if micro_details:
-                lines.append(f"  MICRODETAILS: {' | '.join(micro_details)}")
     return "\n".join(lines)
 
 
@@ -318,21 +251,15 @@ def _render_composition_plan(
     context: ArticleEditorialContext | None = None,
     material_projection: ArticleMaterialProjection | None = None,
 ) -> str:
-    """Render one compact roadmap; exact claims and support IDs live in packets."""
+    """Render one compact navigation map; factual evidence lives in the inventory."""
     plan_by_id = plan.by_story_id
     suppressed = set(composition_plan.suppressed_story_ids)
     groups_by_id = {group.group_id: group for group in composition_plan.groups}
     lines = [
-        f"ARTICLE COMPOSITION ROADMAP version={composition_plan.version}",
-        "Depth controls space, not eligibility. Every listed visible Story belongs to exactly one group; packets remain authoritative for exact claims, attribution, and time fields.",
-        "The line and group sequence is the preferred reading order, not a required order. Reorder whole thematic lines, and groups within a line, when it improves the article; keep each group under its listed thematic line and preserve its place and time boundaries.",
-        "A thematic line can contain several independent groups: sharing a service heading means a shared topic only, not a relation. Do not synthesize across groups.",
-        "A named line is an evidence-compatible thematic home for its listed groups; do not move a group into a differently themed chapter based only on broad card tags.",
-        "A line without a heading has no reliable shared theme. Keep its groups factually separate and use a neutral city-life passage if they do not fit a named chapter.",
-        "Only a non-independent GROUP relation supports synthesis across its listed Stories. relation=independent keeps its Story separate from other groups. Keep every claim traceable to the member's packet.",
-        "For localized_contrast, preserve which place has which condition; for temporal_progression, keep the supported periods distinct. Connect a practical_consequence only as stated in its evidence.",
-        "Use the STORY GEOGRAPHY INDEX and each Story packet to keep locations attached to their Story. Treat profile-resolved aliases as the same place, but retain each claim's source and time. If a Story names separate or ambiguous areas, do not assign it to one area or use it to imply that places are near each other.",
-        "Do not infer a shared neighborhood, proximity, adjacency, or distance from ordering or shared area labels.",
+        f"ARTICLE COMPOSITION MAP version={composition_plan.version} (navigation, not evidence or ready-made prose).",
+        "Depth is editorial prominence, not eligibility. Each visible Story has one canonical group; exact facts and provenance appear once in the evidence inventory.",
+        "Line and group order is advisory. Keep each group under its mapped theme. Synthesize across Stories only for a listed non-independent relation; independent groups remain separate.",
+        "Keep places and effective times attached to their evidence. Shared headings, ordering, and area labels do not establish proximity, cause, or chronology. Preserve each local contrast and time boundary.",
     ]
     for narrative_line in composition_plan.narrative_lines:
         visible_groups = [
@@ -352,7 +279,7 @@ def _render_composition_plan(
             else ""
         )
         lines.append(f"\nLINE {narrative_line.line_id} depth={narrative_line.prominence}{heading}")
-        lines.append(f"  NARRATIVE INTENT: {_compact_text(narrative_line.narrative_intent, 240)}")
+        lines.append(f"  intent: {_compact_text(narrative_line.narrative_intent, 180)}")
         for group in visible_groups:
             visible_members = [
                 member
@@ -372,18 +299,120 @@ def _render_composition_plan(
                     "    Synthesize only the supported relation named above; keep each "
                     "member's facts and support traceable to its packet."
                 )
-            lines.append("    GROUP MEMBERS:")
             for member in visible_members:
                 item = plan_by_id[member.story_id]
                 lines.append(
-                    f"    - {member.story_id} depth={member.prominence}: "
-                    f"{_compact_text(item.topic, 180)}"
+                    f"    - {member.story_id} depth={member.prominence} "
+                    f"topic={_compact_text(item.topic, 120)}"
                 )
-    lines.append(
-        "Time fields: effective_from/effective_until describe event or service time; "
-        "observed_at describes when a report was made and does not establish an event start."
-    )
     return "\n".join(lines)
+
+
+def expected_article_writer_support_ids(
+    context: ArticleEditorialContext,
+    coverage_plan: ArticleCoveragePlan,
+    *,
+    material_projection: ArticleMaterialProjection | None,
+    composition_plan: ArticleCompositionPlan | None,
+) -> tuple[str, ...]:
+    """Derive the eligible writer set from frozen plan/context before rendering."""
+    support_by_id = getattr(context, "support_by_id", {})
+    coverage_by_story = {item.story_id: item for item in coverage_plan.stories}
+    if len(coverage_by_story) != len(coverage_plan.stories):
+        raise ValueError("article coverage plan contains duplicate Story IDs")
+    suppressed = set(material_projection.suppressed_story_ids) if material_projection else set()
+    if composition_plan is not None:
+        if set(composition_plan.suppressed_story_ids) != suppressed & set(coverage_by_story):
+            raise ValueError(
+                "article composition suppression does not match the material projection"
+            )
+        member_story_ids = [
+            member.story_id for group in composition_plan.groups for member in group.members
+        ]
+        expected_visible_story_ids = set(coverage_by_story) - suppressed
+        if (
+            len(member_story_ids) != len(set(member_story_ids))
+            or set(member_story_ids) != expected_visible_story_ids
+        ):
+            raise ValueError("article composition does not preserve visible Story membership")
+
+    expected: list[str] = []
+    owner_by_support_id: dict[str, str] = {}
+    for item in coverage_plan.stories:
+        if item.story_id in suppressed:
+            continue
+        for support_id in dict.fromkeys((*item.detail_support_ids, *item.support_ids)):
+            support = support_by_id.get(support_id)
+            if support is None:
+                raise ValueError(f"article coverage plan references missing support {support_id!r}")
+            if support.support_id != support_id:
+                raise ValueError(
+                    f"article support map key {support_id!r} resolves to {support.support_id!r}"
+                )
+            if support.publication_use != "PUBLISH" or support.evidence_kind == "resident_question":
+                continue
+
+            encoded_owner = _support_story_id(support_id)
+            owner = support.story_id or encoded_owner or item.story_id
+            if encoded_owner and encoded_owner != owner:
+                raise ValueError(
+                    f"article support {support_id!r} encodes owner {encoded_owner!r} "
+                    f"but belongs to {owner!r}"
+                )
+            if owner not in coverage_by_story:
+                raise ValueError(
+                    f"article coverage plan has no packet for owner {owner!r} "
+                    f"of planned support {support_id!r}"
+                )
+            if owner in suppressed:
+                continue
+
+            if material_projection is not None:
+                action = material_projection.actions_by_support_id.get(support_id)
+                if action == "SUPPRESS_PROMOTION_ONLY":
+                    continue
+                projected_text = material_projection.text_by_support_id.get(support_id, "").strip()
+                if action not in {"KEEP", "TRIM_DIRECTORY"} or not projected_text:
+                    raise ValueError(
+                        f"planned article support {support_id!r} has no projected citable text"
+                    )
+            elif not sanitize_writer_source_text(
+                support.text.strip() or support.source_text.strip()
+            ):
+                raise ValueError(f"planned article support {support_id!r} has no citable text")
+
+            if support_id not in owner_by_support_id:
+                owner_by_support_id[support_id] = owner
+                expected.append(support_id)
+
+    if composition_plan is not None:
+        composition_owner_by_support: dict[str, str] = {}
+        for group in composition_plan.groups:
+            for member in group.members:
+                for support_id in member.support_ids:
+                    if support_id in composition_owner_by_support:
+                        raise ValueError(
+                            f"article support {support_id!r} has multiple composition memberships"
+                        )
+                    composition_owner_by_support[support_id] = member.story_id
+        if set(composition_owner_by_support) != set(expected):
+            missing = sorted(set(expected) - set(composition_owner_by_support))
+            extra = sorted(set(composition_owner_by_support) - set(expected))
+            raise ValueError(
+                "article composition support membership differs from the projected writer set "
+                f"(missing={missing!r}, extra={extra!r})"
+            )
+        wrong_owner = {
+            support_id: (composition_owner_by_support[support_id], owner)
+            for support_id, owner in owner_by_support_id.items()
+            if composition_owner_by_support[support_id] != owner
+        }
+        if wrong_owner:
+            raise ValueError(
+                f"article composition assigns supports to the wrong Story: {wrong_owner!r}"
+            )
+
+    return tuple(expected)
 
 
 def _render_article_story_packets(
@@ -391,17 +420,31 @@ def _render_article_story_packets(
     coverage_plan: ArticleCoveragePlan,
     material_projection: ArticleMaterialProjection | None = None,
     composition_plan: ArticleCompositionPlan | None = None,
-) -> tuple[list[str], list[str], ArticleWriterMaterializationStats]:
-    """Materialize the zero-loss coverage plan into bounded writer packets.
-
-    The complete plan and support index remain available to deterministic
-    validation. The writer receives a small, story-local set of facts for
-    every Story instead of every duplicate evidence row and pooled source
-    text.
-    """
+) -> tuple[list[dict[str, object]], ArticleWriterMaterializationStats]:
+    """Materialize complete, grouped PUBLISH evidence records for the writer."""
     support_by_id = getattr(context, "support_by_id", {})
     coverage_by_story = {item.story_id: item for item in coverage_plan.stories}
     suppressed = set(material_projection.suppressed_story_ids) if material_projection else set()
+    if composition_plan is not None:
+        composition_suppressed = set(composition_plan.suppressed_story_ids)
+        if composition_suppressed != (suppressed & set(coverage_by_story)):
+            raise ValueError(
+                "article composition suppression does not match the material projection"
+            )
+
+    def projected_fact(support: ArticleSupport) -> str:
+        if material_projection is not None:
+            action = material_projection.actions_by_support_id.get(support.support_id)
+            text = material_projection.text_by_support_id.get(support.support_id, "").strip()
+            if action == "SUPPRESS_PROMOTION_ONLY":
+                return ""
+            if action not in {"KEEP", "TRIM_DIRECTORY"} or not text:
+                raise ValueError(
+                    f"planned article support {support.support_id!r} has no projected citable text"
+                )
+            return text
+        return sanitize_writer_source_text(support.text.strip() or support.source_text.strip())
+
     planned_supports_by_owner: dict[str, list[str]] = defaultdict(list)
     for item in coverage_plan.stories:
         if item.story_id in suppressed:
@@ -438,10 +481,48 @@ def _render_article_story_packets(
                 continue
             owner_support_ids = planned_supports_by_owner[owner]
             if support_id not in owner_support_ids:
+                if not projected_fact(support):
+                    raise ValueError(f"planned article support {support_id!r} has no citable text")
                 owner_support_ids.append(support_id)
 
-    packets: list[str] = []
-    compact_packets: list[str] = []
+    composition_membership: dict[str, tuple[str, str]] = {}
+    if composition_plan is not None:
+        for group in composition_plan.groups:
+            for member in group.members:
+                for support_id in member.support_ids:
+                    if support_id in composition_membership:
+                        raise ValueError(
+                            f"article support {support_id!r} has multiple composition memberships"
+                        )
+                    composition_membership[support_id] = (
+                        member.story_id,
+                        group.group_id,
+                    )
+        expected_ids = {
+            support_id
+            for support_ids in planned_supports_by_owner.values()
+            for support_id in support_ids
+        }
+        if set(composition_membership) != expected_ids:
+            missing = sorted(expected_ids - set(composition_membership))
+            extra = sorted(set(composition_membership) - expected_ids)
+            raise ValueError(
+                "article composition support membership differs from the projected writer set "
+                f"(missing={missing!r}, extra={extra!r})"
+            )
+        for support_id, owner in (
+            (support_id, owner)
+            for owner, support_ids in planned_supports_by_owner.items()
+            for support_id in support_ids
+        ):
+            member_owner, _group_id = composition_membership[support_id]
+            if member_owner != owner:
+                raise ValueError(
+                    f"article support {support_id!r} is assigned to composition Story "
+                    f"{member_owner!r}, expected {owner!r}"
+                )
+
+    evidence_records: list[dict[str, object]] = []
     packet_story_ids: list[str] = []
     packets_with_citable_support = 0
     citable_support_count = 0
@@ -454,62 +535,31 @@ def _render_article_story_packets(
     for item in coverage_plan.stories:
         if item.story_id in suppressed:
             continue
-        depth = str(item.prominence)
         selected_ids = planned_supports_by_owner.get(item.story_id, [])
-        if material_projection is not None:
-            materialized_ids: list[str] = []
-            for support_id in selected_ids:
-                action = material_projection.actions_by_support_id.get(support_id)
-                if action == "SUPPRESS_PROMOTION_ONLY":
-                    continue
-                projected_text = material_projection.text_by_support_id.get(support_id, "")
-                if action == "TRIM_DIRECTORY" and not projected_text.strip():
-                    continue
-                if action not in {"KEEP", "TRIM_DIRECTORY"} or not projected_text.strip():
-                    raise ValueError(
-                        f"planned article support {support_id!r} has no projected citable text"
-                    )
-                materialized_ids.append(support_id)
-            selected_ids = materialized_ids
-        else:
-            for support_id in selected_ids:
-                support = support_by_id[support_id]
-                raw_text = sanitize_writer_source_text(
-                    support.text.strip() or support.source_text.strip()
-                )
-                if not raw_text.strip():
-                    raise ValueError(f"planned article support {support_id!r} has no citable text")
         selected_supports = [support_by_id[sid] for sid in selected_ids]
         if selected_supports:
             packets_with_citable_support += 1
             citable_support_count += len(selected_supports)
 
         composition_group = group_by_story_id.get(item.story_id)
-        line_reference = (
-            f" line={composition_group.narrative_line_id}" if composition_group is not None else ""
-        )
-        group_reference = (
-            f" group={composition_group.group_id}" if composition_group is not None else ""
-        )
-        header = (
-            f"[ARTICLE STORY PACKET {item.story_id}] depth={depth}"
-            f"{line_reference}{group_reference} "
-            f"topic={_compact_text(item.topic, 180)}"
-        )
-        full_lines = []
-        compact_lines = []
-        full_lines.append(header)
-        compact_lines.append(header)
+        packet_story_ids.append(item.story_id)
+
+        # Collapse only fully equivalent records within one canonical Story.
+        # Keep every support ID and its own provenance in the combined record.
+        records_by_key: dict[str, dict[str, object]] = {}
         for support in selected_supports:
-            raw_fact = (
-                material_projection.text_by_support_id.get(support.support_id, "")
+            fact_text = projected_fact(support)
+            source_text = (
+                ""
                 if material_projection is not None
-                else sanitize_writer_source_text(
-                    support.text.strip() or support.source_text.strip()
-                )
+                else sanitize_writer_source_text(support.source_text.strip())
             )
+            if not fact_text:
+                fact_text, source_text = source_text, ""
+            if " ".join(fact_text.split()) == " ".join(source_text.split()):
+                source_text = ""
             framing = _support_framing(support)
-            temporal_fields = [f"role={support.temporal_role}"]
+            temporal_fields: dict[str, str] = {}
             for field_name, value in (
                 ("observed_at", support.observed_at),
                 ("effective_from", support.effective_from),
@@ -517,71 +567,76 @@ def _render_article_story_packets(
             ):
                 formatted = format_article_context_time(value, context.edition_timezone)
                 if formatted is not None:
-                    temporal_fields.append(f"{field_name}={formatted}")
-            temporal = " ".join(temporal_fields)
-            full_lines.append(
-                f"  support={support.support_id} kind={support.evidence_kind} "
-                f"framing={framing} {temporal} fact={raw_fact}"
+                    temporal_fields[field_name] = formatted
+            parent_context = sanitize_writer_source_text(support.reply_parent_context_text.strip())
+            group_id = composition_group.group_id if composition_group is not None else ""
+            line_id = composition_group.narrative_line_id if composition_group is not None else ""
+            base_record: dict[str, object] = {
+                "story_id": item.story_id,
+                "group_id": group_id,
+                "narrative_line_id": line_id,
+                "publication_use": support.publication_use,
+                "support_kind": support.support_kind,
+                "evidence_kind": support.evidence_kind,
+                "source_roles": list(support.source_roles),
+                "framing": framing,
+                "temporal_role": support.temporal_role,
+                "times": temporal_fields,
+                "navigation": list(_support_topic_hint_lines(support)),
+                "fact": fact_text,
+                "primary_source": source_text or None,
+                "reply_parent_context": parent_context or None,
+            }
+            key = json.dumps(base_record, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            record = records_by_key.get(key)
+            if record is None:
+                record = {
+                    "record_type": "support",
+                    **base_record,
+                    "support_ids": [],
+                    "provenance_by_support_id": [],
+                }
+                records_by_key[key] = record
+            support_ids = record["support_ids"]
+            provenance_rows = record["provenance_by_support_id"]
+            if not isinstance(support_ids, list) or not isinstance(provenance_rows, list):
+                raise TypeError("article evidence record lost mutable aggregation fields")
+            support_ids.append(support.support_id)
+            provenance_rows.append(
+                {
+                    "support_id": support.support_id,
+                    "source_refs": list(support.source_refs),
+                    "fragment_ids": list(support.fragment_ids),
+                    "source_item_ids": list(support.source_item_ids),
+                }
             )
-            compact_lines.append(
-                f"  support={support.support_id} framing={framing} {temporal} fact={raw_fact}"
-            )
-            topic_hint_lines = _support_topic_hint_lines(support)
-            full_lines.extend(f"    {line}" for line in topic_hint_lines)
-            compact_lines.extend(f"    {line}" for line in topic_hint_lines)
-            parent_context = _compact_text(
-                sanitize_writer_source_text(support.reply_parent_context_text), 240
-            )
-            if parent_context:
-                context_line = (
-                    "reply_parent_context (subject/place only; not a status or answer)="
-                    + parent_context
-                )
-                full_lines.append(f"    {context_line}")
-                compact_lines.append(f"    {context_line}")
-
-        if not selected_supports:
-            full_lines.append("  support=none fact=No citable support was materialized.")
-            compact_lines.append("  support=none fact=No citable support was materialized.")
-
-        packets.append("\n".join(full_lines))
-        compact_packets.append("\n".join(compact_lines))
-        packet_story_ids.append(item.story_id)
+        evidence_records.extend(records_by_key.values())
 
     if composition_plan is not None:
-        packet_index_by_story_id = {
-            story_id: index for index, story_id in enumerate(packet_story_ids)
-        }
         composition_order: dict[str, int] = {}
         groups_by_id = {group.group_id: group for group in composition_plan.groups}
         for narrative_line in composition_plan.narrative_lines:
             for group_id in narrative_line.group_ids:
-                group = groups_by_id.get(group_id)
-                if group is None:
+                resolved_group = groups_by_id.get(group_id)
+                if resolved_group is None:
                     continue
-                for member in group.members:
+                for member in resolved_group.members:
                     if (
-                        member.story_id in packet_index_by_story_id
+                        member.story_id in packet_story_ids
                         and member.story_id not in composition_order
                     ):
                         composition_order[member.story_id] = len(composition_order)
-
-        packets_in_plan_order = sorted(
-            range(len(packets)),
-            key=lambda index: (
-                composition_order.get(packet_story_ids[index], len(composition_order)),
-                index,
-            ),
+        evidence_records.sort(
+            key=lambda record: composition_order.get(
+                str(record["story_id"]), len(composition_order)
+            )
         )
-        packets = [packets[index] for index in packets_in_plan_order]
-        compact_packets = [compact_packets[index] for index in packets_in_plan_order]
 
     return (
-        packets,
-        compact_packets,
+        evidence_records,
         ArticleWriterMaterializationStats(
             coverage_story_count=len(coverage_plan.stories),
-            story_packet_count=len(packets),
+            story_packet_count=len(packet_story_ids),
             packets_with_citable_support=packets_with_citable_support,
             citable_support_count=citable_support_count,
             bundle_count=(len(composition_plan.groups) if composition_plan is not None else 0),
@@ -598,26 +653,60 @@ def _render_article_story_packets(
 
 def _fit_story_packets(
     prefix: str,
-    full_packets: Sequence[str],
-    compact_packets: Sequence[str],
-) -> tuple[str, str]:
-    """Fit every Story packet in budget without dropping facts or Story IDs."""
-    remaining = max(0, ARTICLE_WRITER_CONTEXT_MAX_CHARS - len(prefix))
-
-    def join_if_fits(packets: Sequence[str]) -> str | None:
-        body = "\n\n".join(packets)
-        return body if len(body) <= remaining else None
-
-    body = join_if_fits(full_packets)
-    representation = "full"
-    if body is None:
-        body = join_if_fits(compact_packets)
-        representation = "compact"
-    if body is None:
+    evidence_records: Sequence[dict[str, object]],
+) -> str:
+    """Fit the complete evidence inventory or fail without a partial dossier."""
+    record_lines = [
+        json.dumps(record, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c")
+        for record in evidence_records
+    ]
+    evidence_block = "\n".join((_ARTICLE_EVIDENCE_BEGIN, *record_lines, _ARTICLE_EVIDENCE_END))
+    rendered = "\n\n".join(part for part in (prefix, evidence_block) if part).strip()
+    if len(rendered) > ARTICLE_WRITER_CONTEXT_MAX_CHARS:
         raise ValueError(
-            "article Story packets exceed writer context budget after compact materialization"
+            "article writer evidence dossier exceeds writer context budget "
+            f"({len(rendered)}/{ARTICLE_WRITER_CONTEXT_MAX_CHARS} characters)"
         )
-    return "\n\n".join(part for part in (prefix, body) if part).strip(), representation
+    return rendered
+
+
+def _render_packet_quote_allowlist(
+    context: ArticleEditorialContext,
+    exposed_support_ids: set[str],
+    material_projection: ArticleMaterialProjection | None,
+) -> tuple[tuple[str, ...], str]:
+    """Render whole quote candidates from evidence exposed in the inventory."""
+    from src.publication.article_quote_allowlist import build_article_quote_allowlist
+
+    candidates = build_article_quote_allowlist(
+        context,
+        excluded_support_ids=set(context.support_by_id) - exposed_support_ids,
+        excluded_story_ids=(
+            material_projection.suppressed_story_ids if material_projection is not None else ()
+        ),
+        candidate_text_by_support_id=(
+            material_projection.text_by_support_id if material_projection is not None else None
+        ),
+    )
+    lines = [
+        _ARTICLE_QUOTE_BEGIN,
+        "Each following JSON string is one exact primary-source phrase; escapes encode the original text.",
+    ]
+    selected: list[str] = []
+    budget = _QUOTE_ALLOWLIST_MAX_CHARS - sum(len(line) for line in lines) - len(_ARTICLE_QUOTE_END)
+    for candidate in candidates:
+        line = json.dumps(candidate, ensure_ascii=False, separators=(",", ":")).replace(
+            "<", "\\u003c"
+        )
+        if len(line) + 1 > budget:
+            break
+        lines.append(line)
+        selected.append(candidate)
+        budget -= len(line) + 1
+    if not selected:
+        lines.append('"(none; use indirect speech only)"')
+    lines.append(_ARTICLE_QUOTE_END)
+    return tuple(selected), "\n".join(lines)
 
 
 def render_article_writer_context_with_stats(
@@ -725,8 +814,6 @@ def render_article_writer_context_with_stats(
             allowed_support_ids.update(item.support_ids)
             allowed_support_ids.update(item.detail_support_ids)
 
-    from src.publication.article_quote_allowlist import build_article_quote_allowlist
-
     suppressed_support_ids = (
         {
             support_id
@@ -742,6 +829,54 @@ def render_article_writer_context_with_stats(
             for support in context.support_index
             if support.support_id not in allowed_support_ids
         )
+    if coverage_plan is not None and materialization_mode == "packetized":
+        expected_ids = expected_article_writer_support_ids(
+            context,
+            coverage_plan,
+            material_projection=material_projection,
+            composition_plan=composition_plan,
+        )
+        evidence_records, stats = _render_article_story_packets(
+            context, coverage_plan, material_projection, composition_plan
+        )
+        exposed_support_id_values: list[str] = []
+        for record in evidence_records:
+            support_ids = record.get("support_ids")
+            if not isinstance(support_ids, list):
+                raise ValueError("article writer evidence record has invalid support IDs")
+            exposed_support_id_values.extend(
+                support_id for support_id in support_ids if isinstance(support_id, str)
+            )
+        exposed_ids = tuple(exposed_support_id_values)
+        if len(exposed_ids) != len(set(exposed_ids)) or set(exposed_ids) != set(expected_ids):
+            raise ValueError(
+                "article writer inventory does not match expected eligible support IDs "
+                f"(expected={len(expected_ids)}, exposed={len(exposed_ids)})"
+            )
+        plan_story_ids = {item.story_id for item in coverage_plan.stories}
+        suppressed_count = (
+            len(set(material_projection.suppressed_story_ids) & plan_story_ids)
+            if material_projection
+            else 0
+        )
+        if stats.story_packet_count + suppressed_count != stats.coverage_story_count:
+            raise ValueError(
+                "article story packet materialization lost coverage stories: "
+                f"{stats.story_packet_count + suppressed_count}/{stats.coverage_story_count}"
+            )
+        _quote_allowlist, quote_block = _render_packet_quote_allowlist(
+            context, set(exposed_ids), material_projection
+        )
+        prefix = "\n\n".join(
+            part
+            for part in ("\n\n".join(blocks).strip(), stats.to_prompt_block(), quote_block)
+            if part
+        ).strip()
+        rendered = _fit_story_packets(prefix, evidence_records)
+        return rendered, stats
+
+    from src.publication.article_quote_allowlist import build_article_quote_allowlist
+
     allowlist = build_article_quote_allowlist(
         context,
         excluded_support_ids=suppressed_support_ids,
@@ -769,36 +904,6 @@ def render_article_writer_context_with_stats(
         blocks.append(
             "QUOTE ALLOWLIST: (NONE — quotation marks are strictly forbidden; use indirect speech only)"
         )
-
-    if coverage_plan is not None and materialization_mode == "packetized":
-        prefix = "\n\n".join(blocks).strip()
-        packet_blocks, compact_packet_blocks, stats = _render_article_story_packets(
-            context, coverage_plan, material_projection, composition_plan
-        )
-        plan_story_ids = {item.story_id for item in coverage_plan.stories}
-        suppressed_count = (
-            len(set(material_projection.suppressed_story_ids) & plan_story_ids)
-            if material_projection
-            else 0
-        )
-        if stats.story_packet_count + suppressed_count != stats.coverage_story_count:
-            raise ValueError(
-                "article story packet materialization lost coverage stories: "
-                f"{stats.story_packet_count + suppressed_count}/{stats.coverage_story_count}"
-            )
-        representation = stats.rendered_packet_representation
-        for _ in range(3):
-            stats = replace(stats, rendered_packet_representation=representation)
-            prefix_with_inventory = "\n\n".join(
-                part for part in (prefix, stats.to_prompt_block()) if part
-            ).strip()
-            rendered, actual_representation = _fit_story_packets(
-                prefix_with_inventory, packet_blocks, compact_packet_blocks
-            )
-            if actual_representation == representation:
-                return rendered, stats
-            representation = actual_representation
-        raise ValueError("article writer packet representation did not stabilize")
 
     # Several evidence rows often carry the same fact and source text (for
     # example, one fact linked to multiple fragments).  They all remain

@@ -621,8 +621,6 @@ def _safe_writer_metadata(writer_metadata: dict[str, Any] | None) -> dict[str, A
         "total_tokens",
         "context_chars",
         "prompt_chars",
-        "context_hash",
-        "prompt_hash",
         "as_of",
         "as_of_utc",
         "edition_timezone",
@@ -632,6 +630,14 @@ def _safe_writer_metadata(writer_metadata: dict[str, Any] | None) -> dict[str, A
         "editor_invocation_limit",
         "generation_timeout_seconds",
         "writer_stage_elapsed_seconds",
+        "writer_response_count",
+        "semantic_transition_count",
+        "semantic_recovery_exhausted",
+        "context_character_count",
+        "expected_support_count",
+        "exposed_support_count",
+        "evidence_record_count",
+        "quote_allowlist_count",
         "editor_patched_unit_ids",
         "editor_failure_type",
         "editor_fallback_to_original",
@@ -642,6 +648,69 @@ def _safe_writer_metadata(writer_metadata: dict[str, Any] | None) -> dict[str, A
     result: dict[str, Any] = {
         key: writer_metadata[key] for key in scalar_keys if key in writer_metadata
     }
+
+    safe_choice_values = {
+        "writer_response_disposition": {"usable", "repairable", "unusable"},
+        "writer_response_reason": {
+            "empty_response",
+            "whole_response_refusal",
+            "whole_response_service_message",
+            "no_reader_prose",
+            "format_repair_needed",
+            "parsed_markdown",
+            "legacy_json",
+            "legacy_json_format_repair_needed",
+            "legacy_json_unusable",
+        },
+        "semantic_recovery_reason": {
+            "first_response_accepted",
+            "recovery_response_accepted",
+            "writer_response_unusable",
+            "semantic_rejection_limit_reached",
+            "semantic_recovery_disabled",
+            "no_remaining_provider_slots",
+            "recovery_slots_transport_failed",
+            "no_recovery_response",
+        },
+        "article_writer_context_version": {"event-article-context-v2-evidence-inventory"},
+        "article_narrative_prompt_version": {"event-article-narrative-v13"},
+        "article_writer_prompt_version": {"v17"},
+    }
+    for key, allowed_values in safe_choice_values.items():
+        value = writer_metadata.get(key)
+        if isinstance(value, str) and value in allowed_values:
+            result[key] = value
+
+    safe_hash_keys = (
+        "context_hash",
+        "prompt_hash",
+        "context_sha256",
+        "expected_support_ids_sha256",
+        "exposed_support_ids_sha256",
+        "quote_allowlist_sha256",
+    )
+    for key in safe_hash_keys:
+        value = writer_metadata.get(key)
+        if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value):
+            result[key] = value
+
+    format_findings = writer_metadata.get("writer_response_format_findings")
+    allowed_format_findings = {
+        "EMPTY_RESPONSE",
+        "BARE_TITLE_NORMALIZED",
+        "MISSING_TITLE",
+        "MISSING_LEAD",
+        "MISSING_SECTIONS",
+        "WHOLE_RESPONSE_REFUSAL",
+        "SERVICE_MESSAGE",
+        "NO_READER_PROSE",
+    }
+    if isinstance(format_findings, list):
+        result["writer_response_format_findings"] = [
+            finding
+            for finding in format_findings[:7]
+            if isinstance(finding, str) and finding in allowed_format_findings
+        ]
 
     def compact_provider_attempts(value: Any) -> dict[str, Any] | None:
         if not isinstance(value, dict):

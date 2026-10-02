@@ -59,6 +59,7 @@ _MAX_HEADING_CONTEXT_SUPPORTS = 64
 _MAX_EDITOR_SUPPORTS = 64
 _MAX_EDITOR_SUPPORT_CONTEXT_CHARS = 32_000
 _MAX_EDITOR_SUPPORT_PACKET_CHARS = 4_000
+_MAX_TITLE_LEAD_REPAIR_SUPPORTS = 6
 ARTICLE_STRUCTURAL_OUTCOME_REASONS = frozenset(
     {
         "no_authorized_structural_sources",
@@ -406,6 +407,16 @@ class ArticleEditor:
                 material_projection=material_projection,
             )
             prompt_data = self._bound_prompt_supports(prompt_data)
+            prompt_data = [
+                unit
+                for unit in prompt_data
+                if unit["unit_id"] not in {"TITLE", "LEAD"}
+                or not any(
+                    getattr(issue, "code", "") in {"EMPTY_TITLE", "EMPTY_LEAD"}
+                    for issue in unit["issues"]
+                )
+                or unit["prompt_support_ids"]
+            ]
             if not prompt_data:
                 logger.warning("ArticleEditor could not build unit context for issues; stopping")
                 break
@@ -1101,6 +1112,33 @@ class ArticleEditor:
                     packets.append({"support_id": support_id, "text": rendered})
             return packets
 
+        def current_body_repair_supports() -> list[str]:
+            """Return a small current-window allowlist already cited by body prose."""
+            body_support_ids: list[str] = []
+            for section in draft.sections:
+                for paragraph in section.paragraphs:
+                    body_support_ids.extend(paragraph.cited_support_ids)
+                    body_support_ids.extend(
+                        support_id
+                        for claim in paragraph.claims
+                        for support_id in claim.cited_support_ids
+                    )
+
+            visible_current_ids: list[str] = []
+            for support_id in dict.fromkeys(body_support_ids):
+                support = context.support_by_id.get(support_id)
+                if (
+                    support is None
+                    or support.publication_use != "PUBLISH"
+                    or support.temporal_role != "CURRENT_WINDOW"
+                    or not editor_visible_support(support_id)
+                ):
+                    continue
+                visible_current_ids.append(support_id)
+                if len(visible_current_ids) == _MAX_TITLE_LEAD_REPAIR_SUPPORTS:
+                    break
+            return visible_current_ids
+
         # Index units across draft
         # 1. Title
         def unit_supports(
@@ -1293,11 +1331,20 @@ class ArticleEditor:
             return [support_id for _, support_id in scored[:6]]
 
         if "TITLE" in issues_by_unit:
+            title_issues = issues_by_unit["TITLE"]
+            missing_title = any(
+                getattr(issue, "code", "") == "EMPTY_TITLE" for issue in title_issues
+            )
             title_has_unframed_history = any(
                 getattr(issue, "code", "") == "HISTORICAL_CONTEXT_UNFRAMED"
-                for issue in issues_by_unit["TITLE"]
+                for issue in title_issues
             )
-            if title_has_unframed_history:
+            if missing_title:
+                # A missing title has no own citations. Offer only a few
+                # current-window PUBLISH supports that the body already cites;
+                # the same IDs will be the patch's exact grounding allowlist.
+                t_sups = current_body_repair_supports()
+            elif title_has_unframed_history:
                 # The candidate title must be grounded in today's article
                 # material. Keeping the old historical IDs in the allowed set
                 # would let the title retain the stale claim and fail again.
@@ -1308,34 +1355,43 @@ class ArticleEditor:
                     [sid for claim in draft.title_claims for sid in claim.cited_support_ids],
                     issues_by_unit["TITLE"],
                 )
-            unit_data.append(
-                {
-                    "unit_id": "TITLE",
-                    "unit_type": "title",
-                    "text": draft.title,
-                    "support_ids": t_sups,
-                    "support_packets": support_packets(t_sups),
-                    "issues": issues_by_unit["TITLE"],
-                }
-            )
+            if t_sups or not missing_title:
+                unit_data.append(
+                    {
+                        "unit_id": "TITLE",
+                        "unit_type": "title",
+                        "text": draft.title,
+                        "support_ids": t_sups,
+                        "support_packets": support_packets(t_sups),
+                        "issues": title_issues,
+                    }
+                )
 
         # 2. Lead
         if "LEAD" in issues_by_unit:
-            lead_sups = unit_supports(
-                list(draft.lead_support_ids),
-                [sid for claim in draft.lead_claims for sid in claim.cited_support_ids],
-                issues_by_unit["LEAD"],
-            )
-            unit_data.append(
-                {
-                    "unit_id": "LEAD",
-                    "unit_type": "lead",
-                    "text": draft.lead,
-                    "support_ids": lead_sups,
-                    "support_packets": support_packets(lead_sups),
-                    "issues": issues_by_unit["LEAD"],
-                }
-            )
+            lead_issues = issues_by_unit["LEAD"]
+            missing_lead = any(getattr(issue, "code", "") == "EMPTY_LEAD" for issue in lead_issues)
+            if missing_lead:
+                # Do not mine the whole context for a lead: it may only use
+                # visible current-window evidence already cited in the body.
+                lead_sups = current_body_repair_supports()
+            else:
+                lead_sups = unit_supports(
+                    list(draft.lead_support_ids),
+                    [sid for claim in draft.lead_claims for sid in claim.cited_support_ids],
+                    lead_issues,
+                )
+            if lead_sups or not missing_lead:
+                unit_data.append(
+                    {
+                        "unit_id": "LEAD",
+                        "unit_type": "lead",
+                        "text": draft.lead,
+                        "support_ids": lead_sups,
+                        "support_packets": support_packets(lead_sups),
+                        "issues": lead_issues,
+                    }
+                )
 
         # 3. Sections (Headings and Paragraphs)
         p_idx = 1
@@ -1776,7 +1832,15 @@ class ArticleEditor:
                         )
             blocks.append("Замечания валидатора:")
             if utype == "title":
-                if any(
+                if any(getattr(issue, "code", "") == "EMPTY_TITLE" for issue in issues):
+                    blocks.append(
+                        "  ⚠️ ВНИМАНИЕ ДЛЯ ЗАГОЛОВКА (TITLE): заголовок отсутствует. "
+                        "Сформулируйте только короткий заголовок по показанным пакетам PUBLISH. "
+                        "Не добавляйте город, масштаб, тему, дату или деталь, которых нет в этих "
+                        "пакетах. Если безопасный заголовок по ним невозможен, не придумывайте "
+                        "факты."
+                    )
+                elif any(
                     getattr(issue, "code", "") == "HISTORICAL_CONTEXT_UNFRAMED" for issue in issues
                 ):
                     blocks.append(
@@ -1793,10 +1857,19 @@ class ArticleEditor:
                         "Напишите общий заголовок о ситуации в городе (например: «Ситуация со светом и городские будни Бердянска»)."
                     )
             elif utype == "lead":
-                blocks.append(
-                    "  ⚠️ ВНИМАНИЕ ДЛЯ ЛИДА (LEAD): Вводный абзац ОБЯЗАН быть в статье (ЗАПРЕЩЕНО возвращать [DELETE] или пустую строку!). "
-                    "Напишите емкий вводный абзац (2-3 предложения), обобщающий общую картину дня строго по предоставленным источникам ниже."
-                )
+                if any(getattr(issue, "code", "") == "EMPTY_LEAD" for issue in issues):
+                    blocks.append(
+                        "  ⚠️ ВНИМАНИЕ ДЛЯ ЛИДА (LEAD): лид отсутствует. Напишите короткий "
+                        "вводный абзац только по показанным пакетам PUBLISH и не добавляйте "
+                        "события, причин, времени, географии, городского масштаба или связей, "
+                        "которых в них нет. Каждый фактический фрагмент нового текста должен "
+                        "подтверждаться этими пакетами; не заполняйте лид общими фразами."
+                    )
+                else:
+                    blocks.append(
+                        "  ⚠️ ВНИМАНИЕ ДЛЯ ЛИДА (LEAD): Вводный абзац ОБЯЗАН быть в статье (ЗАПРЕЩЕНО возвращать [DELETE] или пустую строку!). "
+                        "Напишите емкий вводный абзац (2-3 предложения), обобщающий общую картину дня строго по предоставленным источникам ниже."
+                    )
             for iss in issues:
                 is_quality = isinstance(iss, ArticleReaderQualityFinding)
                 msg = f"  • [{'READER_QUALITY' if is_quality else 'FACTUAL'}:{iss.code}] {iss.message}"

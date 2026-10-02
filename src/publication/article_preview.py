@@ -261,12 +261,82 @@ def _safe_writer_metadata(value: Any) -> dict[str, Any]:
         "generation_timeout_seconds",
         "writer_stage_elapsed_seconds",
         "pass_elapsed_seconds",
+        "writer_response_count",
+        "semantic_transition_count",
+        "semantic_recovery_exhausted",
+        "context_character_count",
+        "expected_support_count",
+        "exposed_support_count",
+        "evidence_record_count",
+        "quote_allowlist_count",
     }
     result = {
         key: value[key]
         for key in scalar_keys
         if key in value and isinstance(value[key], (int, float))
     }
+
+    safe_choice_values = {
+        "writer_response_disposition": {"usable", "repairable", "unusable"},
+        "writer_response_reason": {
+            "empty_response",
+            "whole_response_refusal",
+            "whole_response_service_message",
+            "no_reader_prose",
+            "format_repair_needed",
+            "parsed_markdown",
+            "legacy_json",
+            "legacy_json_format_repair_needed",
+            "legacy_json_unusable",
+        },
+        "semantic_recovery_reason": {
+            "first_response_accepted",
+            "recovery_response_accepted",
+            "writer_response_unusable",
+            "semantic_rejection_limit_reached",
+            "semantic_recovery_disabled",
+            "no_remaining_provider_slots",
+            "recovery_slots_transport_failed",
+            "no_recovery_response",
+        },
+        "article_writer_context_version": {"event-article-context-v2-evidence-inventory"},
+        "article_narrative_prompt_version": {"event-article-narrative-v13"},
+        "article_writer_prompt_version": {"v17"},
+    }
+    for key, allowed_values in safe_choice_values.items():
+        item = value.get(key)
+        if isinstance(item, str) and item in allowed_values:
+            result[key] = item
+
+    for key in (
+        "context_hash",
+        "prompt_hash",
+        "context_sha256",
+        "expected_support_ids_sha256",
+        "exposed_support_ids_sha256",
+        "quote_allowlist_sha256",
+    ):
+        item = value.get(key)
+        if isinstance(item, str) and re.fullmatch(r"[0-9a-f]{64}", item):
+            result[key] = item
+
+    format_findings = value.get("writer_response_format_findings")
+    allowed_format_findings = {
+        "EMPTY_RESPONSE",
+        "BARE_TITLE_NORMALIZED",
+        "MISSING_TITLE",
+        "MISSING_LEAD",
+        "MISSING_SECTIONS",
+        "WHOLE_RESPONSE_REFUSAL",
+        "SERVICE_MESSAGE",
+        "NO_READER_PROSE",
+    }
+    if isinstance(format_findings, list):
+        result["writer_response_format_findings"] = [
+            finding
+            for finding in format_findings[:7]
+            if isinstance(finding, str) and finding in allowed_format_findings
+        ]
 
     operations = _safe_structural_operations(value.get("structural_operations"))
     if operations:

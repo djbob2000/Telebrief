@@ -123,4 +123,4 @@ The ordinary `AIProvider.chat_completion` contract and all existing consumers re
 
 ## Execution Handoff
 
-The user has already selected subagent-driven execution with up to four agents including root. After plan review, start Tasks 1–3 concurrently under the disjoint ownership above, integrate Task 4 as root, then perform Task 5. Subagents return evidence and verification, not commits. Implementation begins after the user confirms this written plan captures the approved spec.
+The user approved this plan and selected subagent-driven execution with up to four agents including root. Tasks 1–3 were delegated under the disjoint ownership above, Task 4 was integrated by root, and Task 5 is the release gate. Subagents return evidence and verification, not commits.

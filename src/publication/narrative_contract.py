@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from src.publication.article_length import ArticleLengthProfile
 
-ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v12"
+ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v13"
 DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v7-composition"
 
 
@@ -31,14 +31,16 @@ def build_article_narrative_contract(
 
     return f"""### Journalistic Synthesis & Narrative Standards (Output Language: {output_language})
 
+Output ordinary Markdown only: one title, a lead, and thematic chapters with normal prose paragraphs. Do not output JSON, Claim Atoms, support IDs, or technical trace data. These are internal validation metadata; the server derives them from the actual prose.
+
 1. Role & Voice:
 - Write like an experienced, balanced regional newsroom journalist.
 - Compose a cohesive, readable local-news narrative from the authorized reporting material.
 - Open on a supported central development and give the reader a natural edition-local as-of frame when available. Never infer an event start time from when a report was observed.
 
 2. Presentation vs. Validation Structure:
-- Support items and Claim Atoms are reporting and validation metadata, not sentence templates.
-- Title and Lead must cite active PUBLISH support IDs with CURRENT_WINDOW temporal role from the main lead/DEVELOP storylines. Keep the title about the current reporting window: do not cite or restate HISTORICAL_CONTEXT material there. Historical context may appear in the lead only when it is paired with current-window evidence and explicitly framed as continuing or changed.
+- Evidence records and Claim Atoms are reporting and validation metadata, not sentence templates. Never print their IDs or metadata in the article.
+- Ground the title and lead in active PUBLISH evidence with CURRENT_WINDOW temporal role from the main current storylines. Keep the title about the reporting window; do not present HISTORICAL_CONTEXT as current news. Historical context may appear in the lead only when current-window evidence supports it and it is explicitly framed as continuing or changed.
 - A single natural paragraph may combine several independently supported claims when they form one coherent narrative thought.
 - Give each paragraph one central subject. When claims belong to unrelated storylines or independent editorial groups, place them in separate compact paragraphs, even inside a broad or catch-all section. Combine them only when the source material supports a real shared relation; never invent a transition, cause, or chronology to make unrelated items appear connected. This is a paragraph-composition rule, not a quota to give every Story its own paragraph.
 - Keep each paragraph on one service domain: electricity supply / power-grid operations and fiber / home internet are distinct topics. Start a new paragraph and place it in the matching section when the domain changes; a transition such as “при этом” does not make unrelated services one subject.
@@ -76,14 +78,6 @@ def build_article_narrative_contract(
 - Organization names, locations, prices, schedules, or addresses may appear only when the detail itself is editorially relevant, supported, and presented concisely without promotional tone.
 - NO META-COMMENTARY OR OMISSION REPORTING: Never write meta-phrases explaining omitted contacts or instructions to the reader, such as "(контактные данные опущены)", "телефоны не указываются", "контакты скрыты", "даты не приводятся", or "как сообщалось ранее". Omit promotional payloads completely and silently without editorializing about their absence.
 
-6. Claim Atom discipline:
-- Claim Atoms are validation metadata, not polished article prose.
-- Keep each Claim Atom source-close and limited to ONE independently supportable proposition.
-- Split combined electricity/water, location/service, or cause/effect propositions into separate atoms with their own support IDs.
-- Omit edition-level framing such as the publication city from the atom when it is only present in reader-facing prose.
-- Claim Atoms may preserve source-language wording (including Ukrainian) even when final prose is Russian.
-- Do not add editorial transitions, thematic summaries, or bureaucratic abstractions to Claim Atoms merely because they appear in the prose.
-
 7. Narrative Composition Principles:
 - Chronology: Build clear chronological narrative sequences when the supports establish temporal order.
 - Contrast: Highlight supported practical contrasts when it helps residents understand local conditions (e.g. service availability differences, operational contrasts).
@@ -92,7 +86,7 @@ def build_article_narrative_contract(
 - Attribution discipline: Group repeated observations sharing the same epistemic status under a single natural attribution. Vary sentence openings and avoid mechanically repeating identical attribution phrases at the start of every sentence.
 - Transitions: Neutral connective phrases (e.g. "meanwhile", "at the same time", "against this background") are permitted only when they connect verified observations without asserting unsupported causal links.
 - Direct quotes & resident voice integration:
-  * Quotation marks around a spoken phrase mark an exact primary-source quote and MUST be used ONLY for the EXACT primary-source wording from `source=...`. Typographic quotation marks around a supported commercial or organization name are name styling, not direct speech, and are allowed when the source identifies that name.
+  * Quotation marks around spoken words mark an exact primary-source quote and may be used only for a complete phrase in the provided exact quote allowlist. The allowlist encodes exact source phrases; preserve their words and order. Typographic quotation marks around a supported commercial or organization name are name styling, not direct speech, and are allowed when the evidence identifies that name.
   * NEVER translate or grammar-correct text inside quotation marks, normalize grammar, shorten, or merge words inside a direct quotation.
   * If you need Russian translation, correction, or compression, remove quotation marks and write indirect speech.
   * No quotation dumps or chat rolls: NEVER string together consecutive direct quotes separated by commas or dashes (e.g. «Quote 1», «Quote 2», «Quote 3» — such reports...). Consecutive quotation dumps destroy narrative flow and read like uncurated chat logs.
@@ -103,7 +97,7 @@ def build_article_narrative_contract(
 - Proper names & Places:
   * Do NOT introduce external city names, persons, or organizations that are not explicitly mentioned in that paragraph's cited support.
 - Temporal role constraints:
-  * Title and Lead MUST cite only supports marked `CURRENT_WINDOW (VALID FOR TITLE/LEAD)`.
+  * Keep the title and lead grounded in current-window evidence; do not put support IDs in the text.
   * Do not present `HISTORICAL_CONTEXT` as current breaking news.
   * Frame `FUTURE_SCHEDULED` events as upcoming or planned.
 
@@ -125,7 +119,6 @@ def build_article_narrative_contract(
   * A resident question is background context, NOT an established fact or an answered status.
   * If you mention a resident question, frame it strictly as an inquiry or uncertainty (e.g. "жители интересуются...", "поступают вопросы о..."), NEVER as an established fact (e.g. do not state "фонд закрыт" or "нотариус работает" unless a PUBLISH support separately states that fact).
   * Do not assert trends such as "участились вопросы" or "повышенный интерес" from a single question.
-- Claim Atoms must contain the factual proposition being supported, not attribution boilerplate. Example: prose may say "According to residents, the district has no power" while the claim atom is "The district has no power" with the same support IDs.
 - Corroboration may strengthen wording or grouping, but never require two sources merely to publish a legitimate local report.
 """
 

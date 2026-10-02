@@ -7,7 +7,7 @@ import os
 import re
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -492,6 +492,100 @@ class ProviderCascade(AIProvider):
         )
         return response
 
+    def _ordered_available_slots(
+        self,
+    ) -> tuple[
+        list[tuple[str, AIProvider, str | None]],
+        list[tuple[str, AIProvider, str | None]],
+        list[str],
+        list[str],
+    ]:
+        """Freeze one round-robin candidate order and its initial cooldown view."""
+        if not self.providers:
+            raise ProviderCascadeError("AI provider cascade has no configured slots")
+
+        def is_fallback_slot(slot_name: str) -> bool:
+            name_lower = slot_name.lower()
+            if "secondary" in name_lower or "fallback" in name_lower or "backup" in name_lower:
+                return True
+            if name_lower == "openrouter" and any(
+                "google" in slot[0].lower() for slot in self.providers
+            ):
+                return True
+            return False
+
+        primary_slots = [slot for slot in self.providers if not is_fallback_slot(slot[0])]
+        fallback_slots = [slot for slot in self.providers if is_fallback_slot(slot[0])]
+        if not primary_slots:
+            primary_slots = list(self.providers)
+            fallback_slots = []
+
+        if len(primary_slots) > 1:
+            start_idx = ProviderCascade._global_round_robin_index % len(primary_slots)
+            ProviderCascade._global_round_robin_index += 1
+            ordered_primary = primary_slots[start_idx:] + primary_slots[:start_idx]
+        else:
+            ordered_primary = primary_slots
+
+        candidates = ordered_primary + fallback_slots
+        now = time.monotonic()
+        available_slots: list[tuple[str, AIProvider, str | None]] = []
+        cooldown_skipped: list[str] = []
+        cooldown_skipped_names: list[str] = []
+        for slot in candidates:
+            label = slot[0]
+            cooldown_until = ProviderCascade._global_slot_cooldowns.get(label, 0.0)
+            if cooldown_until > now:
+                remaining = int(cooldown_until - now)
+                cooldown_skipped.append(f"{label} ({remaining}s remaining)")
+                cooldown_skipped_names.append(label)
+            else:
+                available_slots.append(slot)
+
+        if cooldown_skipped:
+            self.logger.debug(
+                "Skipping AI provider slots in cooldown: %s", ", ".join(cooldown_skipped)
+            )
+
+        if not available_slots and candidates:
+            self.logger.warning(
+                "All AI provider slots are currently in cooldown (%s); attempting all slots as failover",
+                ", ".join(cooldown_skipped),
+            )
+            available_slots = list(candidates)
+
+        return candidates, available_slots, cooldown_skipped, cooldown_skipped_names
+
+    async def _request_provider_slot(
+        self,
+        provider: AIProvider,
+        *,
+        messages: List[Dict[str, str]],
+        selected_model: str,
+        temperature: float | None,
+        max_tokens: int,
+        reasoning_effort: str | None,
+        thinking: bool | None,
+        response_format: Dict[str, Any] | None,
+        timeout_seconds: float,
+        require_nonempty: bool = True,
+    ) -> str:
+        """Make one bounded transport attempt through an already selected slot."""
+        async with asyncio.timeout(timeout_seconds):
+            _record_provider_slot_attempt()
+            response = await provider.chat_completion(
+                messages=messages,
+                model=selected_model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                reasoning_effort=reasoning_effort,
+                thinking=thinking,
+                response_format=response_format,
+            )
+        if require_nonempty and (not isinstance(response, str) or not response.strip()):
+            raise RuntimeError("provider returned an empty response")
+        return response
+
     async def chat_completion(  # pylint: disable=too-many-positional-arguments
         self,
         messages: List[Dict[str, str]],
@@ -502,62 +596,109 @@ class ProviderCascade(AIProvider):
         thinking: bool | None = None,
         response_format: Dict[str, Any] | None = None,
     ) -> str:
-        if not self.providers:
-            raise ProviderCascadeError("AI provider cascade has no configured slots")
+        return await self._chat_completion(
+            messages,
+            model,
+            temperature,
+            max_tokens,
+            reasoning_effort,
+            thinking,
+            response_format,
+            response_acceptor=None,
+            max_semantic_rejections=0,
+        )
 
-        # Separate primary rotating slots (e.g. google-1..N, openrouter-primary)
-        # from secondary/fallback slots (e.g. openrouter-secondary, fallback, backup)
-        def _is_fallback_slot(slot_name: str) -> bool:
-            name_lower = slot_name.lower()
-            if "secondary" in name_lower or "fallback" in name_lower or "backup" in name_lower:
-                return True
-            # For multi-provider cascades where Google is primary, standalone "openrouter" is fallback
-            if name_lower == "openrouter" and any("google" in s[0].lower() for s in self.providers):
-                return True
-            return False
+    async def chat_completion_with_acceptance(  # pylint: disable=too-many-positional-arguments
+        self,
+        messages: List[Dict[str, str]],
+        model: str,
+        temperature: float | None = None,
+        max_tokens: int = 65536,
+        reasoning_effort: str | None = None,
+        thinking: bool | None = None,
+        response_format: Dict[str, Any] | None = None,
+        *,
+        response_acceptor: Callable[[str], Awaitable[bool]],
+        max_semantic_rejections: int = 1,
+    ) -> str:
+        """Return the last nonempty writer response after bounded semantic recovery.
 
-        primary_slots = [s for s in self.providers if not _is_fallback_slot(s[0])]
-        fallback_slots = [s for s in self.providers if _is_fallback_slot(s[0])]
-        if not primary_slots:
-            primary_slots = list(self.providers)
-            fallback_slots = []
+        The acceptor decides only whether a response is usable for further article
+        assessment. It is deliberately called outside transport exception handling.
+        """
+        if not 0 <= max_semantic_rejections <= 1:
+            raise ValueError("max_semantic_rejections must be 0 or 1")
+        return await self._chat_completion(
+            messages,
+            model,
+            temperature,
+            max_tokens,
+            reasoning_effort,
+            thinking,
+            response_format,
+            response_acceptor=response_acceptor,
+            max_semantic_rejections=max_semantic_rejections,
+        )
 
-        # Rotate primary starting slot via Global Round-Robin across all calls
-        if len(primary_slots) > 1:
-            start_idx = ProviderCascade._global_round_robin_index % len(primary_slots)
-            ProviderCascade._global_round_robin_index += 1
-            ordered_primary = primary_slots[start_idx:] + primary_slots[:start_idx]
-        else:
-            ordered_primary = primary_slots
+    async def _chat_completion(
+        self,
+        messages: List[Dict[str, str]],
+        model: str,
+        temperature: float | None,
+        max_tokens: int,
+        reasoning_effort: str | None,
+        thinking: bool | None,
+        response_format: Dict[str, Any] | None,
+        *,
+        response_acceptor: Callable[[str], Awaitable[bool]] | None,
+        max_semantic_rejections: int,
+    ) -> str:
+        (
+            candidates,
+            available_slots,
+            cooldown_skipped,
+            cooldown_skipped_names,
+        ) = self._ordered_available_slots()
+        use_acceptance = response_acceptor is not None
+        acceptance_metadata: dict[str, Any] | None = None
+        started_slots: set[str] = set()
+        last_nonempty_response: str | None = None
+        writer_response_count = 0
+        semantic_transition_count = 0
 
-        # Secondary / Fallback slots are strictly placed at the end (only called if all primary slots fail)
-        candidates = ordered_primary + fallback_slots
+        if use_acceptance:
+            cooldown_decisions = [
+                {"slot": slot[0], "decision": "skipped_active_cooldown"}
+                if slot[0] in cooldown_skipped_names
+                else {"slot": slot[0], "decision": "available_at_call_start"}
+                for slot in candidates
+            ]
+            if cooldown_skipped and not any(
+                decision["decision"] == "available_at_call_start" for decision in cooldown_decisions
+            ):
+                cooldown_decisions = [
+                    {"slot": slot[0], "decision": "cooldown_override_all_slots_cooled"}
+                    for slot in candidates
+                ]
+            acceptance_metadata = {
+                "writer_response_count": 0,
+                "semantic_transition_count": 0,
+                "semantic_recovery_reason": None,
+                "semantic_recovery_exhausted": False,
+                "frozen_provider_slot_order": [slot[0] for slot in candidates],
+                "available_provider_slot_order": [slot[0] for slot in available_slots],
+                "started_provider_slots": [],
+                "started_slot_models": [],
+                "transport_failures": [],
+                "cooldown_decisions": cooldown_decisions,
+            }
+            self.last_metadata = dict(acceptance_metadata)
 
-        # Filter out slots in active cooldown (using global cross-component cooldown state)
-        now = time.monotonic()
-        available_slots: list[tuple[str, AIProvider, str | None]] = []
-        cooldown_skipped: list[str] = []
-        for slot in candidates:
-            label = slot[0]
-            cooldown_until = ProviderCascade._global_slot_cooldowns.get(label, 0.0)
-            if cooldown_until > now:
-                remaining = int(cooldown_until - now)
-                cooldown_skipped.append(f"{label} ({remaining}s remaining)")
-                continue
-            available_slots.append(slot)
-
-        if cooldown_skipped:
-            self.logger.debug(
-                "Skipping AI provider slots in cooldown: %s", ", ".join(cooldown_skipped)
-            )
-
-        # Fail-safe: if all slots are in cooldown, retry all candidates rather than aborting
-        if not available_slots and candidates:
-            self.logger.warning(
-                "All AI provider slots are currently in cooldown (%s); attempting all slots as failover",
-                ", ".join(cooldown_skipped),
-            )
-            available_slots = list(candidates)
+        def sync_acceptance_metadata() -> None:
+            if acceptance_metadata is not None:
+                acceptance_metadata["writer_response_count"] = writer_response_count
+                acceptance_metadata["semantic_transition_count"] = semantic_transition_count
+                self.last_metadata.update(acceptance_metadata)
 
         slot_failures: list[ProviderSlotFailure] = []
         failures: list[str] = []
@@ -565,6 +706,15 @@ class ProviderCascade(AIProvider):
         failure_labels: list[str] = []
         for slot_index, (label, provider, model_override) in enumerate(available_slots):
             selected_model = model_override or model
+            if use_acceptance:
+                if acceptance_metadata is not None and label not in started_slots:
+                    started_slots.add(label)
+                    acceptance_metadata["started_provider_slots"].append(label)
+                    acceptance_metadata["started_slot_models"].append(
+                        {"slot": label, "selected_model": selected_model}
+                    )
+                    sync_acceptance_metadata()
+
             try:
                 self.logger.info("Trying AI provider slot %s (model=%s)", label, selected_model)
                 slot_timeout = float(
@@ -579,30 +729,32 @@ class ProviderCascade(AIProvider):
                     and slot_timeout > self.slot_timeout_cap
                 ):
                     slot_timeout = self.slot_timeout_cap
-                async with asyncio.timeout(slot_timeout):
-                    _record_provider_slot_attempt()
-                    response = await provider.chat_completion(
-                        messages=messages,
-                        model=selected_model,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        reasoning_effort=reasoning_effort,
-                        thinking=thinking,
-                        response_format=response_format,
-                    )
-                if not isinstance(response, str) or not response.strip():
-                    raise RuntimeError("provider returned an empty response")
-                # Clear any global cooldown upon a successful response for this slot
-                ProviderCascade._global_slot_cooldowns.pop(label, None)
-                self._record_successful_slot_metadata(label, provider, selected_model)
-                return response
-            except Exception as exc:  # every provider error is eligible for failover
+                response = await self._request_provider_slot(
+                    provider,
+                    messages=messages,
+                    selected_model=selected_model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    reasoning_effort=reasoning_effort,
+                    thinking=thinking,
+                    response_format=response_format,
+                    timeout_seconds=slot_timeout,
+                )
+            except Exception as exc:  # provider transport errors may advance the frozen sequence
+                provider_exc: Exception | None = exc
                 exc_type = type(exc).__name__
                 kind = _classify_provider_failure(exc)
+                if acceptance_metadata is not None:
+                    acceptance_metadata["transport_failures"].append(
+                        {
+                            "slot": label,
+                            "kind": kind,
+                            "exception_type": exc_type,
+                            "attempt": "initial",
+                        }
+                    )
+                    sync_acceptance_metadata()
 
-                # If rate-limited (quota), check Retry-After header/message.
-                # If a next slot is available, switch immediately without waiting.
-                # If this is the last slot, wait up to cooldown_seconds before giving up.
                 quota_retry_after: float | None = None
                 if kind == "quota":
                     quota_retry_after = extract_retry_after(exc)
@@ -616,70 +768,166 @@ class ProviderCascade(AIProvider):
                         )
                         await asyncio.sleep(quota_retry_after)
                         try:
-                            _record_provider_slot_attempt()
-                            retry_response = await provider.chat_completion(
+                            retry_response = await self._request_provider_slot(
+                                provider,
                                 messages=messages,
-                                model=selected_model,
+                                selected_model=selected_model,
                                 temperature=temperature,
                                 max_tokens=max_tokens,
                                 reasoning_effort=reasoning_effort,
                                 thinking=thinking,
                                 response_format=response_format,
+                                timeout_seconds=slot_timeout,
+                                require_nonempty=False,
                             )
                             if isinstance(retry_response, str) and retry_response.strip():
-                                ProviderCascade._global_slot_cooldowns.pop(label, None)
-                                return retry_response
+                                response = retry_response
+                                provider_exc = None
+                            elif acceptance_metadata is not None:
+                                acceptance_metadata["transport_failures"].append(
+                                    {
+                                        "slot": label,
+                                        "kind": "empty_response",
+                                        "exception_type": "EmptyResponse",
+                                        "attempt": "quota_retry",
+                                    }
+                                )
+                                sync_acceptance_metadata()
                         except Exception as retry_exc:
-                            exc = retry_exc
-                            exc_type = type(exc).__name__
-                            kind = _classify_provider_failure(exc)
+                            provider_exc = retry_exc
+                            exc_type = type(provider_exc).__name__
+                            kind = _classify_provider_failure(provider_exc)
+                            if acceptance_metadata is not None:
+                                acceptance_metadata["transport_failures"].append(
+                                    {
+                                        "slot": label,
+                                        "kind": kind,
+                                        "exception_type": exc_type,
+                                        "attempt": "quota_retry",
+                                    }
+                                )
+                                sync_acceptance_metadata()
 
-                if kind in ("quota", "server", "auth", "timeout"):
-                    if kind == "quota":
-                        # Always trust the provider's Retry-After when present —
-                        # even if it's larger than our default cooldown_seconds.
-                        # Ignoring it would cause us to retry too early and get a
-                        # fresh rate-limit cycle immediately.
-                        if quota_retry_after is not None and quota_retry_after > 0:
-                            cooldown = quota_retry_after
-                        else:
-                            cooldown = self.cooldown_seconds
-                    else:
-                        cooldown = min(self.cooldown_seconds, 300.0)
-                    ProviderCascade._global_slot_cooldowns[label] = time.monotonic() + cooldown
-                    self.logger.warning(
-                        "AI provider slot %s failed with %s (%s); placed in global cooldown for %ds%s",
-                        label,
-                        kind,
-                        exc_type,
-                        int(cooldown),
-                        " (from Retry-After)"
-                        if kind == "quota"
-                        and quota_retry_after is not None
-                        and quota_retry_after > 0
-                        else "",
-                    )
-                slot_failures.append(
-                    ProviderSlotFailure(slot=label, kind=kind, exception_type=exc_type)
-                )
-                failures.append(f"{label} ({exc_type})")
-                failure_labels.append(label)
-                failure_kinds.append(kind)
-                if slot_index < len(available_slots) - 1:
-                    self.logger.warning(
-                        "AI provider slot %s failed (%s: %s); switching to next slot (%s)",
-                        label,
-                        exc_type,
-                        exc,
-                        available_slots[slot_index + 1][0],
-                    )
+                if provider_exc is None:
+                    pass
                 else:
-                    self.logger.warning(
-                        "AI provider slot %s failed (%s: %s); no slots remain",
-                        label,
-                        exc_type,
-                        exc,
+                    if kind in ("quota", "server", "auth", "timeout"):
+                        if kind == "quota":
+                            if quota_retry_after is not None and quota_retry_after > 0:
+                                cooldown = quota_retry_after
+                            else:
+                                cooldown = self.cooldown_seconds
+                        else:
+                            cooldown = min(self.cooldown_seconds, 300.0)
+                        ProviderCascade._global_slot_cooldowns[label] = time.monotonic() + cooldown
+                        self.logger.warning(
+                            "AI provider slot %s failed with %s (%s); placed in global cooldown for %ds%s",
+                            label,
+                            kind,
+                            exc_type,
+                            int(cooldown),
+                            " (from Retry-After)"
+                            if kind == "quota"
+                            and quota_retry_after is not None
+                            and quota_retry_after > 0
+                            else "",
+                        )
+                        if acceptance_metadata is not None:
+                            acceptance_metadata["cooldown_decisions"].append(
+                                {
+                                    "slot": label,
+                                    "decision": "cooldown_applied",
+                                    "kind": kind,
+                                    "seconds": round(cooldown, 3),
+                                }
+                            )
+                            sync_acceptance_metadata()
+                    slot_failures.append(
+                        ProviderSlotFailure(slot=label, kind=kind, exception_type=exc_type)
                     )
+                    failures.append(f"{label} ({exc_type})")
+                    failure_labels.append(label)
+                    failure_kinds.append(kind)
+                    if slot_index < len(available_slots) - 1:
+                        self.logger.warning(
+                            "AI provider slot %s failed (%s: %s); switching to next slot (%s)",
+                            label,
+                            exc_type,
+                            provider_exc,
+                            available_slots[slot_index + 1][0],
+                        )
+                    else:
+                        self.logger.warning(
+                            "AI provider slot %s failed (%s: %s); no slots remain",
+                            label,
+                            exc_type,
+                            provider_exc,
+                        )
+                    continue
+
+            # Only transport activity is covered by the exception handler above. The
+            # acceptor may do assessment work and its exceptions must propagate as-is.
+            if acceptance_metadata is not None and label in ProviderCascade._global_slot_cooldowns:
+                acceptance_metadata["cooldown_decisions"].append(
+                    {"slot": label, "decision": "cooldown_cleared_after_response"}
+                )
+                sync_acceptance_metadata()
+            ProviderCascade._global_slot_cooldowns.pop(label, None)
+            self._record_successful_slot_metadata(label, provider, selected_model)
+            last_nonempty_response = response
+            if not use_acceptance:
+                return response
+
+            writer_response_count += 1
+            sync_acceptance_metadata()
+            if response_acceptor is None:
+                return response
+            accepted = await response_acceptor(response)
+            if accepted:
+                if acceptance_metadata is not None:
+                    acceptance_metadata["semantic_recovery_reason"] = (
+                        "recovery_response_accepted"
+                        if semantic_transition_count
+                        else "first_response_accepted"
+                    )
+                sync_acceptance_metadata()
+                return response
+
+            if acceptance_metadata is None:
+                raise RuntimeError("provider acceptance metadata was not initialized")
+            acceptance_metadata["cooldown_decisions"].append(
+                {"slot": label, "decision": "no_cooldown_for_semantic_rejection"}
+            )
+            if writer_response_count >= 2:
+                acceptance_metadata["semantic_recovery_reason"] = "semantic_rejection_limit_reached"
+                acceptance_metadata["semantic_recovery_exhausted"] = True
+                sync_acceptance_metadata()
+                return response
+            if semantic_transition_count >= max_semantic_rejections:
+                acceptance_metadata["semantic_recovery_reason"] = "semantic_recovery_disabled"
+                acceptance_metadata["semantic_recovery_exhausted"] = True
+                sync_acceptance_metadata()
+                return response
+            if slot_index + 1 >= len(available_slots):
+                acceptance_metadata["semantic_recovery_reason"] = "no_remaining_provider_slots"
+                acceptance_metadata["semantic_recovery_exhausted"] = True
+                sync_acceptance_metadata()
+                return response
+
+            semantic_transition_count += 1
+            acceptance_metadata["semantic_recovery_reason"] = "writer_response_unusable"
+            sync_acceptance_metadata()
+
+        if last_nonempty_response is not None:
+            if acceptance_metadata is not None:
+                acceptance_metadata["semantic_recovery_reason"] = (
+                    "recovery_slots_transport_failed"
+                    if semantic_transition_count
+                    else "no_recovery_response"
+                )
+                acceptance_metadata["semantic_recovery_exhausted"] = True
+                sync_acceptance_metadata()
+            return last_nonempty_response
 
         if not failures:
             raise ProviderCascadeError("AI provider cascade has no configured slots")

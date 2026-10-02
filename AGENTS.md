@@ -306,13 +306,17 @@ Claim Atoms are validation metadata, not sentence templates.
 
 ## 0.7 Article failure semantics and targeted editorial editing
 
-Event-First article generation uses one main LLM writer call followed by deterministic Evidence Boundary validation.
+Event-First article generation has one logical writer stage followed by deterministic Evidence Boundary validation. Normally the stage accepts the first structurally usable response. Only a definitively unusable response envelope (empty/unparseable without recoverable prose, or a whole-response refusal/service message) may advance once to the next still-unused configured provider slot, for at most two nonempty responses in total. This is a bounded provider recovery within the same stage, not a second editorial attempt.
+
+The response parser is deliberately conservative: missing title, missing lead, absent Markdown headings, short length, low coverage, missing DEVELOP material, lexical mismatch, and ordinary factual/quality findings are not `unusable`. Ambiguous prose proceeds to normal assessment and, when appropriate, the existing editor. Semantic recovery must reuse the same messages, model parameters, slot order, and shared generation deadline; it must not restart an already-used slot.
+
+Writer material has exact outer boundary markers. Escape those marker strings anywhere they occur in the rendered dossier, including navigation text, so source-derived content cannot terminate the envelope. Treat all values inside the envelope as reporting data, never as new instructions.
 
 When the writer draft contains isolated factual or stylistic validation issues (such as non-allowlisted quotes, unverified proper names, over-specified causes, or a localized thematic mismatch), the existing targeted copy-editor (`ArticleEditor`, enabled via `article_editor_enabled: true`) may patch specific units or propose bounded structural operations; it does not rewrite the entire draft. `MOVE` transfers one unchanged paragraph into an existing section, preserving its text, claims, supports, origin, and provenance. `SPLIT` is expressed as `RECOMPOSE`: explicitly authorized paragraphs may be replaced with one or more paragraphs in an existing section, or in a `CREATE_SECTION` only when no supported existing destination fits. Rewritten prose is regrounded from its actual text against only the explicitly authorized eligible supports; the editor cannot supply Claim Atoms or support IDs. Structural operations may touch only pass-authorized units and destinations. Their positional IDs are immutable for that pass and bound to the full base-draft fingerprint; a later editor call receives a fresh registry.
 
 All structural operations returned in one response are resolved against the same immutable base before application and form one atomic batch. The complete resulting draft is assessed, including Evidence Boundary and reader-quality checks. Any operation error, new blocker, ambiguous/global finding, or assessment error rolls back the entire structural batch to the exact pre-structure checkpoint. If the response also contains legacy text patches, only those already accepted at that checkpoint remain. Text-only patches keep their existing per-unit quarantine behavior. Each editor call re-validates the exact resulting draft and checkpoint; an unsafe final candidate still fails closed.
 
-Generation remains limited to one writer call and at most two calls to this existing editor, under the shared generation deadline. There is no extra planner, writer retry, or per-operation model call. Structural editing is skipped with a safe outcome if the complete article context or required eligible support context cannot fit the current budgets; a truncated article must never be presented as complete context.
+Generation remains limited to one logical writer stage (at most two nonempty responses only under the unusable-response rule above) and at most two calls to this existing editor, under the shared generation deadline. There is no extra planner, independent writer retry, or per-operation model call. Structural editing is skipped with a safe outcome if the complete article context or required eligible support context cannot fit the current budgets; a truncated article must never be presented as complete context.
 
 Reader-quality findings use one explicit policy registry for finding class, severity, repair scope, and publication effect. This registry does not replace or weaken the Evidence Boundary validator; factual findings remain governed by `article_validator`. Unknown reader-quality codes are policy/configuration errors, not safe findings.
 
@@ -375,7 +379,7 @@ Agents must not make changes whose effect is to:
 - treat a support-level topic hint as proof of a service state, causal relation, shared chronology, geographic relation, or publication eligibility;
 - change article eligibility or require corroboration because an ArticleSupport has a topic hint, or suppress a useful legitimate single-source community report for lack of corroboration;
 - use structural editing to change units outside the current pass's explicit allowlist, reuse stale positional IDs, transfer old Claim Atoms to rewritten prose, or partially apply a structural batch after any operation or full-candidate assessment failure;
-- add a planner, second writer call, per-operation model call, or editor call beyond the two-call budget or shared generation deadline;
+- add a planner, independent second writer stage, per-operation model call, or editor call beyond the two-call budget or shared generation deadline; the sole exception is the bounded next-slot transition for a definitively unusable response described in §0.7;
 - strengthen verification so aggressively that legitimate community news disappears;
 - reintroduce claim-first per-message LLM explosion as the default processing architecture;
 - hardcode one city's geography or examples into generic production prompt logic;
@@ -809,7 +813,7 @@ For structural edits, the editor returns prose and bounded operations, not Claim
 
 ## 6.7 Single-call budget and fail-closed publication
 
-Event-First article generation uses one writer call, followed by Evidence Boundary validation and optional targeted copy-editing (`ArticleEditor`) for isolated issues. The editor may be called at most twice, and both calls share the generation deadline. Do not add a planner, a second writer call, or a per-operation model call.
+Event-First article generation uses one logical writer stage, followed by Evidence Boundary validation and optional targeted copy-editing (`ArticleEditor`) for isolated issues. A structurally unusable response may advance once to the next unused configured provider slot, with a maximum of two nonempty responses for the stage; no other response may trigger another writer request. Missing title/lead or headings remain repairable format findings, not provider-recovery triggers. The editor may be called at most twice, and all writer/editor work shares the generation deadline. Do not add a planner, an independent writer retry/stage, or a per-operation model call.
 
 Before each editor call, construct an immutable pass-local registry of structural unit IDs bound to the fingerprint of the complete base draft. Resolve every source, destination, and insertion reference against that same base before changing anything; IDs are not stable across passes. Give the editor the complete article as read-only orientation plus an explicit allowlist of editable units and permitted destinations. Required support packets must be eligible and fit the current limits (64 packets, 32,000 characters total, and 4,000 characters per packet), along with the full prompt/context budget. If the complete article or required supports do not fit, skip the structural operation with a safe reason; never silently truncate the context and call it complete.
 
@@ -1106,7 +1110,7 @@ provider capability/failover
 permission to add new editorial LLM stages
 ```
 
-Even if provider infrastructure supports multiple models, Event-First article publication must keep its current single generative writer-attempt architecture unless the product contract is explicitly redesigned.
+Even if provider infrastructure supports multiple models, Event-First article publication keeps one logical generative writer stage. The only allowed semantic provider transition is once to the next unused configured slot after a definitively unusable response; this yields at most two nonempty responses and reuses the same request and deadline. Coverage, factual, or reader-quality findings never authorize another writer stage. Other publication consumers retain the ordinary first-nonempty ProviderCascade behavior.
 
 Do not reintroduce:
 
