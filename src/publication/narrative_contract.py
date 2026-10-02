@@ -58,6 +58,8 @@ Output ordinary Markdown only: one title, a lead, and thematic chapters with nor
 - Do not give all Stories equal space and do not force a separate mention for every support record.
 - Let the article's shape follow the evidence; do not impose fixed heading, address, paragraph, or one-paragraph-per-Story quotas.
 - Preserve meaningful place, service-state, and event-time contrasts. Use effective_from/effective_until for event chronology; observed_at describes report chronology and attribution only.
+- Thematic balance: While major utility disruptions (electricity, water, heating) naturally dominate during crises, maintain civic breadth by giving appropriate presence to everyday municipal and social operations (public transport, service desks, pension/administrative inquiries, connectivity, local markets, health access). Do not allow utility reports to erase all daytime civil life.
+- DEVELOP storylines: Give prominent narrative weight and narrative continuity to primary DEVELOP storylines (e.g. collective citizen initiatives, delegations to municipal leadership, critical repair hubs). Ground them with timelines, stakeholder perspectives, and resident reactions.
 - Synthesize related reports without listing every address merely to demonstrate coverage. Keep unrelated subjects separate and omit directory-style commercial payload.
 - Develop the lead's central line in the body without repeating its premise in every section or restating it as a generic conclusion.
 - Close on a supported scene, consequence, or unresolved issue when the material provides one; never predict what will happen next without an explicit source.
