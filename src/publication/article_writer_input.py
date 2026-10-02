@@ -39,7 +39,7 @@ class ArticleWriterInput:
         object.__setattr__(self, "metadata", dict(self.metadata))
 
 
-def _extract_exposed_support_ids(context_text: str) -> tuple[tuple[str, ...], int]:
+def _extract_exposed_support_ids(context_text: str) -> tuple[tuple[str, ...], int, int]:
     if (
         context_text.count(_ARTICLE_EVIDENCE_BEGIN) != 1
         or context_text.count(_ARTICLE_EVIDENCE_END) != 1
@@ -52,6 +52,7 @@ def _extract_exposed_support_ids(context_text: str) -> tuple[tuple[str, ...], in
 
     support_ids: list[str] = []
     record_count = 0
+    fact_record_count = 0
     inventory = context_text[start:end].strip()
     for line_number, line in enumerate(inventory.splitlines(), start=1):
         if not line.strip():
@@ -71,11 +72,17 @@ def _extract_exposed_support_ids(context_text: str) -> tuple[tuple[str, ...], in
             raise ValueError(
                 f"article writer evidence inventory record {line_number} has invalid support IDs"
             )
+        fact = record.get("fact", record.get("x"))
+        if not isinstance(fact, str) or not fact.strip():
+            raise ValueError(
+                f"article writer evidence inventory record {line_number} has no citable fact"
+            )
         record_count += 1
+        fact_record_count += 1
         support_ids.extend(ids)
     if len(support_ids) != len(set(support_ids)):
         raise ValueError("article writer evidence inventory exposes a support more than once")
-    return tuple(support_ids), record_count
+    return tuple(support_ids), record_count, fact_record_count
 
 
 def _extract_quote_allowlist(context_text: str) -> tuple[str, ...]:
@@ -135,7 +142,11 @@ def build_article_writer_input(
     if stats is None:
         raise ValueError("article writer context did not return materialization statistics")
 
-    exposed_support_ids, evidence_record_count = _extract_exposed_support_ids(context_text)
+    (
+        exposed_support_ids,
+        evidence_record_count,
+        evidence_fact_record_count,
+    ) = _extract_exposed_support_ids(context_text)
     if set(expected_support_ids) != set(exposed_support_ids):
         missing = sorted(set(expected_support_ids) - set(exposed_support_ids))
         unexpected = sorted(set(exposed_support_ids) - set(expected_support_ids))
@@ -156,6 +167,7 @@ def build_article_writer_input(
         "expected_support_ids_sha256": _hash_support_ids(expected_support_ids),
         "exposed_support_ids_sha256": _hash_support_ids(exposed_support_ids),
         "evidence_record_count": evidence_record_count,
+        "evidence_fact_record_count": evidence_fact_record_count,
         "quote_allowlist_count": len(quote_allowlist),
         "quote_allowlist_sha256": hashlib.sha256(
             json.dumps(quote_allowlist, ensure_ascii=False, separators=(",", ":")).encode("utf-8")

@@ -21,6 +21,65 @@ _WHOLE_RESPONSE_REFUSAL_RE = re.compile(
     r"[.!?…]?\s*$",
     re.IGNORECASE,
 )
+# Recovery needs positive recognition of every complete unit. These deliberately
+# narrow procedural forms are not a vocabulary test: arbitrary trailing clauses,
+# parentheticals, or unknown formulations remain eligible for normal assessment.
+_MISSING_MATERIAL_CLAUSE = (
+    r"в (?:переданном|предоставленном|исходном) материале (?:фактически )?"
+    r"(?:отсутствует содержательное наполнение|нет (?:достаточных )?материалов|"
+    r"отсутствуют (?:поддержанные записи|материалы))"
+)
+_PROCEDURAL_REFUSAL_OPENING_RE = re.compile(
+    r"(?:(?:к сожалению|извините)[,:]?\s*)?"
+    r"(?:(?:подготовить|написать|создать|составить) "
+    r"(?:корректн(?:ую|ый|ое) )?(?:лонгрид|статью|текст) "
+    r"(?:невозможно|нельзя|не получится)|"
+    r"(?:я )?не (?:могу|смогу) (?:подготовить|написать|создать|составить) "
+    r"(?:эту )?(?:статью|лонгрид|текст))"
+    rf"(?::\s*(?P<missing>{_MISSING_MATERIAL_CLAUSE}))?[.!?…]?",
+    re.IGNORECASE,
+)
+_PROCEDURAL_MISSING_MATERIAL_RE = re.compile(rf"{_MISSING_MATERIAL_CLAUSE}[.!?…]?", re.IGNORECASE)
+# Proper names here are only arguments of an explicit editorial coverage scope;
+# no unrestricted prose slot is permitted, including inside parentheses.
+_COVERAGE_AREA_NAME = r"(?-i:[А-ЯЁ][а-яё]+(?:[- ][А-ЯЁ][а-яё]+)*)"
+_PROCEDURAL_EXPLANATION_RE = re.compile(
+    r"(?:после открывающего маркера идут только служебные фрагменты — "
+    r"географический контекст(?: издания)?, правила композиции и навигационные подсказки"
+    r"(?: \(упоминания номеров (?:стори|историй) и разделов\))?, "
+    r"но ни одной поддержанной записи со сведениями о событиях, датах, местах их детализации|"
+    r"писать статью без таких записей нельзя: это означало бы выдумку фактов от лица редакции|"
+    r"географический справочник сам по себе не является доказательной основой "
+    r"для публикационного текста — он лишь зада[её]т рамку покрытия"
+    rf"(?: \(районы {_COVERAGE_AREA_NAME}, прилегающие с[её]ла "
+    rf"{_COVERAGE_AREA_NAME} района, оговор[её]нные исключения\))?|"
+    r"без (?:же )?подтверждаемых фактов любая попытка написания была бы равносильна "
+    r"публикации недостоверной информации, чего рабочие процессы материалов "
+    r"принципиально не допускают)[.!?…]?",
+    re.IGNORECASE,
+)
+_PROCEDURAL_REQUEST_RE = re.compile(
+    r"(?:(?:пришлите|предоставьте) (?:полный )?"
+    r"(?:корпус материалов|пакет материалов|материалы)(?: для статьи|"
+    r" между уже открытыми частями заявленного блока целиком, а не обрезанную версию "
+    r"— включая содержательные части всех перечисленных сюжетных линий)?|"
+    r"убедитесь, что внутри есть сами записи поддержки с временными метками "
+    r"\(`observed_at`, `effective_from`, границы актуальности\) и характеристиками источника|"
+    r"если предполагались цитаты жителей, проверьте, заполнен ли список разреш[её]нных "
+    r"точных фраз(?: \(в текущем виде этот блок пуст\))?|"
+    r"(?:по возможности )?уточните, какие из (?:двенадцати|\d+) тематических направлений "
+    r"считаются ведущей(?:[-‑а-яёa-z]*| линией) — сейчас такой сигнал также остался "
+    r"вне видимого сегмента материала)[.!?…]?",
+    re.IGNORECASE,
+)
+_PROCEDURAL_PROMISE_RE = re.compile(
+    r"после получения (?:полного )?пакета материалов смогу "
+    r"(?:написать статью|собрать целостную городскую тему читаемого размера "
+    r"с сохранением атрибуции источников, дат и отдельных деталей каждого места "
+    r"— как и предусмотрено)[.!?…]?",
+    re.IGNORECASE,
+)
+_PROCEDURAL_UNIT_SPLIT_RE = re.compile(r"(?<!\d[.!?…])(?<=[.!?…])\s+|;\s*(?=\d+[.)]\s+)")
 _SENTENCE_END_RE = re.compile(r"[.!?…։]+$")
 _HORIZONTAL_RULE_RE = re.compile(r"^\s*(?:-{3,}|\*{3,}|_{3,})\s*$")
 _WHOLE_RESPONSE_SERVICE_PATTERNS = (
@@ -72,6 +131,39 @@ def _normalized_response_body(lines: list[str]) -> str:
 
 def _is_whole_response_service_message(text: str) -> bool:
     return any(pattern.fullmatch(text) for pattern in _WHOLE_RESPONSE_SERVICE_PATTERNS)
+
+
+def _is_whole_response_procedural_refusal(blocks: list[str]) -> bool:
+    """Reject only a completely recognized refusal, material gap, and input request."""
+    units = [
+        re.sub(r"^\s*(?:\d+[.)]\s*|[-*+]\s*)", "", unit.strip())
+        for block in blocks
+        for unit in _PROCEDURAL_UNIT_SPLIT_RE.split(block)
+        if unit.strip()
+    ]
+    if len(units) < 2:
+        return False
+
+    opening = _PROCEDURAL_REFUSAL_OPENING_RE.fullmatch(units[0])
+    if opening is None:
+        return False
+
+    has_missing_material = opening.group("missing") is not None
+    has_request = False
+    for unit in units[1:]:
+        if _PROCEDURAL_REQUEST_RE.fullmatch(unit):
+            has_request = True
+        elif _PROCEDURAL_MISSING_MATERIAL_RE.fullmatch(unit):
+            has_missing_material = True
+        elif not (
+            _PROCEDURAL_EXPLANATION_RE.fullmatch(unit)
+            or _PROCEDURAL_PROMISE_RE.fullmatch(unit)
+            or _WHOLE_RESPONSE_REFUSAL_RE.fullmatch(unit)
+        ):
+            # Any unaccounted-for prose may be reporting. Keep the complete
+            # response for normal assessment rather than recover another slot.
+            return False
+    return has_missing_material and has_request
 
 
 @dataclass(frozen=True)
@@ -203,6 +295,14 @@ def parse_article_writer_markdown(response: str) -> ArticleWriterResponse:
         and _WHOLE_RESPONSE_REFUSAL_RE.fullmatch(block)
         for block in substantive_blocks
     ):
+        return ArticleWriterResponse(
+            parsed=parsed,
+            disposition="unusable",
+            reason="whole_response_refusal",
+            format_findings=(*findings, "WHOLE_RESPONSE_REFUSAL"),
+        )
+
+    if _is_whole_response_procedural_refusal(substantive_blocks):
         return ArticleWriterResponse(
             parsed=parsed,
             disposition="unusable",

@@ -67,6 +67,7 @@ from src.publication.article_validator import (
     ArticleValidationResult,
     validate_article_draft,
 )
+from src.publication.article_writer_context import ARTICLE_WRITER_CONTEXT_VERSION
 from src.publication.errors import (
     ArticleFinalizationInvariantError,
     ArticlePublicationRejected,
@@ -637,6 +638,7 @@ def _safe_writer_metadata(writer_metadata: dict[str, Any] | None) -> dict[str, A
         "expected_support_count",
         "exposed_support_count",
         "evidence_record_count",
+        "evidence_fact_record_count",
         "quote_allowlist_count",
         "editor_patched_unit_ids",
         "editor_failure_type",
@@ -672,7 +674,7 @@ def _safe_writer_metadata(writer_metadata: dict[str, Any] | None) -> dict[str, A
             "recovery_slots_transport_failed",
             "no_recovery_response",
         },
-        "article_writer_context_version": {"event-article-context-v2-evidence-inventory"},
+        "article_writer_context_version": {ARTICLE_WRITER_CONTEXT_VERSION},
         "article_narrative_prompt_version": {"event-article-narrative-v13"},
         "article_writer_prompt_version": {"v17"},
     }

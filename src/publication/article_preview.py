@@ -17,6 +17,7 @@ from src.publication.article_finalization import (
     _compact_quality_value,
 )
 from src.publication.article_models import StructuredArticleDraft
+from src.publication.article_writer_context import ARTICLE_WRITER_CONTEXT_VERSION
 from src.publication.errors import ArticlePublicationRejected
 from src.publication.event_editorial_adapter import EventEditorialAdapter
 from src.publication.policies import ARTICLE_PUBLICATION_TYPES
@@ -268,6 +269,7 @@ def _safe_writer_metadata(value: Any) -> dict[str, Any]:
         "expected_support_count",
         "exposed_support_count",
         "evidence_record_count",
+        "evidence_fact_record_count",
         "quote_allowlist_count",
     }
     result = {
@@ -299,7 +301,7 @@ def _safe_writer_metadata(value: Any) -> dict[str, Any]:
             "recovery_slots_transport_failed",
             "no_recovery_response",
         },
-        "article_writer_context_version": {"event-article-context-v3-compact-evidence-inventory"},
+        "article_writer_context_version": {ARTICLE_WRITER_CONTEXT_VERSION},
         "article_narrative_prompt_version": {"event-article-narrative-v13"},
         "article_writer_prompt_version": {"v17"},
         "rendered_packet_representation": {"full", "compact"},
