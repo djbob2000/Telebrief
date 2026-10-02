@@ -372,10 +372,12 @@ def expected_article_writer_support_ids(
                 if action == "SUPPRESS_PROMOTION_ONLY":
                     continue
                 projected_text = material_projection.text_by_support_id.get(support_id, "").strip()
-                if action not in {"KEEP", "TRIM_DIRECTORY"} or not projected_text:
+                if action not in {"KEEP", "TRIM_DIRECTORY"}:
                     raise ValueError(
                         f"planned article support {support_id!r} has no projected citable text"
                     )
+                if not projected_text:
+                    continue
             elif not sanitize_writer_source_text(
                 support.text.strip() or support.source_text.strip()
             ):
@@ -438,7 +440,7 @@ def _render_article_story_packets(
             text = material_projection.text_by_support_id.get(support.support_id, "").strip()
             if action == "SUPPRESS_PROMOTION_ONLY":
                 return ""
-            if action not in {"KEEP", "TRIM_DIRECTORY"} or not text:
+            if action not in {"KEEP", "TRIM_DIRECTORY"}:
                 raise ValueError(
                     f"planned article support {support.support_id!r} has no projected citable text"
                 )
@@ -481,8 +483,11 @@ def _render_article_story_packets(
                 continue
             owner_support_ids = planned_supports_by_owner[owner]
             if support_id not in owner_support_ids:
-                if not projected_fact(support):
+                fact_text = projected_fact(support)
+                if not fact_text and material_projection is None:
                     raise ValueError(f"planned article support {support_id!r} has no citable text")
+                if not fact_text:
+                    continue
                 owner_support_ids.append(support_id)
 
     composition_membership: dict[str, tuple[str, str]] = {}

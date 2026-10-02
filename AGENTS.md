@@ -260,6 +260,8 @@ Do not globally strip all names, prices, addresses, phone numbers, or times. Som
 
 Raw source text and provenance must remain available internally even when writer-facing context is sanitized.
 
+For article writer material, omit an individual support if conservative contact/directory projection leaves it with no citable text. When suppressing a Story because projection left it with no citable material, do so only when every non-question `PUBLISH` support for that Story projects to empty text; keep a mixed Story whenever at least one support remains. This is a material-availability check, not an `ARTICLE_WORTHY` or corroboration gate. Preserve the original support and provenance internally.
+
 ## 0.6 Evidence Boundary
 
 Publication freedom does not permit fabrication.

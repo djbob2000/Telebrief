@@ -17,6 +17,7 @@ from src.publication.article_context import ArticleEditorialContext, ArticleSupp
 from src.publication.article_writer_context import sanitize_writer_source_text
 
 ArticleMaterialAction = Literal["KEEP", "TRIM_DIRECTORY", "SUPPRESS_PROMOTION_ONLY"]
+_ARTICLE_SUPPORT_STORY_ID_RE = re.compile(r"story:(?:[^:]+|\d+)")
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…])\s+|\n+")
 _CONTACT_OR_CTA_RE = re.compile(
@@ -352,35 +353,58 @@ def _project_support_text(support: ArticleSupport) -> tuple[str, bool]:
 
 
 def project_article_material(context: ArticleEditorialContext) -> ArticleMaterialProjection:
-    """Project article supports for the writer while preserving source evidence."""
+    """Project writer evidence and suppress Stories with no citable material."""
     supports = tuple(context.support_index)
+    projected_by_support_id = {
+        support.support_id: _project_support_text(support) for support in supports
+    }
     publishable_by_story: dict[str, list[ArticleSupport]] = {}
+    citable_publishable_by_story: dict[str, list[ArticleSupport]] = {}
     high_promotion_by_support: dict[str, bool] = {}
     for support in supports:
         if support.publication_use != "PUBLISH":
             continue
-        if support.story_id:
-            publishable_by_story.setdefault(support.story_id, []).append(support)
+        story_id = support.story_id
+        if not story_id:
+            match = _ARTICLE_SUPPORT_STORY_ID_RE.search(support.support_id)
+            story_id = match.group(0) if match else ""
+        if story_id:
+            publishable_by_story.setdefault(story_id, []).append(support)
+            if support.evidence_kind != "resident_question":
+                citable_publishable_by_story.setdefault(story_id, []).append(support)
         high_promotion_by_support[support.support_id] = _is_high_confidence_promotion(support)
 
-    suppressed_stories = tuple(
-        sorted(
-            story_id
-            for story_id, story_supports in publishable_by_story.items()
-            if story_supports
-            and all(high_promotion_by_support.get(s.support_id, False) for s in story_supports)
-        )
-    )
-    suppressed_set = set(suppressed_stories)
+    promotion_suppressed_stories = {
+        story_id
+        for story_id, story_supports in publishable_by_story.items()
+        if story_supports
+        and all(high_promotion_by_support.get(s.support_id, False) for s in story_supports)
+    }
+    # An all-empty projection has no citable fact to put in the roadmap. Keep a
+    # mixed Story whenever even one non-question PUBLISH support survives.
+    empty_material_stories = {
+        story_id
+        for story_id, story_supports in citable_publishable_by_story.items()
+        if story_supports
+        and all(not projected_by_support_id[s.support_id][0].strip() for s in story_supports)
+    }
+    suppressed_stories = tuple(sorted(promotion_suppressed_stories | empty_material_stories))
 
     text_by_id: dict[str, str] = {}
     actions: dict[str, ArticleMaterialAction] = {}
     reasons: dict[str, str] = {}
     trimmed_ids: list[str] = []
     for support in supports:
-        projected_text, changed = _project_support_text(support)
+        projected_text, changed = projected_by_support_id[support.support_id]
         text_by_id[support.support_id] = projected_text
-        if support.story_id in suppressed_set and support.publication_use == "PUBLISH":
+        support_story_id = support.story_id
+        if not support_story_id:
+            match = _ARTICLE_SUPPORT_STORY_ID_RE.search(support.support_id)
+            support_story_id = match.group(0) if match else ""
+        if (
+            support_story_id in promotion_suppressed_stories
+            and support.publication_use == "PUBLISH"
+        ):
             actions[support.support_id] = "SUPPRESS_PROMOTION_ONLY"
             reasons[support.support_id] = (
                 "commercial_directory_only_removed"
@@ -398,7 +422,11 @@ def project_article_material(context: ArticleEditorialContext) -> ArticleMateria
             trimmed_ids.append(support.support_id)
         else:
             actions[support.support_id] = "KEEP"
-            reasons[support.support_id] = "supported_material_retained"
+            reasons[support.support_id] = (
+                "no_citable_projected_material"
+                if support.publication_use == "PUBLISH" and not projected_text.strip()
+                else "supported_material_retained"
+            )
 
     return ArticleMaterialProjection(
         text_by_support_id=text_by_id,

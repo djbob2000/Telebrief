@@ -121,6 +121,10 @@
 - [ ] Push/deploy through the existing server path. Run exactly one frozen replay of run 257. Inspect title, lead, chapter order, geography, microdetails, quote handling, outcome status, diagnostics, provider attempts, and wall time.
 - [ ] Do not send or publish a live article. Report the replay text and actual findings to the user.
 
+#### Run 257 status update (2026-10-02)
+
+The approved frozen replay ran once on the deployed implementation and failed during writer-input materialization before any writer or editor provider call. Its compact artifact retained only `exception_type: ValueError`, with zero attempts, no checkpoints, and no candidate text. A separate read-only inspection of the same sealed inputs identified a support-projection contract mismatch: one Story had six non-question `PUBLISH` supports, all contact/CTA-only after conservative projection, and none had citable text. The follow-up fix now omits empty projected supports and suppresses a Story for this reason only when every non-question `PUBLISH` support is empty; mixed Stories remain eligible. No second writer replay has been run; the approved single-preview limit still applies.
+
 ---
 
 ## Self-review
@@ -128,5 +132,5 @@
 - Spec coverage: composition boundaries and membership (Task 1); severity/quote/readiness policy plus `AGENTS.md` (Task 2); editor patches, deadline, and validation identity (Task 3); rejected/no-draft previews (Task 4); one stochastic acceptance replay and rollout (Task 5).
 - Dependency order: Tasks 1 and 2 have disjoint ownership and may run concurrently. Task 3 consumes the quality policy from Task 2. Task 4 consumes Task 3's capture interface. Task 5 runs only after integration.
 - No new automated test files or TDD steps are included, following the user's explicit instruction. Static checks and manual contract review are specified; the single server frozen replay is the agreed end-to-end verification.
-- The plan preserves partial prose coverage as diagnostic and requires every visible Story to remain on the map. No new editorial eligibility filter is introduced.
+- The plan preserves partial prose coverage as diagnostic and requires every visible Story to remain on the map. It adds no subjective editorial eligibility filter; an all-empty material projection is the only new writer-composition suppression case.
 - User previously chose subagent-driven execution, direct integration on `dev`, no TDD, a single frozen dry-run, and committing only at the end; this plan retains those choices.
