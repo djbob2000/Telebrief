@@ -299,9 +299,10 @@ def _safe_writer_metadata(value: Any) -> dict[str, Any]:
             "recovery_slots_transport_failed",
             "no_recovery_response",
         },
-        "article_writer_context_version": {"event-article-context-v2-evidence-inventory"},
+        "article_writer_context_version": {"event-article-context-v3-compact-evidence-inventory"},
         "article_narrative_prompt_version": {"event-article-narrative-v13"},
         "article_writer_prompt_version": {"v17"},
+        "rendered_packet_representation": {"full", "compact"},
     }
     for key, allowed_values in safe_choice_values.items():
         item = value.get(key)
@@ -733,6 +734,10 @@ def _preview_diagnostics(
             diagnostics["provider_attempts"] = provider_attempts
     if error is not None:
         failure: dict[str, object] = {"exception_type": type(error).__name__}
+        from src.publication.article_writer_context import ArticleWriterContextBudgetError
+
+        if isinstance(error, ArticleWriterContextBudgetError):
+            failure.update(error.to_metadata())
         if isinstance(error, ArticlePublicationRejected):
             failure["reason"] = error.reason
             failure["error_kind"] = error.error_kind

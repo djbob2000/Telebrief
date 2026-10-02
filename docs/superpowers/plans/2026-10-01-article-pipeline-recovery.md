@@ -116,14 +116,18 @@
 - Output: one reviewed article or conspicuously rejected candidate, compact diagnostics, and deployment/commit record.
 
 - [ ] Complete a code review against this plan and `AGENTS.md`; inspect `git diff` and preserve unrelated `.DS_Store` change.
-- [ ] Run focused static checks; do not start another paid writer replay to chase a lucky output.
+- [ ] Run focused static checks and deterministic no-provider preflight; do not start another paid writer replay to chase a lucky output.
 - [ ] Commit all task changes together on existing `dev` branch, force-add the approved spec and plan because `docs/superpowers/` is ignored, and leave the unrelated `.DS_Store` unstaged.
-- [ ] Push/deploy through the existing server path. Run exactly one frozen replay of run 257. Inspect title, lead, chapter order, geography, microdetails, quote handling, outcome status, diagnostics, provider attempts, and wall time.
+- [ ] Push/deploy through the existing server path. After the no-provider preflight confirms the complete compact dossier fits, run one writer-backed frozen replay of run 257. Inspect title, lead, chapter order, geography, microdetails, quote handling, outcome status, diagnostics, provider attempts, and wall time.
 - [ ] Do not send or publish a live article. Report the replay text and actual findings to the user.
 
 #### Run 257 status update (2026-10-02)
 
-The approved frozen replay ran once on the deployed implementation and failed during writer-input materialization before any writer or editor provider call. Its compact artifact retained only `exception_type: ValueError`, with zero attempts, no checkpoints, and no candidate text. A separate read-only inspection of the same sealed inputs identified a support-projection contract mismatch: one Story had six non-question `PUBLISH` supports, all contact/CTA-only after conservative projection, and none had citable text. The follow-up fix now omits empty projected supports and suppresses a Story for this reason only when every non-question `PUBLISH` support is empty; mixed Stories remain eligible. No second writer replay has been run; the approved single-preview limit still applies.
+The first frozen replay failed during writer-input materialization before any provider call. A read-only inspection identified the original support-projection contract mismatch: one Story had six non-question `PUBLISH` supports, all contact/CTA-only after conservative projection, and none had citable text. The follow-up fix omits empty projected supports and suppresses a Story for this reason only when every non-question `PUBLISH` support is empty; mixed Stories remain eligible. One corrected replay also failed before any provider call because the complete descriptive dossier measured 589,303 characters against the 500,000-character ceiling. A deterministic no-provider replay captured that exact error. The production packetized writer path currently has no complete compact retry despite the approved spec requiring one. The remaining work preserves the 500,000-character ceiling, adds the compact full-inventory path and numeric failure diagnostics, then performs a no-provider preflight before the single writer-backed replay. No article or editor provider call has occurred for run 257.
+
+Ruling: Keep the 500,000-character ceiling and add a complete compact serialization path rather than raising the limit; the approved spec explicitly sets this cap and requires full/compact fitting. Cost if wrong: an unusually large dossier may still fail pre-writer if its complete compact encoding remains over the cap, until model-specific context capacity is verified and the spec is revised.
+
+Review note: The independent reviewer flagged documentation changes outside the implementer's four-source-file assignment. Ruling: retain them as root-owned changes because `AGENTS.md`, the approved spec, and this plan need to state the compact behavior and actual run-257 failure accurately; the implementation agent did not edit docs. Cost if wrong: duplicated or overly specific policy text could need cleanup in a later documentation pass.
 
 ---
 

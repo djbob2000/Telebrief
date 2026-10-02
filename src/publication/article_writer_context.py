@@ -5,7 +5,7 @@ import json
 import re
 from collections import Counter, defaultdict
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal
 
 from src.publication.article_context import (
@@ -35,7 +35,7 @@ _SUPPORT_STORY_ID_RE = re.compile(r"story:(?:[^:]+|\d+)")
 # expansion, and the 65,536-token Event-First writer completion ceiling while
 # allowing broad city-life editions to retain every selected Story packet.
 ARTICLE_WRITER_CONTEXT_MAX_CHARS = 500_000
-ARTICLE_WRITER_CONTEXT_VERSION = "event-article-context-v2-evidence-inventory"
+ARTICLE_WRITER_CONTEXT_VERSION = "event-article-context-v3-compact-evidence-inventory"
 _SUPPORT_FACT_MAX_CHARS = 900
 _SUPPORT_SOURCE_MAX_CHARS = 1_800
 _SUPPORT_COMPACT_FACT_MAX_CHARS = 360
@@ -45,6 +45,32 @@ _ARTICLE_EVIDENCE_END = "<<<ARTICLE_EVIDENCE_INVENTORY_END>>>"
 _ARTICLE_QUOTE_BEGIN = "<<<ARTICLE_QUOTE_ALLOWLIST_BEGIN>>>"
 _ARTICLE_QUOTE_END = "<<<ARTICLE_QUOTE_ALLOWLIST_END>>>"
 ArticleWriterMaterializationMode = Literal["packetized", "holistic", "brief"]
+
+
+class ArticleWriterContextBudgetError(ValueError):
+    """Raised when the complete full and compact writer dossiers exceed the cap."""
+
+    reason = "article_writer_context_budget_exceeded"
+
+    def __init__(
+        self,
+        *,
+        full_characters: int,
+        compact_characters: int,
+        limit_characters: int = ARTICLE_WRITER_CONTEXT_MAX_CHARS,
+    ) -> None:
+        super().__init__("complete article writer evidence dossier exceeds writer context budget")
+        self.full_characters = full_characters
+        self.compact_characters = compact_characters
+        self.limit_characters = limit_characters
+
+    def to_metadata(self) -> dict[str, object]:
+        return {
+            "reason": self.reason,
+            "full_characters": self.full_characters,
+            "compact_characters": self.compact_characters,
+            "limit_characters": self.limit_characters,
+        }
 
 
 @dataclass(frozen=True)
@@ -101,6 +127,21 @@ class ArticleWriterMaterializationStats:
                     or "none"
                 ),
                 f"rendered packet representation: {self.rendered_packet_representation}",
+                *(
+                    (
+                        "compact packet key contract: t=record type ('support'); s=story ID; "
+                        "g=composition group ID; l=narrative line ID; k=support kind; "
+                        "e=evidence kind; a=source roles; f=framing; tr=temporal role; "
+                        "d={o:observed_at,f:effective_from,u:effective_until}; "
+                        "n=topic navigation; x=verbatim citable fact; p=primary source; "
+                        "q=reply-parent context; i=support IDs; v=provenance tuples "
+                        "[support ID,source refs,fragment IDs,source item IDs]. "
+                        "Optional keys may be absent when empty or null; publication use is "
+                        "omitted and always PUBLISH.",
+                    )
+                    if self.rendered_packet_representation == "compact"
+                    else ()
+                ),
                 f"packets with citable support: {self.packets_with_citable_support}",
                 f"citable support entries: {self.citable_support_count}",
             )
@@ -657,22 +698,102 @@ def _render_article_story_packets(
 
 
 def _fit_story_packets(
-    prefix: str,
+    leading_prefix: str,
+    stats: ArticleWriterMaterializationStats,
+    quote_block: str,
     evidence_records: Sequence[dict[str, object]],
-) -> str:
-    """Fit the complete evidence inventory or fail without a partial dossier."""
-    record_lines = [
-        json.dumps(record, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c")
-        for record in evidence_records
+) -> tuple[str, ArticleWriterMaterializationStats]:
+    """Fit the full or complete compact inventory without dropping evidence."""
+
+    def render_records(
+        records: Sequence[dict[str, object]],
+        representation_stats: ArticleWriterMaterializationStats = stats,
+    ) -> str:
+        record_lines = [
+            json.dumps(record, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c")
+            for record in records
+        ]
+        evidence_block = "\n".join((_ARTICLE_EVIDENCE_BEGIN, *record_lines, _ARTICLE_EVIDENCE_END))
+        return "\n\n".join(
+            part
+            for part in (
+                leading_prefix,
+                representation_stats.to_prompt_block(),
+                quote_block,
+                evidence_block,
+            )
+            if part
+        ).strip()
+
+    full_rendered = render_records(evidence_records)
+    if len(full_rendered) <= ARTICLE_WRITER_CONTEXT_MAX_CHARS:
+        return full_rendered, replace(stats, rendered_packet_representation="full")
+
+    compact_records = [_compact_evidence_record(record) for record in evidence_records]
+    compact_stats = replace(stats, rendered_packet_representation="compact")
+    compact_rendered = render_records(compact_records, compact_stats)
+    if len(compact_rendered) <= ARTICLE_WRITER_CONTEXT_MAX_CHARS:
+        return compact_rendered, compact_stats
+
+    raise ArticleWriterContextBudgetError(
+        full_characters=len(full_rendered),
+        compact_characters=len(compact_rendered),
+    )
+
+
+def _compact_evidence_record(record: dict[str, object]) -> dict[str, object]:
+    """Encode a complete support record with short keys and fixed provenance tuples."""
+    support_ids = record.get("support_ids")
+    provenance_rows = record.get("provenance_by_support_id")
+    if not isinstance(support_ids, list) or not isinstance(provenance_rows, list):
+        raise ValueError("article writer evidence record has invalid provenance")
+
+    compact: dict[str, object] = {
+        "t": "support",
+        "s": record["story_id"],
+        "k": record["support_kind"],
+        "e": record["evidence_kind"],
+        "a": record["source_roles"],
+        "f": record["framing"],
+        "tr": record["temporal_role"],
+        "n": record["navigation"],
+        "x": record["fact"],
+        "i": support_ids,
+    }
+    optional_values = (
+        ("g", record.get("group_id")),
+        ("l", record.get("narrative_line_id")),
+        ("p", record.get("primary_source")),
+        ("q", record.get("reply_parent_context")),
+    )
+    compact.update({key: value for key, value in optional_values if value not in (None, "")})
+
+    times = record.get("times")
+    if isinstance(times, dict) and times:
+        compact["d"] = {
+            compact_key: times[full_key]
+            for compact_key, full_key in (
+                ("o", "observed_at"),
+                ("f", "effective_from"),
+                ("u", "effective_until"),
+            )
+            if full_key in times
+        }
+
+    compact_provenance_rows: list[list[object]] = [
+        [
+            row["support_id"],
+            row["source_refs"],
+            row["fragment_ids"],
+            row["source_item_ids"],
+        ]
+        for row in provenance_rows
+        if isinstance(row, dict)
     ]
-    evidence_block = "\n".join((_ARTICLE_EVIDENCE_BEGIN, *record_lines, _ARTICLE_EVIDENCE_END))
-    rendered = "\n\n".join(part for part in (prefix, evidence_block) if part).strip()
-    if len(rendered) > ARTICLE_WRITER_CONTEXT_MAX_CHARS:
-        raise ValueError(
-            "article writer evidence dossier exceeds writer context budget "
-            f"({len(rendered)}/{ARTICLE_WRITER_CONTEXT_MAX_CHARS} characters)"
-        )
-    return rendered
+    if len(compact_provenance_rows) != len(provenance_rows):
+        raise ValueError("article writer evidence record has invalid provenance row")
+    compact["v"] = compact_provenance_rows
+    return compact
 
 
 def _render_packet_quote_allowlist(
@@ -872,12 +993,8 @@ def render_article_writer_context_with_stats(
         _quote_allowlist, quote_block = _render_packet_quote_allowlist(
             context, set(exposed_ids), material_projection
         )
-        prefix = "\n\n".join(
-            part
-            for part in ("\n\n".join(blocks).strip(), stats.to_prompt_block(), quote_block)
-            if part
-        ).strip()
-        rendered = _fit_story_packets(prefix, evidence_records)
+        prefix = "\n\n".join(blocks).strip()
+        rendered, stats = _fit_story_packets(prefix, stats, quote_block, evidence_records)
         return rendered, stats
 
     from src.publication.article_quote_allowlist import build_article_quote_allowlist

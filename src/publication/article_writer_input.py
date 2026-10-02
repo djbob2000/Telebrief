@@ -62,11 +62,11 @@ def _extract_exposed_support_ids(context_text: str) -> tuple[tuple[str, ...], in
             raise ValueError(
                 f"article writer evidence inventory record {line_number} is invalid JSON"
             ) from exc
-        if not isinstance(record, dict) or record.get("record_type") != "support":
+        if not isinstance(record, dict) or record.get("record_type", record.get("t")) != "support":
             raise ValueError(
                 f"article writer evidence inventory record {line_number} is not a support"
             )
-        ids = record.get("support_ids")
+        ids = record.get("support_ids", record.get("i"))
         if not isinstance(ids, list) or not ids or any(not isinstance(item, str) for item in ids):
             raise ValueError(
                 f"article writer evidence inventory record {line_number} has invalid support IDs"

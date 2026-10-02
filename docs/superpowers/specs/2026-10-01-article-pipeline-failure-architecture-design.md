@@ -95,7 +95,7 @@ Rules:
 
 The planner LLM in `article_planner.py` remains dormant. The map adds no network stage. Validate its membership and references before the writer; an invalid map is a configuration/input error, not permission to silently drop Stories or make another planning call.
 
-Account for roadmap and packet size together against the existing 500,000-character context ceiling and configured model capacity, including output allowance. Characters are not tokens. Preserve the existing full/compact packet path and report an explicit pre-writer budget error if compact material still cannot fit; never silently truncate supports or raise limits beyond model capacity. This work does not change Gate/Analysis semantics or require a routine knowledge backfill.
+Account for roadmap, evidence packets, and quote allowlist together against the existing 500,000-character context ceiling and configured model capacity, including output allowance. Characters are not tokens. Try the complete descriptive packet representation first, then a complete compact encoding that abbreviates repeated field names and omits only guaranteed or empty metadata; preserve every eligible projected fact, support ID, ownership, attribution/framing, supplied time, reply-parent context, and provenance value in both forms. Report an explicit pre-writer budget error with safe numeric full/compact/limit diagnostics if compact material still cannot fit. Never silently truncate facts or supports, or raise limits beyond model capacity. This work does not change Gate/Analysis semantics or require a routine knowledge backfill.
 
 ### 4.2 Separate safety from editorial readiness
 
