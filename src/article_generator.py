@@ -49,12 +49,14 @@ from src.editorial_writer import ArticleDraft, EditorialWriter
 from src.publication.article_context import ArticleEditorialContext
 from src.publication.article_coverage_diagnostics import (
     ArticleCoverageDiagnostics,
-    diagnose_article_coverage,
 )
 from src.publication.article_finalization import (
     ArticleAssessmentCheckpoint,
+    ArticleAssessmentInputObserver,
     ArticleCheckpointObserver,
     article_assessment_input_fingerprint,
+    assess_article_draft,
+    prepare_article_draft,
 )
 from src.publication.article_length import (
     ArticleLengthProfile,
@@ -63,11 +65,9 @@ from src.publication.article_length import (
 from src.publication.article_models import StructuredArticleDraft
 from src.publication.article_quality import (
     ArticleReaderQualityReport,
-    diagnose_article_quality,
 )
 from src.publication.article_validator import (
     ArticleValidationResult,
-    validate_article_draft,
 )
 from src.publication.article_writer_input import ArticleWriterInput, build_article_writer_input
 from src.publication.article_writer_response import (
@@ -1193,6 +1193,8 @@ class ArticleGenerator:
         attempt_observer: Any | None = None,
         *,
         checkpoint_observer: ArticleCheckpointObserver | None = None,
+        source_identity: str | None = None,
+        assessment_input_observer: ArticleAssessmentInputObserver | None = None,
     ) -> Tuple[str, str, str]:
         """Generate article directly from a sealed FrozenEditorialInput."""
         if (
@@ -1204,6 +1206,8 @@ class ArticleGenerator:
                 frozen_input.analysis.article_context,
                 attempt_observer=attempt_observer,
                 checkpoint_observer=checkpoint_observer,
+                source_identity=source_identity,
+                assessment_input_observer=assessment_input_observer,
             )
 
         return await self.generate_from_analysis_and_bundle(
@@ -1247,6 +1251,8 @@ class ArticleGenerator:
         attempt_observer: Any | None = None,
         *,
         checkpoint_observer: ArticleCheckpointObserver | None = None,
+        source_identity: str | None = None,
+        assessment_input_observer: ArticleAssessmentInputObserver | None = None,
     ) -> Tuple[str, str, str]:
         """Own the sole deadline from frozen preparation to assessed final draft.
 
@@ -1268,6 +1274,8 @@ class ArticleGenerator:
                 coverage_plan,
                 attempt_observer,
                 checkpoint_observer=checkpoint_observer,
+                source_identity=source_identity,
+                assessment_input_observer=assessment_input_observer,
             )
             # Also cover a final synchronous transform that exhausts the budget
             # before the event loop can deliver its cancellation callback.
@@ -1282,6 +1290,8 @@ class ArticleGenerator:
         attempt_observer: Any | None = None,
         *,
         checkpoint_observer: ArticleCheckpointObserver | None = None,
+        source_identity: str | None = None,
+        assessment_input_observer: ArticleAssessmentInputObserver | None = None,
     ) -> Tuple[str, str, str]:
         """Synthesize an article through one bounded Event-First writer stage."""
         if article_ctx is None:
@@ -1453,7 +1463,6 @@ class ArticleGenerator:
 
         from src.publication.article_finalization import (
             ArticleFinalizer,
-            _normalize_grounded_article_prose,
         )
 
         writer_draft: StructuredArticleDraft | None = None
@@ -1527,58 +1536,9 @@ class ArticleGenerator:
                     article_ctx,
                     allowed_support_ids=writer_exposed_support_ids,
                 )
-                draft = StructuredArticleDraft.from_dict(parsed, quote_allowlist=quote_allowlist)
-                return _normalize_grounded_article_prose(
-                    draft,
-                    context=article_ctx,
-                    material_projection=material_projection,
-                    place_resolver=place_resolver,
+                return StructuredArticleDraft.from_dict(
+                    parsed, quote_allowlist=quote_allowlist, preserve_quote_text=True
                 )
-
-            def evaluate_writer_response(
-                draft: StructuredArticleDraft,
-            ) -> tuple[
-                StructuredArticleDraft,
-                ArticleValidationResult,
-                ArticleCoverageDiagnostics,
-                ArticleReaderQualityReport,
-            ]:
-                evaluation_started = perf_counter()
-                validation_started = perf_counter()
-                validation = validate_article_draft(
-                    draft,
-                    article_ctx,
-                    config=editorial_config,
-                    length_profile=length_profile,
-                    material_projection=material_projection,
-                )
-                validation_elapsed = perf_counter() - validation_started
-                coverage_started = perf_counter()
-                diagnostics = diagnose_article_coverage(
-                    draft,
-                    writer_coverage_plan,
-                    context=article_ctx,
-                    excluded_story_ids=material_projection.suppressed_story_ids,
-                )
-                coverage_elapsed = perf_counter() - coverage_started
-                quality_started = perf_counter()
-                quality = diagnose_article_quality(
-                    draft,
-                    writer_coverage_plan,
-                    article_ctx,
-                    material_projection=material_projection,
-                    place_resolver=place_resolver,
-                )
-                quality_elapsed = perf_counter() - quality_started
-                self.logger.info(
-                    "Article writer evaluation timings: evidence_validation=%.2fs "
-                    "coverage=%.2fs quality=%.2fs total=%.2fs",
-                    validation_elapsed,
-                    coverage_elapsed,
-                    quality_elapsed,
-                    perf_counter() - evaluation_started,
-                )
-                return draft, validation, diagnostics, quality
 
             response = await call_writer()
             response_assessment = self._assess_event_article_response(response)
@@ -1591,33 +1551,41 @@ class ArticleGenerator:
                 f"event_writer_response_{response_attempt_key}.txt",
                 response,
             )
-            input_fingerprint = await asyncio.to_thread(
-                article_assessment_input_fingerprint,
-                article_ctx,
-                writer_coverage_plan,
-                editorial_config,
-                length_profile,
-                material_projection,
-                place_resolver,
-            )
             candidate_draft = await asyncio.to_thread(parse_writer_response, response_assessment)
             if checkpoint_observer is not None:
                 checkpoint_observer("writer_candidate", candidate_draft, None)
-            (
+            candidate_draft = await asyncio.to_thread(
+                prepare_article_draft,
                 candidate_draft,
-                candidate_val,
-                candidate_diag,
-                candidate_quality,
-            ) = await asyncio.to_thread(evaluate_writer_response, candidate_draft)
-            writer_assessment = ArticleAssessmentCheckpoint(
-                candidate_draft,
-                candidate_val,
-                candidate_quality,
-                input_fingerprint,
-                candidate_diag,
+                context=article_ctx,
+                material_projection=material_projection,
+                place_resolver=place_resolver,
             )
             if checkpoint_observer is not None:
-                checkpoint_observer("writer", candidate_draft, writer_assessment)
+                checkpoint_observer("prepared_candidate", candidate_draft, None)
+            evaluation_started = perf_counter()
+            writer_assessment = await assess_article_draft(
+                candidate_draft,
+                article_ctx,
+                coverage_plan=writer_coverage_plan,
+                editorial_config=editorial_config,
+                length_profile=length_profile,
+                material_projection=material_projection,
+                place_resolver=place_resolver,
+                source_identity=source_identity,
+                input_observer=assessment_input_observer,
+            )
+            candidate_val = writer_assessment.validation
+            candidate_diag = writer_assessment.coverage
+            if candidate_diag is None:
+                raise RuntimeError("Article assessment is missing planned coverage diagnostics")
+            candidate_quality = writer_assessment.quality
+            self.logger.info(
+                "Article prepared assessment completed in %.2fs",
+                perf_counter() - evaluation_started,
+            )
+            if checkpoint_observer is not None:
+                checkpoint_observer("prepared", candidate_draft, writer_assessment)
             catastrophic = _is_catastrophic_writer_response(
                 response_assessment.disposition,
             )
@@ -1790,6 +1758,8 @@ class ArticleGenerator:
                                 place_resolver=place_resolver,
                                 assessment=writer_assessment,
                                 checkpoint_observer=checkpoint_observer,
+                                source_identity=source_identity,
+                                assessment_input_observer=assessment_input_observer,
                                 save_debug_artifact=self._save_debug_artifact,
                                 debug_artifact_prefix=f"event_editor_{response_attempt_key}",
                             )
@@ -1803,6 +1773,8 @@ class ArticleGenerator:
                             writer_meta["structural_operations"] = list(
                                 editor.last_structural_operations
                             )
+                            writer_meta["editor_unit_outcomes"] = list(editor.last_unit_outcomes)
+                            writer_meta["editor_pass_outcomes"] = list(editor.last_pass_outcomes)
                         # ArticleEditor already recomputes quality after each
                         # accepted patch. Reuse its final report instead of
                         # running the article-wide composition analysis again.
@@ -1818,29 +1790,34 @@ class ArticleGenerator:
                         )
                         writer_meta["editor_invocation_count"] = writer_meta["editor_retry_count"]
                         writer_meta["editor_failure_type"] = type(editor_exc).__name__
-                        writer_meta["editor_fallback_to_original"] = candidate_val.is_valid
-                        writer_meta["editor_outcome"] = (
-                            "original_candidate_preserved"
-                            if candidate_val.is_valid
-                            else "candidate_remains_invalid"
+                        retained = editor.last_assessment if editor is not None else None
+                        current_input_fingerprint = await asyncio.to_thread(
+                            article_assessment_input_fingerprint,
+                            article_ctx,
+                            writer_coverage_plan,
+                            editorial_config,
+                            length_profile,
+                            material_projection,
+                            place_resolver,
+                            source_identity=source_identity,
                         )
-                        writer_draft = candidate_draft
-                        writer_validation = candidate_val
-                        writer_quality_after_edit = candidate_quality
-                        if candidate_val.is_valid:
-                            writer_error = None
-                            self.logger.warning(
-                                "ArticleEditor failed (%s); preserving the Evidence Boundary-safe "
-                                "writer draft for finalization",
-                                type(editor_exc).__name__,
-                            )
-                        else:
-                            writer_error = editor_exc
-                            self.logger.error(
-                                "ArticleEditor failed (%s) for a fact-invalid writer draft; "
-                                "retaining fail-closed behavior",
-                                type(editor_exc).__name__,
-                            )
+                        if retained is not None and retained.matches(
+                            retained.draft,
+                            current_input_fingerprint,
+                            source_identity=source_identity,
+                        ):
+                            writer_assessment = retained
+                        # Keep the most recent exact assessed improvement on a later error.
+                        writer_draft = writer_assessment.draft
+                        writer_validation = writer_assessment.validation
+                        writer_quality_after_edit = writer_assessment.quality
+                        writer_meta["editor_outcome"] = "assessed_checkpoint_preserved"
+                        writer_error = None
+                        self.logger.warning(
+                            "ArticleEditor failed (%s); preserving its latest exact assessment "
+                            "for the final publication gate",
+                            type(editor_exc).__name__,
+                        )
                     else:
                         writer_meta["editor_retry_count"] = editor.last_attempt_count
                         writer_meta["editor_patched_unit_ids"] = list(editor.last_patched_unit_ids)
@@ -1862,9 +1839,8 @@ class ArticleGenerator:
             raise
         except Exception as exc:
             self.logger.warning(
-                "Event article writer execution failed (%s: %s)",
+                "Event article writer execution failed (%s)",
                 type(exc).__name__,
-                exc,
             )
             if isinstance(exc, ProviderCascadeError):
                 if attempt_observer is not None and writer_attempt_id:
@@ -1906,13 +1882,15 @@ class ArticleGenerator:
             writer_validation=writer_validation,
             writer_assessment=writer_assessment,
             checkpoint_observer=checkpoint_observer,
+            source_identity=source_identity,
+            assessment_input_observer=assessment_input_observer,
             quality_report=writer_quality_before_edit,
             quality_report_after_edit=writer_quality_after_edit,
             material_projection=material_projection,
             place_resolver=place_resolver,
         )
 
-        body = finalization_result.draft.render_markdown()
+        body = finalization_result.draft.render_markdown(preserve_text=True)
         return (finalization_result.draft.title, finalization_result.draft.lead, body)
 
     def _assess_event_article_response(self, response: str) -> ArticleWriterResponse:

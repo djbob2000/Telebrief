@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import json
 import logging
+import math
 import re
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
@@ -14,11 +17,11 @@ from src.config_loader import Config
 from src.publication.article_finalization import (
     ArticleAssessmentCheckpoint,
     ArticleCheckpointObserver,
-    _compact_quality_value,
+    _assessment_input_value,
 )
 from src.publication.article_models import StructuredArticleDraft
 from src.publication.article_writer_context import ARTICLE_WRITER_CONTEXT_VERSION
-from src.publication.errors import ArticlePublicationRejected
+from src.publication.errors import ArticleFinalizationInvariantError, ArticlePublicationRejected
 from src.publication.event_editorial_adapter import EventEditorialAdapter
 from src.publication.policies import ARTICLE_PUBLICATION_TYPES
 from src.publication.repository import PublicationRepository
@@ -29,6 +32,76 @@ logger = logging.getLogger(__name__)
 
 
 ArticlePreviewStatus = Literal["accepted", "rejected", "failed"]
+
+_CHECKPOINT_STAGES = frozenset(
+    {
+        "writer_candidate",
+        "writer",
+        "prepared_candidate",
+        "prepared",
+        "editor_base",
+        "editor_candidate",
+        "editor",
+        "finalization_candidate",
+        "finalization",
+    }
+)
+_VALIDATION_CODES = frozenset(
+    {
+        "EMPTY_TITLE",
+        "EMPTY_LEAD",
+        "SECTION_COUNT_OUT_OF_BOUNDS",
+        "WORD_COUNT_OUT_OF_BOUNDS",
+        "REPORTING_WINDOW_EXPANSION",
+        "INTERNAL_HANDLE_LEAK",
+        "LEAKED_META_OMISSION",
+        "CHAT_KITCHEN_LEAK",
+        "REPEATED_CONTENT_LOOP",
+        "MISSING_CLAIM_ATOMS",
+        "MISSING_CLAIM_SUPPORT",
+        "CLAIM_SUPPORT_MISMATCH",
+        "UNKNOWN_SUPPORT_ID",
+        "UNKNOWN_CLAIM_SUPPORT_ID",
+        "UNSUPPORTED_PROXIMITY_RELATION",
+        "INVALID_SUPPORT_POLICY",
+        "HISTORICAL_CONTEXT_UNFRAMED",
+        "FUTURE_CONTEXT_UNFRAMED",
+        "QUESTION_CONTEXT_OVERCLAIM",
+        "UNSUPPORTED_DIRECT_QUOTE",
+        "UNSUPPORTED_PROPER_NAME",
+        "UNSUPPORTED_CRITICAL_TERM",
+        "UNSUPPORTED_CONCRETE_CLAIM",
+        "UNSUPPORTED_CAUSAL_RELATION",
+        "UNSUPPORTED_CLAIM_ATOM",
+        "CLAIM_LEXICAL_DIVERGENCE",
+        "PHANTOM_HEADING_TOPIC",
+        "MISSING_SUPPORT:title",
+        "MISSING_SUPPORT:lead",
+        "MISSING_SUPPORT:heading",
+        "MISSING_SUPPORT:paragraph",
+    }
+)
+
+
+def _valid_hash(value: Any) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+
+def _draft_hash(draft: StructuredArticleDraft) -> str:
+    from src.publication.article_editor import _draft_fingerprint
+
+    return _draft_fingerprint(draft)
+
+
+def _draft_unit_ids(draft: StructuredArticleDraft) -> frozenset[str]:
+    ids = {"TITLE", "LEAD", "DRAFT"}
+    paragraph_count = 0
+    for index, section in enumerate(draft.sections, 1):
+        ids.add(f"H{index:03d}")
+        for _paragraph in section.paragraphs:
+            paragraph_count += 1
+            ids.add(f"P{paragraph_count:03d}")
+    return frozenset(ids)
 
 
 @dataclass(frozen=True)
@@ -53,7 +126,7 @@ class ArticlePreviewCandidate:
     @property
     def markdown(self) -> str:
         """Render the article as Markdown without adding synthetic prose."""
-        parts = [f"# {self.title}" if self.title else "# Вечерняя статья"]
+        parts = [f"# {self.title}"] if self.title else []
         if self.lead and not (self.body and self.body.startswith(self.lead)):
             parts.extend(["", self.lead])
         if self.body:
@@ -94,9 +167,17 @@ class _CapturedCheckpoint:
 class _MemoryCheckpointObserver:
     """Keep exact checkpoint drafts and assessments in process memory only."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, source_identity: str | None = None) -> None:
         self.checkpoints: list[_CapturedCheckpoint] = []
         self.assessment_pair_mismatch_count = 0
+        self.source_identity = source_identity
+        self.expected_input_fingerprint: str | None = None
+        self.registered_units: dict[str, frozenset[str]] = {}
+
+    def bind_assessment_inputs(self, input_fingerprint: str) -> None:
+        if not _valid_hash(input_fingerprint):
+            raise ArticleFinalizationInvariantError("Invalid assessment input fingerprint")
+        self.expected_input_fingerprint = input_fingerprint
 
     def __call__(
         self,
@@ -106,12 +187,21 @@ class _MemoryCheckpointObserver:
     ) -> None:
         captured_assessment = assessment
         captured_draft = draft
+        if stage not in _CHECKPOINT_STAGES:
+            raise ArticleFinalizationInvariantError("Unknown article checkpoint stage")
         if assessment is not None:
-            if assessment.matches(draft, assessment.input_fingerprint):
+            if (
+                self.expected_input_fingerprint is not None
+                and self.source_identity is not None
+                and assessment.matches(
+                    draft, self.expected_input_fingerprint, source_identity=self.source_identity
+                )
+            ):
                 captured_draft = assessment.draft
             else:
                 captured_assessment = None
                 self.assessment_pair_mismatch_count += 1
+        self.registered_units[_draft_hash(captured_draft)] = _draft_unit_ids(captured_draft)
         self.checkpoints.append(
             _CapturedCheckpoint(
                 stage=stage,
@@ -120,11 +210,26 @@ class _MemoryCheckpointObserver:
             )
         )
 
+    @property
+    def last_assessed(self) -> _CapturedCheckpoint | None:
+        return next(
+            (item for item in reversed(self.checkpoints) if item.assessment is not None), None
+        )
+
+    def final_checkpoint(self) -> _CapturedCheckpoint:
+        if not self.checkpoints or self.checkpoints[-1].stage != "finalization":
+            raise ArticleFinalizationInvariantError("No authoritative finalization checkpoint")
+        checkpoint = self.checkpoints[-1]
+        if checkpoint.assessment is None:
+            raise ArticleFinalizationInvariantError("Finalization checkpoint is unassessed")
+        return checkpoint
+
     def diagnostics(self) -> list[dict[str, object]]:
         return [
             {
                 "stage": checkpoint.stage,
                 "assessment_available": checkpoint.assessment is not None,
+                "draft_fingerprint": _draft_hash(checkpoint.draft),
                 **(
                     {"assessment": _assessment_metadata(checkpoint.assessment)}
                     if checkpoint.assessment is not None
@@ -138,9 +243,10 @@ class _MemoryCheckpointObserver:
 class _MemoryGenerationAttemptObserver:
     """Capture attempt diagnostics in process memory without database writes."""
 
-    def __init__(self) -> None:
+    def __init__(self, checkpoints: _MemoryCheckpointObserver | None = None) -> None:
         self._next_id = 0
         self._attempts: dict[int, _CapturedAttempt] = {}
+        self.checkpoints = checkpoints
 
     async def attempt_started(
         self,
@@ -158,7 +264,7 @@ class _MemoryGenerationAttemptObserver:
             provider=provider,
             model=model,
             prompt_hash=prompt_hash,
-            writer_metadata=_safe_writer_metadata(metadata),
+            writer_metadata=_safe_writer_metadata(metadata, self.checkpoints),
         )
         self._attempts[attempt.attempt_id] = attempt
         return attempt.attempt_id
@@ -176,7 +282,7 @@ class _MemoryGenerationAttemptObserver:
             return
         attempt.status = status
         attempt.error_kind = error_kind
-        attempt.final_metadata = _safe_final_metadata(metadata)
+        attempt.final_metadata = _safe_final_metadata(metadata, self.checkpoints)
 
     def to_metadata(self) -> dict[str, object]:
         return {
@@ -197,12 +303,20 @@ class _MemoryGenerationAttemptObserver:
         }
 
 
-def _safe_structural_operations(value: Any) -> list[dict[str, Any]]:
+def _safe_structural_operations(
+    value: Any,
+    checkpoints: _MemoryCheckpointObserver | None = None,
+    pass_outcomes: Any = None,
+) -> list[dict[str, Any]]:
     """Allow only operation codes and syntactically valid pass-local IDs."""
     from src.publication.article_editor import ARTICLE_STRUCTURAL_OUTCOME_REASONS
 
     if not isinstance(value, list):
         return []
+    pass_bases = {
+        outcome["pass_index"]: outcome["base_fingerprint"]
+        for outcome in _safe_editor_outcomes(pass_outcomes, checkpoints, pass_outcomes=True)
+    }
     result: list[dict[str, Any]] = []
     for item in value:
         if not isinstance(item, dict):
@@ -216,6 +330,12 @@ def _safe_structural_operations(value: Any) -> list[dict[str, Any]]:
             or reason not in ARTICLE_STRUCTURAL_OUTCOME_REASONS
         ):
             continue
+        base = pass_bases.get(item.get("attempt"))
+        registered = (
+            checkpoints.registered_units.get(base, frozenset())
+            if checkpoints and base
+            else frozenset()
+        )
         compact: dict[str, Any] = {"status": status, "reason": reason}
         if isinstance(item.get("attempt"), int) and item["attempt"] in {1, 2}:
             compact["attempt"] = item["attempt"]
@@ -230,7 +350,8 @@ def _safe_structural_operations(value: Any) -> list[dict[str, Any]]:
             compact["kind"] = item["kind"]
         sources = item.get("source_unit_ids")
         if isinstance(sources, list) and all(
-            isinstance(source, str) and re.fullmatch(r"P[0-9]{3,}", source) for source in sources
+            isinstance(source, str) and source in registered and re.fullmatch(r"P[0-9]{3,}", source)
+            for source in sources
         ):
             compact["source_unit_ids"] = sources
         for key, pattern in (
@@ -239,14 +360,137 @@ def _safe_structural_operations(value: Any) -> list[dict[str, Any]]:
         ):
             destination = item.get(key)
             if destination is None or (
-                isinstance(destination, str) and re.fullmatch(pattern, destination)
+                isinstance(destination, str)
+                and re.fullmatch(pattern, destination)
+                and (destination in registered or destination.startswith("new:"))
             ):
                 compact[key] = destination
         result.append(compact)
     return result
 
 
-def _safe_writer_metadata(value: Any) -> dict[str, Any]:
+def _safe_editor_outcomes(
+    value: Any, checkpoints: _MemoryCheckpointObserver | None, *, pass_outcomes: bool = False
+) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    from src.publication.article_editor import (
+        ARTICLE_EDITOR_OUTCOME_REASONS,
+        ARTICLE_EDITOR_PASS_REASONS,
+        ARTICLE_EDITOR_UNIT_STATUSES,
+    )
+    from src.publication.article_quality_policy import ARTICLE_QUALITY_FINDING_POLICIES
+
+    allowed_codes = _VALIDATION_CODES | ARTICLE_QUALITY_FINDING_POLICIES.keys()
+    compact: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        pass_index = item.get("pass_index")
+        if (
+            not isinstance(pass_index, int)
+            or isinstance(pass_index, bool)
+            or pass_index not in (1, 2)
+        ):
+            continue
+        base = item.get("base_fingerprint")
+        if not isinstance(base, str) or not _valid_hash(base):
+            continue
+        registered = (
+            checkpoints.registered_units.get(base, frozenset()) if checkpoints else frozenset()
+        )
+        record: dict[str, Any] = {"pass_index": item["pass_index"], "base_fingerprint": base}
+        reason = item.get("reason")
+        allowed_reasons = (
+            ARTICLE_EDITOR_PASS_REASONS if pass_outcomes else ARTICLE_EDITOR_OUTCOME_REASONS
+        )
+        if not isinstance(reason, str) or reason not in allowed_reasons:
+            continue
+        record["reason"] = reason
+        if not pass_outcomes:
+            unit_id, status = item.get("unit_id"), item.get("status")
+            if not isinstance(unit_id, str) or unit_id not in registered:
+                continue
+            if not isinstance(status, str) or status not in ARTICLE_EDITOR_UNIT_STATUSES:
+                continue
+            record.update(unit_id=unit_id, status=status)
+        for key in (
+            "required_support_count",
+            "shown_support_count",
+            "requested_unit_count",
+            "applied_unit_count",
+            "deferred_unit_count",
+            "unresolved_target_count",
+            "unknown_unit_count",
+        ):
+            count = item.get(
+                key, item.get("unknown_unit_id_count") if key == "unknown_unit_count" else None
+            )
+            if isinstance(count, int) and not isinstance(count, bool) and count >= 0:
+                record[key] = count
+        elapsed = item.get("elapsed_seconds")
+        if (
+            isinstance(elapsed, (int, float))
+            and not isinstance(elapsed, bool)
+            and math.isfinite(elapsed)
+            and elapsed >= 0
+        ):
+            record["elapsed_seconds"] = elapsed
+        if _valid_hash(item.get("result_fingerprint")):
+            record["result_fingerprint"] = item["result_fingerprint"]
+        codes = item.get("issue_codes")
+        if isinstance(codes, list):
+            record["issue_codes"] = [
+                code for code in codes if isinstance(code, str) and code in allowed_codes
+            ]
+        for key in ("requested_unit_ids", "applied_unit_ids", "deferred_unit_ids"):
+            ids = item.get(key)
+            if isinstance(ids, list):
+                record[key] = [
+                    unit_id for unit_id in ids if isinstance(unit_id, str) and unit_id in registered
+                ]
+        compact.append(record)
+    return compact
+
+
+def _safe_validation_metadata(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, Any] = {}
+    if isinstance(value.get("is_valid"), bool):
+        result["is_valid"] = value["is_valid"]
+    for key in ("issue_count", "violation_count"):
+        if isinstance(value.get(key), int) and not isinstance(value[key], bool):
+            result[key] = value[key]
+    issues = value.get("issues", value.get("blocking_issues", []))
+    result["issues"] = []
+    if isinstance(issues, (list, tuple)):
+        for issue in issues:
+            if not isinstance(issue, dict) or issue.get("code") not in _VALIDATION_CODES:
+                continue
+            unit = issue.get("unit_id")
+            if not isinstance(unit, str) or not re.fullmatch(
+                r"(?:TITLE|LEAD|DRAFT|[HP][0-9]{3,}|)", unit
+            ):
+                continue
+            result["issues"].append(
+                {
+                    "code": issue["code"],
+                    "unit_id": unit,
+                    "severity": issue.get("severity")
+                    if issue.get("severity") in {"error", "warning"}
+                    else "error",
+                    "blocking": issue.get("blocking")
+                    if isinstance(issue.get("blocking"), bool)
+                    else True,
+                }
+            )
+    return result
+
+
+def _safe_writer_metadata(
+    value: Any, checkpoints: _MemoryCheckpointObserver | None = None
+) -> dict[str, Any]:
     """Keep only safe invocation and provider-attempt counters and durations."""
     if not isinstance(value, dict):
         return {}
@@ -306,6 +550,35 @@ def _safe_writer_metadata(value: Any) -> dict[str, Any]:
         "article_writer_prompt_version": {"v17"},
         "rendered_packet_representation": {"full", "compact"},
     }
+    from src.ai_providers import get_allowed_ai_models
+
+    for key in ("model", "actual_model"):
+        item = value.get(key)
+        if isinstance(item, str) and item in get_allowed_ai_models():
+            result[key] = item
+    for key in ("provider", "actual_provider"):
+        item = value.get(key)
+        if isinstance(item, str) and item in {
+            "openrouter",
+            "openai",
+            "deepseek",
+            "gemini",
+            "anthropic",
+        }:
+            result[key] = item
+    for key in (
+        "prompt_tokens",
+        "completion_tokens",
+        "reasoning_tokens",
+        "total_tokens",
+        "parsed_word_count",
+        "parsed_section_count",
+        "prompt_chars",
+        "context_chars",
+    ):
+        item = value.get(key)
+        if isinstance(item, int) and not isinstance(item, bool) and item >= 0:
+            result[key] = item
     for key, allowed_values in safe_choice_values.items():
         item = value.get(key)
         if isinstance(item, str) and item in allowed_values:
@@ -341,9 +614,15 @@ def _safe_writer_metadata(value: Any) -> dict[str, Any]:
             if isinstance(finding, str) and finding in allowed_format_findings
         ]
 
-    operations = _safe_structural_operations(value.get("structural_operations"))
+    operations = _safe_structural_operations(
+        value.get("structural_operations"), checkpoints, value.get("editor_pass_outcomes")
+    )
     if operations:
         result["structural_operations"] = operations
+    for key, is_pass in (("editor_unit_outcomes", False), ("editor_pass_outcomes", True)):
+        outcomes = _safe_editor_outcomes(value.get(key), checkpoints, pass_outcomes=is_pass)
+        if outcomes:
+            result[key] = outcomes
     profile = value.get("length_profile")
     if isinstance(profile, dict):
         result["length_profile"] = {
@@ -398,22 +677,72 @@ def _safe_writer_metadata(value: Any) -> dict[str, Any]:
     return result
 
 
-def _safe_final_metadata(value: Any) -> dict[str, Any]:
+def _safe_quality_metadata(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    from src.publication.article_quality import ARTICLE_READER_QUALITY_VERSION
+    from src.publication.article_quality_policy import ARTICLE_QUALITY_FINDING_POLICIES
+
+    findings = []
+    for item in (
+        value.get("findings", []) if isinstance(value.get("findings"), (list, tuple)) else []
+    ):
+        if not isinstance(item, dict):
+            continue
+        code, unit = item.get("code"), item.get("unit_id")
+        if not isinstance(code, str) or code not in ARTICLE_QUALITY_FINDING_POLICIES:
+            continue
+        if not isinstance(unit, str) or not re.fullmatch(
+            r"(?:TITLE|LEAD|DRAFT|ARTICLE|[HP][0-9]{3,}|story:[0-9]+)", unit
+        ):
+            continue
+        policy = ARTICLE_QUALITY_FINDING_POLICIES[code]
+        findings.append(
+            {
+                "code": code,
+                "unit_id": unit,
+                "severity": policy.severity,
+                "finding_class": policy.finding_class,
+                "repair_scope": policy.repair_scope,
+                "publication_effect": policy.publication_effect,
+            }
+        )
+    result: dict[str, Any] = {"version": ARTICLE_READER_QUALITY_VERSION, "findings": findings}
+    count = value.get("finding_count")
+    result["finding_count"] = (
+        count
+        if isinstance(count, int) and not isinstance(count, bool) and count >= 0
+        else len(findings)
+    )
+    if isinstance(value.get("needs_edit"), bool):
+        result["needs_edit"] = value["needs_edit"]
+    for key, allowed in (
+        ("counts_by_code", ARTICLE_QUALITY_FINDING_POLICIES),
+        ("counts_by_severity", {"warning", "repair", "blocking"}),
+    ):
+        counts = value.get(key)
+        if isinstance(counts, dict):
+            result[key] = {
+                code: number
+                for code, number in counts.items()
+                if isinstance(code, str)
+                and code in allowed
+                and isinstance(number, int)
+                and not isinstance(number, bool)
+                and number >= 0
+            }
+    return result
+
+
+def _safe_final_metadata(
+    value: Any, checkpoints: _MemoryCheckpointObserver | None = None
+) -> dict[str, Any]:
     """Keep versioned quality and composition diagnostics, never article/source text."""
     if not isinstance(value, dict):
         return {}
-    from src.publication.article_finalization import (
-        _compact_composition_value,
-        _compact_quality_value,
-    )
-
     result: dict[str, Any] = {
         key: value[key]
         for key in (
-            "status",
-            "winning_kind",
-            "writer_status",
-            "recovery_mode",
             "planned_story_count",
             "ai_covered_story_count",
             "supplemented_story_count",
@@ -426,24 +755,52 @@ def _safe_final_metadata(value: Any) -> dict[str, Any]:
             "planner_model_call_count",
             "planner_validation_repair_used",
         )
-        if key in value and isinstance(value[key], (str, int, float, bool, type(None)))
+        if key in value and isinstance(value[key], (int, float, bool, type(None)))
     }
-    result.update(_safe_writer_metadata(value))
+    for key, allowed in {
+        "status": {"accepted", "rejected", "failed", "passed", "succeeded"},
+        "winning_kind": {"writer", "editor", "event_article_writer"},
+        "writer_status": {"passed", "rejected", "failed"},
+        "recovery_mode": {"none", "supplement", "full_fallback"},
+    }.items():
+        item = value.get(key)
+        if isinstance(item, str) and item in allowed:
+            result[key] = item
+    result.update(_safe_writer_metadata(value, checkpoints))
+    if value.get("stage") in {
+        "writer",
+        "writer_validation",
+        "post_finalization_validation",
+        "post_finalization_quality",
+        "finalization",
+        "finalization_assessment",
+        "assessment",
+    }:
+        result["stage"] = value["stage"]
+    validation = _safe_validation_metadata(value.get("factual_validation"))
+    if validation:
+        result["factual_validation"] = validation
     for key in (
         "reader_quality",
         "quality_before_edit",
         "quality_after_edit",
         "quality_after_finalization",
     ):
-        quality = _compact_quality_value(value.get(key))
+        quality = _safe_quality_metadata(value.get(key))
         if quality is not None:
             result[key] = quality
 
-    composition = _compact_composition_value(value.get("composition"))
-    if composition is not None:
-        result["composition"] = composition
+    composition = value.get("composition")
+    if isinstance(composition, dict):
+        result["composition"] = {
+            key: composition[key]
+            for key in ("line_count", "group_count", "bundle_count")
+            if isinstance(composition.get(key), int)
+            and not isinstance(composition[key], bool)
+            and composition[key] >= 0
+        }
 
-    writer = _safe_writer_metadata(value.get("writer_attempt"))
+    writer = _safe_writer_metadata(value.get("writer_attempt"), checkpoints)
     if writer:
         result["writer_attempt"] = writer
 
@@ -473,8 +830,8 @@ async def build_article_preview_from_run(
     expected_edition_slug: str | None = None,
 ) -> ArticleRunPreviewOutcome:
     """Replay sealed inputs and return an in-memory accepted/rejected/failed result."""
-    attempts = _MemoryGenerationAttemptObserver()
     checkpoints = _MemoryCheckpointObserver()
+    attempts = _MemoryGenerationAttemptObserver(checkpoints)
     run_details: dict[str, object] = {"run_id": run_id}
     generator: ArticleGenerator | None = None
 
@@ -547,24 +904,42 @@ async def build_article_preview_from_run(
                 ),
             )
 
+        identity_payload = {
+            "run": run_details,
+            "sealed_inputs": inputs,
+            "article_context": getattr(frozen.analysis, "article_context", None),
+        }
+        source_identity = hashlib.sha256(
+            json.dumps(
+                _assessment_input_value(identity_payload),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        ).hexdigest()
+        checkpoints.source_identity = source_identity
+
         # Frozen replay is a dry-run: isolate config from the caller and disable
         # production prompt/draft artifact writes on this generator instance.
         preview_config = deepcopy(config)
         preview_config.settings.article.save_debug_artifacts = False
         generator = ArticleGenerator(config=preview_config, logger=logger)
         checkpoint_observer: ArticleCheckpointObserver = checkpoints
-        title, lead, body = await generator.generate_from_frozen_input(
+        await generator.generate_from_frozen_input(
             frozen,
             attempt_observer=attempts,
             checkpoint_observer=checkpoint_observer,
+            source_identity=source_identity,
+            assessment_input_observer=checkpoints.bind_assessment_inputs,
         )
 
-        captured = checkpoints.checkpoints[-1] if checkpoints.checkpoints else None
-        candidate = (
-            _candidate_from_checkpoint(run_details, captured)
-            if captured is not None
-            else _candidate_from_returned_text(run_details, title, lead, body)
-        )
+        captured = checkpoints.final_checkpoint()
+        if captured.assessment is None or not captured.assessment.publishable:
+            raise ArticleFinalizationInvariantError(
+                "Accepted preview lacks a publishable assessment"
+            )
+        candidate = _candidate_from_checkpoint(run_details, captured)
         return ArticleRunPreviewOutcome(
             status="accepted",
             candidate=candidate,
@@ -577,12 +952,27 @@ async def build_article_preview_from_run(
             ),
         )
     except ArticlePublicationRejected as exc:
+        try:
+            captured = checkpoints.final_checkpoint()
+        except ArticleFinalizationInvariantError as invariant_error:
+            return ArticleRunPreviewOutcome(
+                status="failed",
+                candidate=_candidate_from_checkpoint(
+                    run_details, checkpoints.checkpoints[-1] if checkpoints.checkpoints else None
+                ),
+                diagnostics=_preview_diagnostics(
+                    run_details,
+                    attempts,
+                    checkpoints,
+                    generator=generator,
+                    status="failed",
+                    error=invariant_error,
+                ),
+                error=exc,
+            )
         return ArticleRunPreviewOutcome(
             status="rejected",
-            candidate=_candidate_from_checkpoint(
-                run_details,
-                checkpoints.checkpoints[-1] if checkpoints.checkpoints else None,
-            ),
+            candidate=_candidate_from_checkpoint(run_details, captured),
             diagnostics=_preview_diagnostics(
                 run_details,
                 attempts,
@@ -628,30 +1018,10 @@ def _candidate_from_checkpoint(
         snapshot_at=_snapshot_from_run_details(run_details),
         title=draft.title,
         lead=draft.lead,
-        body=draft.render_markdown(),
+        body=draft.render_markdown(preserve_text=True),
         checkpoint_stage=checkpoint.stage,
         draft=draft,
         assessment=checkpoint.assessment,
-    )
-
-
-def _candidate_from_returned_text(
-    run_details: dict[str, object],
-    title: str,
-    lead: str,
-    body: str,
-) -> ArticlePreviewCandidate:
-    return ArticlePreviewCandidate(
-        run_id=_preview_run_id(run_details),
-        publication_type=(
-            str(run_details["publication_type"]) if "publication_type" in run_details else None
-        ),
-        edition_slug=str(run_details["edition_slug"]) if "edition_slug" in run_details else None,
-        snapshot_at=_snapshot_from_run_details(run_details),
-        title=title,
-        lead=lead,
-        body=body,
-        checkpoint_stage="returned_without_checkpoint",
     )
 
 
@@ -676,21 +1046,26 @@ def _assessment_metadata(assessment: ArticleAssessmentCheckpoint) -> dict[str, o
     validation = assessment.validation
     result: dict[str, object] = {
         "publishable": assessment.publishable,
-        "validation": {
-            "is_valid": validation.is_valid,
-            "issue_count": len(validation.issues),
-            "issues": [
-                {
-                    "code": issue.code,
-                    "unit_id": issue.unit_id,
-                    "severity": issue.severity,
-                    "blocking": issue.blocking,
-                }
-                for issue in validation.issues
-            ],
-        },
+        "draft_fingerprint": _draft_hash(assessment.draft),
+        "input_fingerprint": assessment.input_fingerprint,
+        "source_identity": assessment.source_identity,
+        "validation": _safe_validation_metadata(
+            {
+                "is_valid": validation.is_valid,
+                "issue_count": len(validation.issues),
+                "issues": [
+                    {
+                        "code": issue.code,
+                        "unit_id": issue.unit_id,
+                        "severity": issue.severity,
+                        "blocking": issue.blocking,
+                    }
+                    for issue in validation.issues
+                ],
+            }
+        ),
     }
-    quality = _compact_quality_value(assessment.quality.to_metadata())
+    quality = _safe_quality_metadata(assessment.quality.to_metadata())
     if quality is not None:
         result["reader_quality"] = quality
     if assessment.coverage is not None:
@@ -719,13 +1094,25 @@ def _preview_diagnostics(
     error: Exception | None = None,
 ) -> dict[str, object]:
     diagnostics: dict[str, object] = {
-        "schema_version": "article-run-preview-v2",
+        "schema_version": "article-run-preview-v3",
         "status": status,
         **run_details,
         "generation": {
             "attempts": attempts.to_metadata(),
             "checkpoints": checkpoints.diagnostics(),
             "assessment_pair_mismatch_count": checkpoints.assessment_pair_mismatch_count,
+            "source_identity": checkpoints.source_identity,
+            "latest_candidate_assessed": bool(
+                checkpoints.checkpoints and checkpoints.checkpoints[-1].assessment is not None
+            ),
+            "last_assessed_checkpoint": (
+                {
+                    "stage": checkpoints.last_assessed.stage,
+                    "draft_fingerprint": _draft_hash(checkpoints.last_assessed.draft),
+                }
+                if checkpoints.last_assessed is not None
+                else None
+            ),
         },
     }
     if generator is not None:
@@ -741,9 +1128,30 @@ def _preview_diagnostics(
         if isinstance(error, ArticleWriterContextBudgetError):
             failure.update(error.to_metadata())
         if isinstance(error, ArticlePublicationRejected):
-            failure["reason"] = error.reason
-            failure["error_kind"] = error.error_kind
-            safe_metadata = _safe_final_metadata(error.metadata)
+            if error.reason in {
+                "writer_failed",
+                "validation_failed",
+                "quality_failed",
+                "factually_invalid",
+                "reader_quality_rejected",
+                "article_validation_failed",
+                "article_reader_quality_failed",
+                "no_substantive_material",
+                "unusable_writer_response",
+            }:
+                failure["reason"] = error.reason
+            if error.error_kind in {
+                "article_publication_rejected",
+                "article_generation_failed",
+                "evidence_boundary_failure",
+                "reader_quality_failure",
+                "writer_failure",
+                "article_writer_rejected",
+                "article_validation_rejected",
+                "article_quality_rejected",
+            }:
+                failure["error_kind"] = error.error_kind
+            safe_metadata = _safe_final_metadata(error.metadata, checkpoints)
             if safe_metadata:
                 failure["rejection_metadata"] = safe_metadata
         diagnostics["failure"] = failure

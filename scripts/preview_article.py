@@ -218,7 +218,7 @@ def _failed_no_draft_outcome(
         status="failed",
         candidate=None,
         diagnostics={
-            "schema_version": "article-run-preview-v2",
+            "schema_version": "article-run-preview-v3",
             "status": "failed",
             "run_id": run_id,
             "failure": {"exception_type": type(error).__name__},
@@ -242,7 +242,12 @@ def _render_frozen_run_outcome(outcome: ArticleRunPreviewOutcome) -> str:
             f"# {label}\n\n"
             "No draft candidate was produced for this frozen run. See the diagnostics output.\n"
         )
-    return f"# {label}\n\n{outcome.candidate.markdown.lstrip()}"
+    assessment_note = (
+        "The latest candidate has not been assessed. See the last assessed checkpoint in diagnostics.\n\n"
+        if outcome.candidate.assessment is None
+        else ""
+    )
+    return f"# {label}\n\n{assessment_note}{outcome.candidate.markdown.lstrip()}"
 
 
 async def _load_edition_timezone(infra: object, edition_slug: str) -> str:

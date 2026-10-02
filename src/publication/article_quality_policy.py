@@ -127,6 +127,13 @@ _POLICIES: dict[str, ArticleQualityFindingPolicy] = {
         "repair_recommended",
         "A supported provider name needs typographic quotation marks.",
     ),
+    "COLLOQUIAL_AUTHOR_PROSE": ArticleQualityFindingPolicy(
+        "author_register",
+        "repair",
+        "unit",
+        "repair_recommended",
+        "Colloquial wording in author prose can be reviewed while direct speech remains exact.",
+    ),
     "INCOMPLETE_QUANTITY_PHRASE": ArticleQualityFindingPolicy(
         "sentence_completeness",
         "repair",

@@ -330,11 +330,19 @@ class StructuredArticleDraft:
         quote_allowlist: Sequence[str] | None = None,
         *,
         allow_claim_autogen: bool = True,
+        preserve_quote_text: bool = False,
     ) -> StructuredArticleDraft:
         """Parse structured article draft from model JSON dictionary."""
-        title = _strip_non_allowlisted_quotes(
-            _strip_internal_handles(str(data.get("title", "")).strip()), quote_allowlist
-        )
+
+        def reader_text(value: Any) -> str:
+            text = str(value).strip()
+            if preserve_quote_text:
+                # Event-First assessment must see the actual words, including
+                # unsupported quotes/handles that the existing editor repairs.
+                return text
+            return _strip_non_allowlisted_quotes(_strip_internal_handles(text), quote_allowlist)
+
+        title = reader_text(data.get("title", ""))
         raw_t_ids = data.get("title_support_ids") or data.get("title_evidence_ids") or []
         title_support_ids = tuple(
             dict.fromkeys(
@@ -347,9 +355,7 @@ class StructuredArticleDraft:
         if not title_claims and title and title_support_ids and allow_claim_autogen:
             title_claims = (ArticleClaimAtom(text=title, cited_support_ids=title_support_ids),)
 
-        lead = _strip_non_allowlisted_quotes(
-            _strip_internal_handles(str(data.get("lead", "")).strip()), quote_allowlist
-        )
+        lead = reader_text(data.get("lead", ""))
         raw_l_ids = data.get("lead_support_ids") or data.get("lead_evidence_ids") or []
         lead_support_ids = tuple(
             dict.fromkeys(
@@ -374,10 +380,7 @@ class StructuredArticleDraft:
             for sec_data in raw_sections:
                 if not isinstance(sec_data, dict):
                     continue
-                heading = _strip_non_allowlisted_quotes(
-                    _strip_internal_handles(str(sec_data.get("heading", "")).strip()),
-                    quote_allowlist,
-                )
+                heading = reader_text(sec_data.get("heading", ""))
                 raw_h_ids = (
                     sec_data.get("heading_support_ids")
                     or sec_data.get("heading_evidence_ids")
@@ -397,10 +400,7 @@ class StructuredArticleDraft:
                 if isinstance(raw_paras, list):
                     for p in raw_paras:
                         if isinstance(p, dict):
-                            p_text = _strip_non_allowlisted_quotes(
-                                _strip_internal_handles(str(p.get("text", "")).strip()),
-                                quote_allowlist,
-                            )
+                            p_text = reader_text(p.get("text", ""))
                             raw_p_ids = (
                                 p.get("cited_support_ids") or p.get("cited_evidence_ids") or []
                             )
@@ -434,7 +434,11 @@ class StructuredArticleDraft:
                                     )
                                 )
                         elif isinstance(p, str):
-                            p_str = _strip_internal_handles(p.strip())
+                            p_str = (
+                                p.strip()
+                                if preserve_quote_text
+                                else _strip_internal_handles(p.strip())
+                            )
                             if p_str:
                                 paras.append(
                                     ArticleParagraph(
@@ -513,23 +517,27 @@ class StructuredArticleDraft:
             "lead_generation_origin": self.lead_generation_origin,
         }
 
-    def render_markdown(self) -> str:
-        """Render clean user-facing markdown WITHOUT internal evidence IDs."""
+    def render_markdown(self, *, preserve_text: bool = False) -> str:
+        """Render Markdown; exact Event-First prose is gated before rendering."""
+
+        def rendered_text(text: str) -> str:
+            return text if preserve_text else _strip_internal_handles(text)
+
         lines: list[str] = []
         if self.lead:
-            clean_lead = _strip_internal_handles(self.lead)
+            clean_lead = rendered_text(self.lead)
             if clean_lead:
                 lines.append(clean_lead)
                 lines.append("")
 
         for section in self.sections:
             if section.heading:
-                clean_h = _strip_internal_handles(section.heading)
+                clean_h = rendered_text(section.heading)
                 if clean_h:
                     lines.append(f"## {clean_h}")
                     lines.append("")
             for p in section.paragraphs:
-                clean_p = _strip_internal_handles(p.text)
+                clean_p = rendered_text(p.text)
                 if clean_p:
                     lines.append(clean_p)
                     lines.append("")

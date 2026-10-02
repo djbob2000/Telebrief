@@ -38,6 +38,13 @@ This is a resolver gazetteer derived from neighborhood-boundary documents, not a
 - Explicit 2024 alias examples: https://www.inform.zp.ua/uk/2024/06/08/283169_u-berdyansku-povernuly-radyanski-nazvy-vulycz/
 - Local geographic context map (secondary): https://berd.ua/map/
 
+## Editorial source notes
+
+- 2026-10-02, direct user confirmation: `Илеар` / `Илеара` is a shop name. It is
+  recorded separately from the existing `Илэар` alias under supermarket
+  `Зеркальный`; no shared business identity, address, area, or current operating
+  status has been established. This profile note is reference metadata, not news.
+
 ## Editorial review still required
 
 The 13 municipal committees are a strong structured geography source, but they remain disabled as a majority denominator.

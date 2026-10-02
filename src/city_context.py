@@ -69,6 +69,24 @@ _ROUTE_CONTEXT_REGEX = re.compile(
     re.IGNORECASE,
 )
 
+_COMMERCIAL_DESCRIPTOR_PREFIX = re.compile(
+    r"^(?:(?:бывш\w*|колишн\w*)\s+)?(?:супермаркет\w*|магазин\w*|маркет\w*|"
+    r"торгов\w*\s+центр\w*|трц|тц)\s+",
+    re.IGNORECASE,
+)
+_COMMERCIAL_CONTEXT_CUE = re.compile(
+    r"(?:магазин\w*|супермаркет\w*|маркет\w*|торгов\w*\s+центр\w*|"
+    r"трц|тц|бренд\w*|сеть\w*|кафе|ресторан\w*|бар\w*|аптек\w*|"
+    r"гостиниц\w*|отел\w*|санатор\w*|клиник\w*|компани\w*|фирм\w*|"
+    r"сервис\w*|провайдер\w*|оператор\w*|служб\w*|пункт\w*\s+(?:выдач\w*|при[её]м\w*))\s*$",
+    re.IGNORECASE,
+)
+_COMMERCIAL_LOCATION_CUE = re.compile(
+    r"(?:в|во|на|у|возле|около|рядом\s+с|район\w*|улиц\w*|остановк\w*)\s*$",
+    re.IGNORECASE,
+)
+_COMMERCIAL_OUTER_QUOTES = "«»“”„\"'`"
+
 _CYRILLIC_TO_LATIN_SUFFIX: dict[str, str] = {
     "а": "a",
     "б": "b",
@@ -716,6 +734,7 @@ class CityContextResolver:
         geography = self._profile["stable_context"]["geography"]
         self._build_area_indexes(geography)
         self._build_place_indexes(geography)
+        self._build_commercial_name_indexes(geography)
         self._build_provider_indexes()
         self._build_route_indexes()
 
@@ -816,6 +835,128 @@ class CityContextResolver:
                     "pre_tokens": tokens,
                 }
             )
+
+    def _build_commercial_name_indexes(self, geography: dict[str, Any]) -> None:
+        """Index only explicitly commercial profile landmarks for article naming."""
+        aliases: list[dict[str, Any]] = []
+        for landmark in geography.get("landmarks", []):
+            if not isinstance(landmark, dict) or landmark.get("type") != "commercial":
+                continue
+            profile_id = str(landmark.get("id") or "").strip()
+            if not profile_id:
+                continue
+            canonical_name = str(landmark.get("name") or "").strip()
+            raw_aliases = [canonical_name, *landmark.get("aliases", [])]
+            context_required = {
+                _normalize(str(context_alias).strip(_COMMERCIAL_OUTER_QUOTES))
+                for context_alias in landmark.get("context_required_aliases", [])
+                if isinstance(context_alias, str) and context_alias.strip()
+            }
+            for raw_name_alias in raw_aliases:
+                if not isinstance(raw_name_alias, str):
+                    continue
+                name_alias = (
+                    re.sub(r"\s+", " ", raw_name_alias).strip().strip(_COMMERCIAL_OUTER_QUOTES)
+                )
+                name_alias = _COMMERCIAL_DESCRIPTOR_PREFIX.sub("", name_alias).strip()
+                # A context-only alias such as “в Пакете” contributes its exact
+                # named form, without carrying the preposition into the mention.
+                name_alias = re.sub(
+                    r"^(?:в|во|на|у|возле|около|рядом\s+с)\s+",
+                    "",
+                    name_alias,
+                    flags=re.IGNORECASE,
+                ).strip(_COMMERCIAL_OUTER_QUOTES)
+                norm_alias = _normalize(name_alias)
+                if not norm_alias:
+                    continue
+                pattern_body = r"\s+".join(
+                    "".join("[её]" if char == "е" else re.escape(char) for char in word)
+                    for word in norm_alias.split()
+                )
+                aliases.append(
+                    {
+                        "entity_id": f"landmark:{profile_id}",
+                        "canonical_name": _COMMERCIAL_DESCRIPTOR_PREFIX.sub(
+                            "", canonical_name.strip(_COMMERCIAL_OUTER_QUOTES)
+                        ).strip(_COMMERCIAL_OUTER_QUOTES),
+                        "norm_alias": norm_alias,
+                        "requires_context": norm_alias in context_required,
+                        "compiled_pat": re.compile(
+                            r"(?<!\w)" + pattern_body + r"(?!\w)",
+                            re.IGNORECASE,
+                        ),
+                    }
+                )
+
+        # Identical aliases assigned to different businesses cannot safely
+        # resolve from spelling alone. Keep the collision marked for lookup.
+        ids_by_alias: dict[str, set[str]] = {}
+        for alias in aliases:
+            ids_by_alias.setdefault(alias["norm_alias"], set()).add(alias["entity_id"])
+        for alias in aliases:
+            alias["ambiguous_alias"] = len(ids_by_alias[alias["norm_alias"]]) > 1
+        self._commercial_name_aliases = sorted(
+            aliases, key=lambda item: len(item["norm_alias"]), reverse=True
+        )
+
+    def commercial_name_mentions(self, text: str) -> tuple[ResolvedEntity, ...]:
+        """Return exact profile-backed commercial landmark mentions only.
+
+        This lookup intentionally does not add commercial landmarks to
+        ``resolve()``, whose existing behavior is shared by ingestion and
+        digest callers.
+        """
+        if not text or not self._commercial_name_aliases:
+            return ()
+
+        candidates: list[tuple[int, int, dict[str, Any]]] = []
+        for alias in self._commercial_name_aliases:
+            if alias["ambiguous_alias"]:
+                continue
+            for match in alias["compiled_pat"].finditer(text):
+                if alias["requires_context"]:
+                    prefix = text[max(0, match.start() - 64) : match.start()]
+                    prefix = prefix.rstrip().rstrip(_COMMERCIAL_OUTER_QUOTES).rstrip()
+                    if not (
+                        _COMMERCIAL_CONTEXT_CUE.search(prefix)
+                        or _COMMERCIAL_LOCATION_CUE.search(prefix)
+                    ):
+                        continue
+                candidates.append((match.start(), match.end(), alias))
+
+        ambiguous_spans = {
+            (start, end)
+            for start, end, alias in candidates
+            if sum(
+                1
+                for other_start, other_end, other in candidates
+                if other["entity_id"] != alias["entity_id"]
+                and max(start, other_start) < min(end, other_end)
+            )
+        }
+        retained: dict[tuple[str, int, int], dict[str, Any]] = {}
+        for start, end, alias in candidates:
+            if (start, end) in ambiguous_spans:
+                continue
+            key = (alias["entity_id"], start, end)
+            current = retained.get(key)
+            if current is None or len(alias["norm_alias"]) > len(current["norm_alias"]):
+                retained[key] = alias
+
+        return tuple(
+            ResolvedEntity(
+                kind="place",
+                entity_id=entity_id,
+                matched_text=text[start:end],
+                canonical_name=alias["canonical_name"],
+                object_type="landmark",
+                confidence="high",
+            )
+            for (entity_id, start, end), alias in sorted(
+                retained.items(), key=lambda item: item[0][1:]
+            )
+        )
 
     def _build_provider_indexes(self) -> None:
         self._providers: list[dict[str, Any]] = []

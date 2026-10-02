@@ -32,7 +32,7 @@ from src.publication.article_quality_policy import (
 )
 
 QualitySeverity = Literal["repair", "warning", "blocking"]
-ARTICLE_READER_QUALITY_VERSION = "article-reader-quality-v11"
+ARTICLE_READER_QUALITY_VERSION = "article-reader-quality-v12"
 logger = logging.getLogger(__name__)
 
 _QUOTE_RE = re.compile(r"[«“„\"]([^»”\"]+)[»”\"]")
@@ -48,6 +48,27 @@ _QUOTED_NAME_CUE_RE = re.compile(
     r"проспект\w*|просп\.?|переул\w*|пер\.?|район\w*|микрорайон\w*|"
     r"пос[её]лок\w*|село|город\w*|площад\w*|парк\w*|набережн\w*|"
     r"перекр[её]ст\w*|остановк\w*|вокзал\w*|мост\w*)\s*$",
+    re.IGNORECASE,
+)
+_QUOTED_ORGANIZATION_CUE_RE = re.compile(
+    r"\b(?:магазин\w*|супермаркет\w*|маркетплейс\w*|торгов\w*\s+центр\w*|"
+    r"трц|тц|бренд\w*|сеть\w*|кафе|ресторан\w*|бар\w*|аптек\w*|"
+    r"гостиниц\w*|отел\w*|санатор\w*|клиник\w*|компани\w*|фирм\w*|"
+    r"сервис\w*|провайдер\w*|оператор\w*|служб\w*|"
+    r"пункт\w*\s+(?:выдач\w*|при[её]м\w*))\s*$",
+    re.IGNORECASE,
+)
+_UNQUOTED_ORGANIZATION_CUE_RE = re.compile(
+    r"\b(?:магазин\w*|супермаркет\w*|маркетплейс\w*|торгов\w*\s+центр\w*|"
+    r"трц|тц|бренд\w*|сеть\w*|кафе|ресторан\w*|бар\w*|аптек\w*|"
+    r"гостиниц\w*|отел\w*|санатор\w*|клиник\w*|компани\w*|фирм\w*|"
+    r"сервис\w*|провайдер\w*|оператор\w*|служб\w*|"
+    r"пункт\w*\s+(?:выдач\w*|при[её]м\w*))\s+"
+    r"(?P<name>(?-i:[A-ZА-ЯІЇЄҐ])[\w-]*(?:\s+(?-i:[A-ZА-ЯІЇЄҐ])[\w-]*){0,5})",
+    re.IGNORECASE,
+)
+_COLLOQUIAL_AUTHOR_PROSE_RE = re.compile(
+    r"\b(?:фигн[яеиюей]|хрен[яеиюь]|херн[яеиюей]|хренов[а-я]*|нафиг|пофиг)\b",
     re.IGNORECASE,
 )
 _QUOTED_RENAMED_NAME_CUE_RE = re.compile(
@@ -636,9 +657,16 @@ def _resolved_entities(text: str, place_resolver: Any | None) -> tuple[Any, ...]
     if place_resolver is None or not text.strip():
         return ()
     try:
-        return tuple(place_resolver.resolve(text).entities)
+        entities = tuple(place_resolver.resolve(text).entities)
     except Exception:
         return ()
+    commercial_lookup = getattr(place_resolver, "commercial_name_mentions", None)
+    if callable(commercial_lookup):
+        try:
+            entities += tuple(commercial_lookup(text))
+        except Exception:
+            logger.debug("Commercial landmark lookup failed", exc_info=True)
+    return entities
 
 
 class _DiagnosisPlaceResolver:
@@ -672,8 +700,14 @@ def _entity_text_spans(text: str, entity: Any) -> tuple[tuple[int, int], ...]:
     spans: set[tuple[int, int]] = set()
     for term in terms:
         tokens = re.split(r"\s+", term)
-        body = r"\s*".join(re.escape(token) for token in tokens)
-        if body and term[-1:].isalnum():
+        body_tokens = [re.escape(token) for token in tokens]
+        terminal = tokens[-1] if tokens else ""
+        if terminal.endswith("а") and "-" not in terminal:
+            body_tokens[-1] = re.escape(terminal[:-1]) + r"(?:а|ы|и|е|у|ой|ою|ам|ами|ах)"
+        elif terminal.endswith("я") and "-" not in terminal:
+            body_tokens[-1] = re.escape(terminal[:-1]) + r"(?:я|и|е|ю|ей|ям|ями|ях)"
+        body = r"\s*".join(body_tokens)
+        if body and terminal[-1:].isalnum() and not terminal.endswith(("а", "я")):
             body += r"\w*"
         pattern = re.compile(r"(?<!\w)" + body + r"(?!\w)", re.IGNORECASE)
         spans.update((match.start(), match.end()) for match in pattern.finditer(text))
@@ -688,6 +722,13 @@ def _span_is_quoted_name(text: str, span: tuple[int, int]) -> bool:
         before.endswith(opening) and after.startswith(closing)
         for opening, closing in (("«", "»"), ("“", "”"), ('"', '"'), ("„", "“"))
     )
+
+
+def _quote_prefix_for_content_span(text: str, span: tuple[int, int], width: int = 48) -> str:
+    for quote_match in _QUOTE_RE.finditer(text):
+        if quote_match.span(1) == span:
+            return text[max(0, quote_match.start() - width) : quote_match.start()]
+    return text[max(0, span[0] - width) : span[0]]
 
 
 def _span_is_inside_quote_content(text: str, span: tuple[int, int]) -> bool:
@@ -768,6 +809,133 @@ def _supported_provider_mentions(
         spans.update(_bare_plus7_brand_spans(text, entity_id))
         mentions.update((entity_id, span) for span in spans)
     return tuple(sorted(mentions))
+
+
+def _supported_commercial_landmark_mentions(
+    text: str,
+    support_ids: Sequence[str],
+    context: ArticleEditorialContext,
+    place_resolver: Any | None,
+) -> tuple[tuple[str, tuple[int, int]], ...]:
+    """Find profile commercial-name spans grounded in eligible cited supports."""
+    if place_resolver is None:
+        return ()
+    commercial_lookup = getattr(place_resolver, "commercial_name_mentions", None)
+    if not callable(commercial_lookup):
+        return ()
+
+    supported_entities: dict[str, Any] = {}
+    for support_id in support_ids:
+        support = context.support_by_id.get(support_id)
+        if (
+            support is None
+            or support.publication_use != "PUBLISH"
+            or support.evidence_kind == "resident_question"
+        ):
+            continue
+        source_text = " ".join((support.text, support.source_text)).strip()
+        if not source_text:
+            continue
+        try:
+            for entity in commercial_lookup(source_text):
+                entity_id = getattr(entity, "entity_id", "")
+                if entity_id and getattr(entity, "object_type", "") == "landmark":
+                    supported_entities.setdefault(entity_id, entity)
+        except Exception:
+            logger.debug("Commercial support lookup failed", exc_info=True)
+            continue
+
+    if not supported_entities:
+        return ()
+    try:
+        prose_entities = tuple(commercial_lookup(text))
+    except Exception:
+        return ()
+
+    prose_entities_by_id = {
+        entity.entity_id: entity
+        for entity in prose_entities
+        if getattr(entity, "object_type", "") == "landmark"
+    }
+    mentions: set[tuple[str, tuple[int, int]]] = set()
+    for entity_id, source_entity in supported_entities.items():
+        entity = prose_entities_by_id.get(entity_id, source_entity)
+        mentions.update((entity_id, span) for span in _entity_text_spans(text, entity))
+    return tuple(sorted(mentions))
+
+
+def supported_organization_name_mentions(
+    text: str,
+    support_ids: Sequence[str],
+    context: ArticleEditorialContext,
+    place_resolver: Any | None,
+) -> tuple[tuple[str, tuple[int, int]], ...]:
+    """Return exact prose spans for organization names grounded in cited supports.
+
+    Profile provider/commercial matches need the same entity in an eligible
+    cited support. Explicit organization syntax can also ground an unfamiliar
+    name from a single eligible support when the source contains that exact
+    name; a bare capitalized word is never enough.
+    """
+    eligible_texts: list[str] = []
+    eligible_support_ids: list[str] = []
+    for support_id in support_ids:
+        support = context.support_by_id.get(support_id)
+        if (
+            support is None
+            or support.publication_use != "PUBLISH"
+            or support.evidence_kind == "resident_question"
+        ):
+            continue
+        source_text = " ".join((support.text, support.source_text)).strip()
+        if source_text:
+            eligible_texts.append(source_text)
+            eligible_support_ids.append(support_id)
+
+    mentions = set(
+        _supported_provider_mentions(
+            text,
+            eligible_support_ids,
+            context,
+            place_resolver,
+        )
+    )
+    mentions.update(
+        _supported_commercial_landmark_mentions(
+            text,
+            support_ids,
+            context,
+            place_resolver,
+        )
+    )
+
+    for quote_match in _QUOTE_RE.finditer(text):
+        prefix = text[max(0, quote_match.start() - 72) : quote_match.start()]
+        if not _QUOTED_ORGANIZATION_CUE_RE.search(prefix):
+            continue
+        name = quote_match.group(1)
+        if _source_contains_quoted_name(name, eligible_texts):
+            normalized = re.sub(
+                r"\s+",
+                " ",
+                unicodedata.normalize("NFKC", name).casefold().replace("ё", "е").strip(),
+            )
+            mentions.add((f"organization:{normalized}", quote_match.span(1)))
+
+    # Unquoted syntax needs an explicit business-class cue, title case in the
+    # prose, and exact source support. Ambiguous standalone capitalized words
+    # therefore remain untouched.
+    for match in _UNQUOTED_ORGANIZATION_CUE_RE.finditer(text):
+        name = match.group("name").strip()
+        if name and _source_contains_quoted_name(name, eligible_texts):
+            normalized = re.sub(
+                r"\s+",
+                " ",
+                unicodedata.normalize("NFKC", name).casefold().replace("ё", "е").strip(),
+            )
+            mentions.add((f"organization:{normalized}", match.span("name")))
+
+    return tuple(sorted(mentions, key=lambda item: (item[1][0], item[1][1], item[0])))
 
 
 def _profile_entity_is_a_proper_name(entity: Any) -> bool:
@@ -862,7 +1030,7 @@ def _supported_non_speech_name_quote_spans(
         for span in _entity_text_spans(text, entity):
             if not _span_is_quoted_name(text, span):
                 continue
-            prefix = text[max(0, span[0] - 48) : span[0]]
+            prefix = _quote_prefix_for_content_span(text, span)
             name_cue_match = _QUOTED_NAME_CUE_RE.search(prefix)
             place_cue_match = _QUOTED_PLACE_CUE_RE.search(prefix)
             has_name_cue = name_cue_match is not None and name_cue_match.end() == len(prefix)
@@ -872,19 +1040,31 @@ def _supported_non_speech_name_quote_spans(
             if has_name_cue or has_place_cue:
                 profile_name_spans.add(span)
 
+    for organization_id, span in supported_organization_name_mentions(
+        text,
+        support_ids,
+        context,
+        place_resolver,
+    ):
+        if not _span_is_quoted_name(text, span):
+            continue
+        prefix = _quote_prefix_for_content_span(text, span)
+        has_name_cue = bool(_QUOTED_ORGANIZATION_CUE_RE.search(prefix))
+        has_landmark_location_cue = organization_id.startswith("landmark:") and bool(
+            _QUOTED_PLACE_CUE_RE.search(prefix)
+        )
+        if has_name_cue or has_landmark_location_cue:
+            profile_name_spans.add(span)
+
     # Provider names also appear naturally as «на Фениксе», «от Миранды» or
     # «оптоволокно „Миранда“». These are names only when the high-confidence
     # cited profile match above is exact and nearby syntax identifies a
     # provider/service use; quoted speech remains countable by default.
-    provider_ids = {
-        key
-        for key in supported_profile_ids
-        if getattr(prose_entities[key], "kind", "") == "provider"
-    }
+    provider_ids = {entity_id for kind, entity_id in cited_entities if kind == "provider"}
     for quote_match in _QUOTE_RE.finditer(text):
         span = quote_match.span(1)
         if any(
-            span in _entity_text_spans(text, prose_entities[entity_id])
+            span in _entity_text_spans(text, cited_entities[("provider", entity_id)])
             for entity_id in provider_ids
         ) and _provider_quote_has_adjacent_service_syntax(text, quote_match):
             profile_name_spans.add(span)
@@ -963,6 +1143,23 @@ def _direct_speech_spans(
             )
         )
     return tuple(spans)
+
+
+def _colloquial_author_spans(
+    text: str,
+    supported_name_spans: Sequence[tuple[int, int]] = (),
+) -> tuple[tuple[int, int], ...]:
+    """Find colloquial author wording while preserving names and direct quotes."""
+    speech_spans = tuple(
+        span.content_span for span in _direct_speech_spans(text, supported_name_spans)
+    )
+    name_spans = tuple(supported_name_spans)
+    return tuple(
+        match.span()
+        for match in _COLLOQUIAL_AUTHOR_PROSE_RE.finditer(text)
+        if not any(start <= match.start() and match.end() <= end for start, end in speech_spans)
+        and not any(start <= match.start() and match.end() <= end for start, end in name_spans)
+    )
 
 
 def _has_consecutive_direct_speech_roll(
@@ -1993,6 +2190,46 @@ def diagnose_article_quality(
             run_start = max(run_end, run_start + 1)
         p_idx += len(paragraphs)
 
+    # Title and lead are authored prose too; leave any genuine direct speech
+    # unchanged while offering a local register repair for narration.
+    for unit_id, text, raw_support_ids in (
+        ("TITLE", draft.title, draft.title_support_ids),
+        ("LEAD", draft.lead, draft.lead_support_ids),
+    ):
+        if not text:
+            continue
+        unit_support_ids = _citable_support_ids(
+            (
+                *raw_support_ids,
+                *(
+                    sid
+                    for claim in (draft.title_claims if unit_id == "TITLE" else draft.lead_claims)
+                    for sid in claim.cited_support_ids
+                ),
+            ),
+            context,
+            material_projection,
+        )
+        supported_name_quote_spans = _supported_non_speech_name_quote_spans(
+            text,
+            unit_support_ids,
+            context,
+            place_resolver,
+        )
+        if _colloquial_author_spans(text, supported_name_quote_spans):
+            findings.append(
+                ArticleReaderQualityFinding(
+                    code="COLLOQUIAL_AUTHOR_PROSE",
+                    unit_id=unit_id,
+                    message=(
+                        "В авторской прозе есть разговорная лексика; сохраните слова "
+                        "в прямой речи, а авторскую фразу при необходимости изложите "
+                        "нейтрально и точно."
+                    ),
+                    support_ids=raw_support_ids,
+                )
+            )
+
     # Quote rolls are local paragraph repairs; the existing fact validator
     # remains responsible for whether each quote is source-supported.
     p_idx = 1
@@ -2012,6 +2249,19 @@ def diagnose_article_quality(
                 context,
                 place_resolver,
             )
+            if _colloquial_author_spans(paragraph.text, supported_name_quote_spans):
+                findings.append(
+                    ArticleReaderQualityFinding(
+                        code="COLLOQUIAL_AUTHOR_PROSE",
+                        unit_id=f"P{p_idx:03d}",
+                        message=(
+                            "В авторской прозе есть разговорная лексика; сохраните слова "
+                            "в прямой речи, а авторскую фразу при необходимости изложите "
+                            "нейтрально и точно."
+                        ),
+                        support_ids=_support_ids_for_unit(paragraph),
+                    )
+                )
             if (
                 _direct_quote_count(
                     paragraph.text,

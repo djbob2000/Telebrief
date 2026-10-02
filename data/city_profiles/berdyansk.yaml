@@ -347,10 +347,25 @@ stable_context:
       - Универмаг
       - Илэар
       type: commercial
+      context_required_aliases:
+      - Универмаг
+      - Зеркальный
+      - Дзеркальний
+    - id: shop_ilear_user_confirmed
+      name: Илеар
+      aliases:
+      - Илеар
+      - Илеара
+      type: commercial
+      source_note: >-
+        User-confirmed shop name on 2026-10-02. The identity relationship to the
+        separate profile alias «Илэар» under supermarket_zerkalny is unverified;
+        no address, area, or current operating status is established.
     - id: supermarket_paket
       name: супермаркет «Пакет»
       aliases:
       - Пакет
+      - Пакете
       - супермаркет Пакет
       - супермаркет «Пакет»
       - магазин Пакет
@@ -358,6 +373,9 @@ stable_context:
       - в Пакете
       - «Пакет»
       type: commercial
+      context_required_aliases:
+      - Пакет
+      - Пакете
       area_hint: nahirna
       description: "Сеть продуктовых супермаркетов в Бердянске (филиалы: ул. Мичурина, 85А на Горе; ул. Софиевская / Димитрова, 40; ул. Шевченко, 2А). Популярный ориентир для жителей при бытовых сообщениях, покупках и снятии наличных в банкоматах."
     - id: park_schmidt

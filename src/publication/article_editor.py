@@ -14,13 +14,14 @@ from types import MappingProxyType
 from typing import Any, Callable, Literal, Mapping, cast
 
 from src.ai_providers import AIProvider, capture_provider_attempts
-from src.publication.article_context import ArticleEditorialContext
+from src.publication.article_context import ArticleEditorialContext, _support_framing
 from src.publication.article_coverage import ArticleCoveragePlan
-from src.publication.article_coverage_diagnostics import diagnose_article_coverage
 from src.publication.article_finalization import (
     ArticleAssessmentCheckpoint,
+    ArticleAssessmentInputObserver,
     ArticleCheckpointObserver,
     article_assessment_input_fingerprint,
+    assess_article_draft,
 )
 from src.publication.article_material import (
     ArticleMaterialProjection,
@@ -41,13 +42,12 @@ from src.publication.article_quality import (
     _citable_support_ids,
     _direct_speech_spans,
     _projected_support_themes,
-    diagnose_article_quality,
 )
 from src.publication.article_quality_policy import (
     ArticleQualityPolicyError,
     article_quality_policy,
 )
-from src.publication.article_validator import ArticleValidationResult, validate_article_draft
+from src.publication.article_validator import ArticleValidationResult
 from src.publication.article_writer_context import sanitize_writer_source_text
 
 logger = logging.getLogger(__name__)
@@ -55,11 +55,55 @@ logger = logging.getLogger(__name__)
 _JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 _MAX_HEADING_SECTION_PARAGRAPH_CHARS = 1_500
 _MAX_HEADING_SECTION_CONTEXT_CHARS = 18_000
-_MAX_HEADING_CONTEXT_SUPPORTS = 64
 _MAX_EDITOR_SUPPORTS = 64
 _MAX_EDITOR_SUPPORT_CONTEXT_CHARS = 32_000
 _MAX_EDITOR_SUPPORT_PACKET_CHARS = 4_000
 _MAX_TITLE_LEAD_REPAIR_SUPPORTS = 6
+ARTICLE_EDITOR_UNIT_STATUSES = frozenset(
+    {
+        "applied",
+        "no_change",
+        "not_returned",
+        "rejected",
+        "rolled_back",
+        "deferred_budget",
+        "missing_required_support",
+    }
+)
+ARTICLE_EDITOR_OUTCOME_REASONS = frozenset(
+    {
+        "accepted_change",
+        "text_unchanged",
+        "patch_not_returned",
+        "patch_rejected",
+        "required_support_missing",
+        "support_budget_exceeded",
+        "support_packet_exceeded",
+        "prompt_budget_exceeded",
+        "new_blocker_quarantined",
+        "assessment_error_atomic_rollback",
+        "editor_pass_error_atomic_rollback",
+        "structural_batch_rollback",
+        "no_measurable_progress",
+        "deadline_exhausted",
+    }
+)
+ARTICLE_EDITOR_PASS_REASONS = frozenset(
+    {
+        "completed",
+        "unparseable_response",
+        "invalid_response_shape",
+        "unknown_unit_ids",
+        "unlocalizable_finding",
+        "no_eligible_units",
+        "no_measurable_progress",
+        "deadline_exhausted",
+        "deferred_units_remain",
+        "all_targets_resolved",
+        "assessment_error_atomic_rollback",
+        "editor_pass_error_atomic_rollback",
+    }
+)
 ARTICLE_STRUCTURAL_OUTCOME_REASONS = frozenset(
     {
         "no_authorized_structural_sources",
@@ -243,6 +287,8 @@ class ArticleEditor:
         self.last_patched_unit_ids: tuple[str, ...] = ()
         self.last_quality_report = ArticleReaderQualityReport()
         self.last_structural_operations: list[dict[str, Any]] = []
+        self.last_unit_outcomes: list[dict[str, Any]] = []
+        self.last_pass_outcomes: list[dict[str, Any]] = []
 
     async def edit_draft(
         self,
@@ -262,6 +308,8 @@ class ArticleEditor:
         place_resolver: Any | None = None,
         assessment: ArticleAssessmentCheckpoint | None = None,
         checkpoint_observer: ArticleCheckpointObserver | None = None,
+        source_identity: str | None = None,
+        assessment_input_observer: ArticleAssessmentInputObserver | None = None,
     ) -> tuple[StructuredArticleDraft, ArticleValidationResult]:
         """Apply targeted editorial corrections to units with blocking validation issues."""
         current_draft = draft
@@ -273,8 +321,11 @@ class ArticleEditor:
         self.last_attempt_count = 0
         self.last_patched_unit_ids = ()
         self.last_structural_operations = []
+        self.last_unit_outcomes = []
+        self.last_pass_outcomes = []
         no_op_patch_signatures: dict[str, set[str]] = {}
-        previous_attempt_feedback: dict[str, dict[str, Any]] = {}
+        attempted_target_signatures: dict[tuple[Any, ...], int] = {}
+        previous_attempt_feedback: dict[tuple[Any, ...], dict[str, Any]] = {}
         validation_context = (
             materialize_article_validation_context(context, material_projection)
             if material_projection is not None
@@ -290,42 +341,75 @@ class ArticleEditor:
             length_profile,
             material_projection,
             place_resolver,
+            source_identity=source_identity,
         )
-        reusable_assessment = assessment is not None and assessment.matches(
-            draft, input_fingerprint
-        )
-        if reusable_assessment and assessment is not None:
-            current_val, current_quality = assessment.validation, assessment.quality
-        elif max_attempts > 0:
-            current_val = await asyncio.to_thread(
-                validate_article_draft,
-                draft,
+        input_observer_notified = False
+
+        def observe_assessment_inputs(fingerprint: str) -> None:
+            nonlocal input_observer_notified
+            if assessment_input_observer is not None:
+                assessment_input_observer(fingerprint)
+                input_observer_notified = True
+
+        known_assessments: list[ArticleAssessmentCheckpoint] = []
+
+        def matching_assessment(
+            candidate: StructuredArticleDraft,
+        ) -> ArticleAssessmentCheckpoint | None:
+            return next(
+                (
+                    checkpoint
+                    for checkpoint in reversed(known_assessments)
+                    if checkpoint.matches(
+                        candidate,
+                        input_fingerprint,
+                        source_identity=source_identity,
+                    )
+                ),
+                None,
+            )
+
+        async def assess_candidate(
+            candidate: StructuredArticleDraft,
+        ) -> ArticleAssessmentCheckpoint:
+            matched = matching_assessment(candidate)
+            if matched is not None:
+                if not input_observer_notified:
+                    observe_assessment_inputs(input_fingerprint)
+                self.last_assessment = matched
+                return matched
+            checkpoint = await assess_article_draft(
+                candidate,
                 context,
-                config=config,
+                coverage_plan=coverage_plan,
+                editorial_config=config,
                 length_profile=length_profile,
                 material_projection=material_projection,
+                place_resolver=place_resolver,
+                source_identity=source_identity,
+                input_observer=observe_assessment_inputs,
             )
-            if coverage_plan is not None:
-                current_quality = await asyncio.to_thread(
-                    diagnose_article_quality,
-                    draft,
-                    coverage_plan,
-                    context,
-                    material_projection=material_projection,
-                    place_resolver=place_resolver,
-                )
-        self.last_assessment = (
-            ArticleAssessmentCheckpoint(
-                current_draft,
-                current_val,
-                current_quality,
-                input_fingerprint,
-            )
-            if reusable_assessment or max_attempts > 0
-            else None
-        )
-        if reusable_assessment:
-            self.last_assessment = assessment
+            if not checkpoint.matches(
+                candidate, input_fingerprint, source_identity=source_identity
+            ):
+                raise RuntimeError("assessment API returned a checkpoint for different inputs")
+            known_assessments.append(checkpoint)
+            self.last_assessment = checkpoint
+            return checkpoint
+
+        if assessment is not None and assessment.matches(
+            draft, input_fingerprint, source_identity=source_identity
+        ):
+            known_assessments.append(assessment)
+        initial_checkpoint = matching_assessment(draft)
+        if initial_checkpoint is None and max_attempts > 0:
+            initial_checkpoint = await assess_candidate(draft)
+        if initial_checkpoint is not None:
+            current_val = initial_checkpoint.validation
+            current_quality = initial_checkpoint.quality
+            self.last_assessment = initial_checkpoint
+        else:
+            self.last_assessment = None
         self.last_quality_report = current_quality
 
         def blocking_keys(
@@ -369,19 +453,113 @@ class ArticleEditor:
                 for localized in self._localize_article_quality_finding(current_draft, finding)
             }
 
+        def target_signature(unit: Mapping[str, Any]) -> tuple[Any, ...]:
+            return (
+                unit.get("unit_type", ""),
+                tuple(sorted({getattr(issue, "code", "") for issue in unit.get("issues", ())})),
+                tuple(
+                    sorted(
+                        {
+                            sid
+                            for issue in unit.get("issues", ())
+                            for sid in getattr(issue, "support_ids", ())
+                        }
+                    )
+                ),
+            )
+
+        def safe_unit_outcome(
+            *,
+            pass_index: int,
+            unit_id: str,
+            status: str,
+            reason: str,
+            issues: list[Any],
+            required_support_count: int,
+            shown_support_count: int,
+            base_fingerprint: str,
+            result_fingerprint: str,
+        ) -> dict[str, Any]:
+            if status not in ARTICLE_EDITOR_UNIT_STATUSES:
+                status = "rejected"
+            if reason not in ARTICLE_EDITOR_OUTCOME_REASONS:
+                reason = "patch_rejected"
+            return {
+                "pass_index": pass_index,
+                "unit_id": unit_id,
+                "status": status,
+                "reason": reason,
+                "issue_codes": sorted({getattr(issue, "code", "") for issue in issues}),
+                "required_support_count": required_support_count,
+                "shown_support_count": shown_support_count,
+                "base_fingerprint": base_fingerprint,
+                "result_fingerprint": result_fingerprint,
+            }
+
+        def append_pass_outcome(
+            *,
+            pass_index: int,
+            reason: str,
+            requested: int,
+            applied: int,
+            deferred: int,
+            unresolved: int,
+            elapsed: float,
+            base_fingerprint: str,
+            unknown_unit_id_count: int = 0,
+        ) -> None:
+            if reason not in ARTICLE_EDITOR_PASS_REASONS:
+                reason = "completed"
+            self.last_pass_outcomes.append(
+                {
+                    "pass_index": pass_index,
+                    "outcome": reason,
+                    "reason": reason,
+                    "requested_unit_count": requested,
+                    "applied_unit_count": applied,
+                    "deferred_unit_count": deferred,
+                    "unresolved_target_count": unresolved,
+                    "elapsed_seconds": round(elapsed, 3),
+                    "base_fingerprint": base_fingerprint,
+                    "unknown_unit_id_count": unknown_unit_id_count,
+                }
+            )
+
         for attempt in range(1, max_attempts + 1):
             attempt_started = perf_counter()
+            base_fingerprint = _draft_fingerprint(current_draft)
+            if checkpoint_observer is not None:
+                checkpoint_observer("editor_base", current_draft, self.last_assessment)
+            all_blocking_issues = [iss for iss in current_val.issues if iss.blocking]
             blocking_issues = [
-                iss
-                for iss in current_val.issues
-                if iss.blocking and iss.unit_id not in ("DRAFT", "")
+                iss for iss in all_blocking_issues if iss.unit_id not in ("DRAFT", "ARTICLE", "")
             ]
+            unlocalizable_count = sum(
+                issue.unit_id in ("DRAFT", "ARTICLE", "") for issue in all_blocking_issues
+            )
+            all_quality_issues = list(current_quality.repair_findings)
             quality_issues = [
                 localized
-                for finding in current_quality.repair_findings
+                for finding in all_quality_issues
                 for localized in self._localize_article_quality_finding(current_draft, finding)
             ]
+            unlocalizable_count += sum(
+                1
+                for finding in all_quality_issues
+                if not self._localize_article_quality_finding(current_draft, finding)
+            )
             if not blocking_issues and not quality_issues:
+                reason = "unlocalizable_finding" if unlocalizable_count else "all_targets_resolved"
+                append_pass_outcome(
+                    pass_index=attempt,
+                    reason=reason,
+                    requested=0,
+                    applied=0,
+                    deferred=0,
+                    unresolved=unlocalizable_count,
+                    elapsed=perf_counter() - attempt_started,
+                    base_fingerprint=base_fingerprint,
+                )
                 break
 
             # Group blocking issues by unit_id
@@ -400,25 +578,144 @@ class ArticleEditor:
                 list(issues_by_unit.keys()),
             )
 
-            prompt_data = self._build_unit_contexts(
+            all_unit_data = self._build_unit_contexts(
                 current_draft,
                 issues_by_unit,
                 validation_context,
                 material_projection=material_projection,
             )
-            prompt_data = self._bound_prompt_supports(prompt_data)
-            prompt_data = [
-                unit
-                for unit in prompt_data
-                if unit["unit_id"] not in {"TITLE", "LEAD"}
-                or not any(
-                    getattr(issue, "code", "") in {"EMPTY_TITLE", "EMPTY_LEAD"}
-                    for issue in unit["issues"]
+            registered_unit_ids = {unit["unit_id"] for unit in all_unit_data}
+            unlocalizable_count += sum(
+                unit_id not in registered_unit_ids for unit_id in issues_by_unit
+            )
+            eligible_units, omitted_units = self._bound_prompt_supports(all_unit_data)
+            for omitted in omitted_units:
+                self.last_unit_outcomes.append(
+                    safe_unit_outcome(
+                        pass_index=attempt,
+                        unit_id=omitted["unit_id"],
+                        status=omitted["selection_status"],
+                        reason=omitted["selection_reason"],
+                        issues=omitted["issues"],
+                        required_support_count=omitted["required_support_count"],
+                        shown_support_count=omitted["shown_support_count"],
+                        base_fingerprint=base_fingerprint,
+                        result_fingerprint=base_fingerprint,
+                    )
                 )
-                or unit["prompt_support_ids"]
-            ]
+
+            def second_pass_attempt_rank(unit: Mapping[str, Any]) -> int:
+                prior = attempted_target_signatures.get(target_signature(unit))
+                return 0 if prior is None else prior
+
+            ordered_units = sorted(
+                enumerate(eligible_units),
+                key=lambda pair: (
+                    self._repair_priority(pair[1]),
+                    second_pass_attempt_rank(pair[1]) if attempt > 1 else 0,
+                    pair[0],
+                ),
+            )
+            from src.publication.article_writer_context import ARTICLE_WRITER_CONTEXT_MAX_CHARS
+
+            system_prompt = self._build_system_prompt()
+            prompt_data: list[dict[str, Any]] = []
+            prompt_deferred_units: list[dict[str, Any]] = []
+            for _, unit in ordered_units:
+                signature = target_signature(unit)
+                feedback = (
+                    dict(previous_attempt_feedback[signature])
+                    if signature in previous_attempt_feedback
+                    else None
+                )
+                candidate_units = [*prompt_data, {**unit, "prior_feedback": feedback}]
+                feedback_by_unit = {
+                    selected["unit_id"]: selected["prior_feedback"]
+                    for selected in candidate_units
+                    if selected.get("prior_feedback") is not None
+                }
+                if attempt > 1:
+                    feedback_by_unit["_pass_summary"] = {
+                        "previously_considered_units": len(attempted_target_signatures),
+                        "previously_deferred_units": sum(
+                            1
+                            for item in self.last_unit_outcomes
+                            if item["pass_index"] == attempt - 1
+                            and item["status"] == "deferred_budget"
+                        ),
+                        "previously_rejected_units": sum(
+                            1
+                            for item in self.last_unit_outcomes
+                            if item["pass_index"] == attempt - 1 and item["status"] == "rejected"
+                        ),
+                    }
+                candidate_prompt = self._build_user_prompt(
+                    candidate_units,
+                    attempt=attempt,
+                    max_passes=max_attempts,
+                    previous_attempt_feedback=feedback_by_unit,
+                )
+                if (
+                    len(system_prompt) + len(candidate_prompt) + 4 * self.max_output_tokens
+                    <= ARTICLE_WRITER_CONTEXT_MAX_CHARS
+                ):
+                    prompt_data.append({**unit, "prior_feedback": feedback})
+                else:
+                    prompt_deferred_units.append(unit)
+                    self.last_unit_outcomes.append(
+                        safe_unit_outcome(
+                            pass_index=attempt,
+                            unit_id=unit["unit_id"],
+                            status="deferred_budget",
+                            reason="prompt_budget_exceeded",
+                            issues=unit["issues"],
+                            required_support_count=unit["required_support_count"],
+                            shown_support_count=0,
+                            base_fingerprint=base_fingerprint,
+                            result_fingerprint=base_fingerprint,
+                        )
+                    )
+
+            prompt_feedback = {
+                unit["unit_id"]: unit["prior_feedback"]
+                for unit in prompt_data
+                if unit.get("prior_feedback") is not None
+            }
+            if attempt > 1:
+                prompt_feedback["_pass_summary"] = {
+                    "previously_considered_units": len(attempted_target_signatures),
+                    "previously_deferred_units": sum(
+                        1
+                        for item in self.last_unit_outcomes
+                        if item["pass_index"] == attempt - 1 and item["status"] == "deferred_budget"
+                    ),
+                    "previously_rejected_units": sum(
+                        1
+                        for item in self.last_unit_outcomes
+                        if item["pass_index"] == attempt - 1 and item["status"] == "rejected"
+                    ),
+                }
+
+            deferred_count = len(omitted_units) + len(prompt_deferred_units)
             if not prompt_data:
-                logger.warning("ArticleEditor could not build unit context for issues; stopping")
+                reason = (
+                    "unlocalizable_finding"
+                    if unlocalizable_count and not all_unit_data
+                    else "no_eligible_units"
+                )
+                append_pass_outcome(
+                    pass_index=attempt,
+                    reason=reason,
+                    requested=0,
+                    applied=0,
+                    deferred=deferred_count,
+                    unresolved=len(issues_by_unit) + unlocalizable_count,
+                    elapsed=perf_counter() - attempt_started,
+                    base_fingerprint=base_fingerprint,
+                )
+                logger.warning("ArticleEditor has no complete eligible unit context; stopping")
+                if attempt < max_attempts and deferred_count:
+                    continue
                 break
 
             registry = self._build_pass_registry(
@@ -427,12 +724,11 @@ class ArticleEditor:
                 validation_context,
                 material_projection,
             )
-            system_prompt = self._build_system_prompt()
             user_prompt = self._build_user_prompt(
                 prompt_data,
                 attempt=attempt,
                 max_passes=max_attempts,
-                previous_attempt_feedback=previous_attempt_feedback,
+                previous_attempt_feedback=prompt_feedback,
             )
             structural_context, structural_context_reason = self._structural_prompt_context(
                 current_draft, registry, validation_context, user_prompt, system_prompt
@@ -483,6 +779,8 @@ class ArticleEditor:
             response: str | None = None
             unit_outcomes: dict[str, dict[str, str]] = {}
             requested_units = {unit["unit_id"] for unit in prompt_data}
+            prompt_units_by_id = {unit["unit_id"]: unit for unit in prompt_data}
+            _unknown_unit_count = 0
             try:
                 self.last_attempt_count += 1
                 with capture_provider_attempts(self.provider) as counts:
@@ -527,23 +825,53 @@ class ArticleEditor:
                         != registry.base_fingerprint
                     ):
                         operation_error = "stale_base_fingerprint"
-                patches = self._parse_editor_response(response)
-                patches = {
-                    unit_id: value
-                    for unit_id, value in patches.items()
-                    if unit_id in requested_units
+                patches, parse_reason, _unknown_unit_count = self._parse_editor_response_details(
+                    response, requested_units
+                )
+                unit_outcomes = {
+                    unit_id: {
+                        "status": "not_returned",
+                        "reason": "patch_not_returned",
+                        "attempted_text": "",
+                    }
+                    for unit_id in requested_units
                 }
                 if not patches and not operations and operation_error is None:
                     logger.warning("ArticleEditor returned no valid unit patches")
-                    unit_outcomes = {
-                        unit_id: {
-                            "status": "no_op",
-                            "reason": "no_valid_patch_returned",
-                            "attempted_text": "",
+                    reason = (
+                        parse_reason if parse_reason != "completed" else "no_measurable_progress"
+                    )
+                    for unit_id, unit in prompt_units_by_id.items():
+                        signature = target_signature(unit)
+                        attempted_target_signatures[signature] = 2
+                        previous_attempt_feedback[signature] = {
+                            "status": "not_returned",
+                            "reason": "patch_not_returned",
                         }
-                        for unit_id in requested_units
-                    }
-                    previous_attempt_feedback = unit_outcomes
+                        self.last_unit_outcomes.append(
+                            safe_unit_outcome(
+                                pass_index=attempt,
+                                unit_id=unit_id,
+                                status="not_returned",
+                                reason="patch_not_returned",
+                                issues=unit["issues"],
+                                required_support_count=unit["required_support_count"],
+                                shown_support_count=unit["shown_support_count"],
+                                base_fingerprint=base_fingerprint,
+                                result_fingerprint=base_fingerprint,
+                            )
+                        )
+                    append_pass_outcome(
+                        pass_index=attempt,
+                        reason=reason,
+                        requested=len(requested_units),
+                        applied=0,
+                        deferred=deferred_count,
+                        unresolved=len(issues_by_unit) + unlocalizable_count,
+                        elapsed=perf_counter() - attempt_started,
+                        base_fingerprint=base_fingerprint,
+                        unknown_unit_id_count=_unknown_unit_count,
+                    )
                     if attempt_observer is not None:
                         await attempt_observer.attempt_finished(
                             obs_att_id,
@@ -570,17 +898,18 @@ class ArticleEditor:
                         current_val,
                         current_quality,
                     )
+                    if attempt < max_attempts and deferred_count:
+                        continue
                     break
 
-                prompt_units_by_id = {unit["unit_id"]: unit for unit in prompt_data}
                 for unit_id, patch_text in tuple(patches.items()):
                     prompt_unit = prompt_units_by_id[unit_id]
-                    signature = self._patch_signature(
+                    patch_signature = self._patch_signature(
                         patch_text,
                         original_text=prompt_unit["text"],
                         support_ids=prompt_unit["prompt_support_ids"],
                     )
-                    if signature in no_op_patch_signatures.get(unit_id, set()):
+                    if patch_signature in no_op_patch_signatures.get(unit_id, set()):
                         unit_outcomes[unit_id] = {
                             "status": "no_op",
                             "reason": "repeated_identical_no_op_patch",
@@ -593,7 +922,44 @@ class ArticleEditor:
                         "ArticleEditor pass %d repeated only previously rejected/no-op patches; stopping",
                         attempt,
                     )
-                    previous_attempt_feedback = unit_outcomes
+                    for unit_id, unit in prompt_units_by_id.items():
+                        outcome = unit_outcomes.get(unit_id, {})
+                        if outcome.get("status") == "no_op":
+                            status, reason = "no_change", "text_unchanged"
+                        elif outcome.get("status") == "rejected":
+                            status, reason = "rejected", "patch_rejected"
+                        else:
+                            status, reason = "not_returned", "patch_not_returned"
+                        signature = target_signature(unit)
+                        attempted_target_signatures[signature] = 2
+                        previous_attempt_feedback[signature] = {"status": status, "reason": reason}
+                        self.last_unit_outcomes.append(
+                            safe_unit_outcome(
+                                pass_index=attempt,
+                                unit_id=unit_id,
+                                status=status,
+                                reason=reason,
+                                issues=unit["issues"],
+                                required_support_count=unit["required_support_count"],
+                                shown_support_count=unit["shown_support_count"],
+                                base_fingerprint=base_fingerprint,
+                                result_fingerprint=base_fingerprint,
+                            )
+                        )
+                    append_pass_outcome(
+                        pass_index=attempt,
+                        reason=(
+                            parse_reason
+                            if parse_reason != "completed"
+                            else "no_measurable_progress"
+                        ),
+                        requested=len(requested_units),
+                        applied=0,
+                        deferred=deferred_count,
+                        unresolved=len(issues_by_unit) + unlocalizable_count,
+                        elapsed=perf_counter() - attempt_started,
+                        base_fingerprint=base_fingerprint,
+                    )
                     if attempt_observer is not None:
                         await attempt_observer.attempt_finished(
                             obs_att_id,
@@ -620,6 +986,8 @@ class ArticleEditor:
                         current_val,
                         current_quality,
                     )
+                    if attempt < max_attempts and deferred_count:
+                        continue
                     break
 
                 current_draft = await asyncio.to_thread(
@@ -651,37 +1019,24 @@ class ArticleEditor:
                             )
                         )
 
-                def evaluate_editor_draft(
-                    draft: StructuredArticleDraft = current_draft,
-                    previous_quality: ArticleReaderQualityReport = current_quality,
+                async def evaluate_editor_draft(
+                    candidate: StructuredArticleDraft,
                 ) -> tuple[
                     ArticleValidationResult,
                     ArticleReaderQualityReport,
                     float,
                     float,
+                    ArticleAssessmentCheckpoint,
                 ]:
-                    validation_started = perf_counter()
-                    validation = validate_article_draft(
-                        draft,
-                        context,
-                        config=config,
-                        length_profile=length_profile,
-                        material_projection=material_projection,
+                    started = perf_counter()
+                    checkpoint = await assess_candidate(candidate)
+                    return (
+                        checkpoint.validation,
+                        checkpoint.quality,
+                        perf_counter() - started,
+                        0.0,
+                        checkpoint,
                     )
-                    validation_elapsed = perf_counter() - validation_started
-                    quality_elapsed = 0.0
-                    quality = previous_quality
-                    if coverage_plan is not None:
-                        quality_started = perf_counter()
-                        quality = diagnose_article_quality(
-                            draft,
-                            coverage_plan,
-                            context,
-                            material_projection=material_projection,
-                            place_resolver=place_resolver,
-                        )
-                        quality_elapsed = perf_counter() - quality_started
-                    return validation, quality, validation_elapsed, quality_elapsed
 
                 validation_elapsed = 0.0
                 quality_elapsed = 0.0
@@ -693,7 +1048,8 @@ class ArticleEditor:
                         current_quality,
                         validation_elapsed,
                         quality_elapsed,
-                    ) = await asyncio.to_thread(evaluate_editor_draft)
+                        _candidate_assessment,
+                    ) = await evaluate_editor_draft(current_draft)
                 new_blockers = (
                     blocking_keys(current_val, current_quality).keys()
                     - blocking_keys(previous_val, previous_quality).keys()
@@ -754,9 +1110,8 @@ class ArticleEditor:
                             current_quality,
                             elapsed_val,
                             elapsed_quality,
-                        ) = await asyncio.to_thread(
-                            evaluate_editor_draft, current_draft, previous_quality
-                        )
+                            _retained_assessment,
+                        ) = await evaluate_editor_draft(current_draft)
                         validation_elapsed += elapsed_val
                         quality_elapsed += elapsed_quality
                         if (
@@ -796,15 +1151,15 @@ class ArticleEditor:
                     structure_val,
                     structure_quality,
                 )
-                rollback_assessment = ArticleAssessmentCheckpoint(
-                    structure_base, structure_val, structure_quality, input_fingerprint
-                )
+                rollback_assessment = matching_assessment(structure_base)
+                if rollback_assessment is None:
+                    rollback_assessment = await assess_candidate(structure_base)
                 rollback_patched_unit_ids = list(patched_unit_ids)
                 self.last_assessment = rollback_assessment
                 if operations:
                     if operation_error is None:
                         try:
-                            candidate, origins = await asyncio.to_thread(
+                            structural_candidate, origins = await asyncio.to_thread(
                                 self.apply_structural_operations,
                                 structure_base,
                                 operations,
@@ -813,15 +1168,14 @@ class ArticleEditor:
                                 text_patched_unit_ids=frozenset(actually_changed),
                             )
                             if checkpoint_observer is not None:
-                                checkpoint_observer("editor_candidate", candidate, None)
+                                checkpoint_observer("editor_candidate", structural_candidate, None)
                             (
                                 candidate_val,
                                 candidate_quality,
                                 elapsed_val,
                                 elapsed_quality,
-                            ) = await asyncio.to_thread(
-                                evaluate_editor_draft, candidate, structure_quality
-                            )
+                                _candidate_assessment,
+                            ) = await evaluate_editor_draft(structural_candidate)
                             validation_elapsed += elapsed_val
                             quality_elapsed += elapsed_quality
                             base_blockers = self._mapped_blocking_keys(
@@ -834,11 +1188,11 @@ class ArticleEditor:
                                 operation_error = "new_blocker_atomic_rollback"
                             else:
                                 current_draft, current_val, current_quality = (
-                                    candidate,
+                                    structural_candidate,
                                     candidate_val,
                                     candidate_quality,
                                 )
-                                structure_changed = candidate != structure_base
+                                structure_changed = structural_candidate != structure_base
                         except TimeoutError:
                             raise
                         except ValueError as exc:
@@ -856,6 +1210,7 @@ class ArticleEditor:
                             structure_val,
                             structure_quality,
                         )
+                        self.last_assessment = await assess_candidate(structure_base)
                     self.last_structural_operations.extend(
                         self._operation_metadata(
                             operation,
@@ -877,32 +1232,35 @@ class ArticleEditor:
                             f"op:{operation.operation_id}" for operation in operations
                         )
                         self.last_patched_unit_ids = tuple(dict.fromkeys(patched_unit_ids))
+                    for operation in operations:
+                        for source_unit_id in operation.source_unit_ids:
+                            if source_unit_id not in unit_outcomes:
+                                continue
+                            if structure_changed:
+                                unit_outcomes[source_unit_id] = {
+                                    "status": "applied",
+                                    "reason": "structural_operation_applied",
+                                    "attempted_text": "",
+                                }
+                            elif operation_error is not None:
+                                if unit_outcomes[source_unit_id].get("status") != "applied":
+                                    unit_outcomes[source_unit_id] = {
+                                        "status": "rolled_back",
+                                        "reason": "structural_batch_rollback",
+                                        "attempted_text": "",
+                                    }
+                            elif unit_outcomes[source_unit_id].get("status") == "not_returned":
+                                unit_outcomes[source_unit_id] = {
+                                    "status": "no_op",
+                                    "reason": "structure_unchanged",
+                                    "attempted_text": "",
+                                }
 
-                coverage = (
-                    await asyncio.to_thread(
-                        diagnose_article_coverage,
-                        current_draft,
-                        coverage_plan,
-                        context=context,
-                        excluded_story_ids=(
-                            material_projection.suppressed_story_ids
-                            if material_projection is not None
-                            else ()
-                        ),
-                    )
-                    if coverage_plan is not None
-                    else None
-                )
-                self.last_assessment = ArticleAssessmentCheckpoint(
-                    current_draft,
-                    current_val,
-                    current_quality,
-                    input_fingerprint,
-                    coverage,
-                )
+                final_checkpoint = await assess_candidate(current_draft)
+                current_val, current_quality = final_checkpoint.validation, final_checkpoint.quality
                 self.last_quality_report = current_quality
                 if checkpoint_observer is not None:
-                    checkpoint_observer("editor", current_draft, self.last_assessment)
+                    checkpoint_observer("editor", current_draft, final_checkpoint)
                 made_progress = bool(
                     {key for key in previous_actionable if key[1] in requested_units}
                     - actionable_keys(current_val, current_quality)
@@ -912,10 +1270,110 @@ class ArticleEditor:
                     # paragraph even before the thematic finding disappears.
                     made_progress = True
                     no_op_patch_signatures.clear()
-                    previous_attempt_feedback = {}
-                previous_attempt_feedback = {
-                    unit_id: dict(outcome) for unit_id, outcome in unit_outcomes.items()
+                result_fingerprint = _draft_fingerprint(current_draft)
+                for recorded_outcome in self.last_unit_outcomes:
+                    if (
+                        recorded_outcome["pass_index"] == attempt
+                        and recorded_outcome["base_fingerprint"] == base_fingerprint
+                    ):
+                        recorded_outcome["result_fingerprint"] = result_fingerprint
+                for unit_id, unit in prompt_units_by_id.items():
+                    outcome = unit_outcomes.get(unit_id, {})
+                    if outcome.get("status") == "applied":
+                        status, reason = "applied", "accepted_change"
+                        attempted_target_signatures[target_signature(unit)] = (
+                            1 if made_progress else 2
+                        )
+                    elif outcome.get("status") == "no_op":
+                        status, reason = "no_change", "text_unchanged"
+                        attempted_target_signatures[target_signature(unit)] = 2
+                    elif outcome.get("status") == "rejected":
+                        status = "rejected"
+                        reason = (
+                            "new_blocker_quarantined"
+                            if outcome.get("reason") == "new_blocker_quarantined"
+                            else "patch_rejected"
+                        )
+                        attempted_target_signatures[target_signature(unit)] = 2
+                    elif outcome.get("status") == "rolled_back":
+                        status, reason = "rolled_back", "structural_batch_rollback"
+                        attempted_target_signatures[target_signature(unit)] = 2
+                    else:
+                        status, reason = "not_returned", "patch_not_returned"
+                        attempted_target_signatures[target_signature(unit)] = 2
+                    previous_attempt_feedback[target_signature(unit)] = {
+                        "status": status,
+                        "reason": reason,
+                    }
+                    self.last_unit_outcomes.append(
+                        safe_unit_outcome(
+                            pass_index=attempt,
+                            unit_id=unit_id,
+                            status=status,
+                            reason=reason,
+                            issues=unit["issues"],
+                            required_support_count=unit["required_support_count"],
+                            shown_support_count=unit["shown_support_count"],
+                            base_fingerprint=base_fingerprint,
+                            result_fingerprint=result_fingerprint,
+                        )
+                    )
+                applied_unit_ids = {
+                    unit_id
+                    for unit_id, outcome in unit_outcomes.items()
+                    if outcome.get("status") == "applied"
                 }
+                if structure_changed:
+                    applied_unit_ids.update(
+                        unit_id for operation in operations for unit_id in operation.source_unit_ids
+                    )
+                applied_unit_count = len(applied_unit_ids)
+                final_blocking_issues = [issue for issue in current_val.issues if issue.blocking]
+                final_localized_quality = [
+                    localized
+                    for finding in current_quality.repair_findings
+                    for localized in self._localize_article_quality_finding(current_draft, finding)
+                ]
+                final_unlocalizable_quality_count = sum(
+                    not self._localize_article_quality_finding(current_draft, finding)
+                    for finding in current_quality.repair_findings
+                )
+                unresolved_target_count = (
+                    len(
+                        {
+                            issue.unit_id
+                            for issue in final_blocking_issues
+                            if issue.unit_id not in ("DRAFT", "ARTICLE", "")
+                        }
+                        | {localized.unit_id for localized in final_localized_quality}
+                    )
+                    + sum(
+                        issue.unit_id in ("DRAFT", "ARTICLE", "") for issue in final_blocking_issues
+                    )
+                    + final_unlocalizable_quality_count
+                )
+                pass_reason = (
+                    parse_reason
+                    if parse_reason != "completed"
+                    else "all_targets_resolved"
+                    if unresolved_target_count == 0
+                    else "deferred_units_remain"
+                    if deferred_count
+                    else "completed"
+                    if made_progress
+                    else "no_measurable_progress"
+                )
+                append_pass_outcome(
+                    pass_index=attempt,
+                    reason=pass_reason,
+                    requested=len(requested_units),
+                    applied=applied_unit_count,
+                    deferred=deferred_count,
+                    unresolved=unresolved_target_count,
+                    elapsed=perf_counter() - attempt_started,
+                    base_fingerprint=base_fingerprint,
+                    unknown_unit_id_count=_unknown_unit_count,
+                )
                 logger.info(
                     "ArticleEditor pass %d timings: evidence_validation=%.2fs "
                     "quality=%.2fs pass_elapsed=%.2fs",
@@ -966,6 +1424,8 @@ class ArticleEditor:
 
                 if not (actually_changed or structure_changed) or not made_progress:
                     logger.info("ArticleEditor stopped after no measurable targeted progress")
+                    if attempt < max_attempts and deferred_count:
+                        continue
                     break
                 if current_val.is_valid and not current_quality.needs_edit:
                     logger.info("ArticleEditor successfully resolved all validation issues!")
@@ -986,6 +1446,54 @@ class ArticleEditor:
                     )
 
             except TimeoutError:
+                current_draft, current_val, current_quality = (
+                    rollback_draft,
+                    rollback_val,
+                    rollback_quality,
+                )
+                checkpoint = matching_assessment(rollback_draft) or rollback_assessment
+                if checkpoint is not None and checkpoint.matches(
+                    rollback_draft,
+                    input_fingerprint,
+                    source_identity=source_identity,
+                ):
+                    self.last_assessment = checkpoint
+                else:
+                    self.last_assessment = None
+                self.last_quality_report = current_quality
+                result_fingerprint = _draft_fingerprint(current_draft)
+                for unit_id, unit in prompt_units_by_id.items():
+                    outcome = unit_outcomes.get(unit_id, {})
+                    if outcome.get("status") == "applied":
+                        status, reason = "rolled_back", "deadline_exhausted"
+                    else:
+                        status, reason = "not_returned", "deadline_exhausted"
+                    self.last_unit_outcomes.append(
+                        safe_unit_outcome(
+                            pass_index=attempt,
+                            unit_id=unit_id,
+                            status=status,
+                            reason=reason,
+                            issues=unit["issues"],
+                            required_support_count=unit["required_support_count"],
+                            shown_support_count=unit["shown_support_count"],
+                            base_fingerprint=base_fingerprint,
+                            result_fingerprint=result_fingerprint,
+                        )
+                    )
+                append_pass_outcome(
+                    pass_index=attempt,
+                    reason="deadline_exhausted",
+                    requested=len(requested_units),
+                    applied=0,
+                    deferred=deferred_count,
+                    unresolved=len(issues_by_unit) + unlocalizable_count,
+                    elapsed=perf_counter() - attempt_started,
+                    base_fingerprint=base_fingerprint,
+                    unknown_unit_id_count=_unknown_unit_count,
+                )
+                patched_unit_ids = rollback_patched_unit_ids
+                self.last_patched_unit_ids = tuple(dict.fromkeys(patched_unit_ids))
                 raise
             except Exception as exc:
                 # Keep text, Evidence Boundary result, and quality report as
@@ -995,7 +1503,15 @@ class ArticleEditor:
                 current_val = rollback_val
                 current_quality = rollback_quality
                 self.last_quality_report = current_quality
-                self.last_assessment = rollback_assessment
+                checkpoint = matching_assessment(rollback_draft) or rollback_assessment
+                if checkpoint is not None and checkpoint.matches(
+                    rollback_draft,
+                    input_fingerprint,
+                    source_identity=source_identity,
+                ):
+                    self.last_assessment = checkpoint
+                else:
+                    self.last_assessment = None
                 patched_unit_ids = rollback_patched_unit_ids
                 for operation_outcome in self.last_structural_operations:
                     if operation_outcome.get("attempt") == attempt and operation_outcome.get(
@@ -1004,11 +1520,38 @@ class ArticleEditor:
                         operation_outcome["status"] = "rejected"
                         operation_outcome["reason"] = "editor_pass_error_atomic_rollback"
                 self.last_patched_unit_ids = tuple(dict.fromkeys(patched_unit_ids))
-                for outcome in unit_outcomes.values():
-                    if outcome.get("status") == "applied" and current_draft == previous_draft:
-                        outcome["status"] = "rejected"
-                        outcome["reason"] = "validation_error_rolled_back"
-                logger.warning("ArticleEditor pass %d encountered error: %s", attempt, exc)
+                result_fingerprint = _draft_fingerprint(current_draft)
+                for unit_id, unit in prompt_units_by_id.items():
+                    outcome = unit_outcomes.get(unit_id, {})
+                    if outcome.get("status") == "applied":
+                        status, reason = "rolled_back", "editor_pass_error_atomic_rollback"
+                    elif outcome.get("status") == "rejected":
+                        status, reason = "rejected", "patch_rejected"
+                    elif outcome.get("status") == "no_op":
+                        status, reason = "no_change", "text_unchanged"
+                    else:
+                        status, reason = "not_returned", "editor_pass_error_atomic_rollback"
+                    signature = target_signature(unit)
+                    attempted_target_signatures[signature] = 2
+                    previous_attempt_feedback[signature] = {"status": status, "reason": reason}
+                    self.last_unit_outcomes.append(
+                        safe_unit_outcome(
+                            pass_index=attempt,
+                            unit_id=unit_id,
+                            status=status,
+                            reason=reason,
+                            issues=unit["issues"],
+                            required_support_count=unit["required_support_count"],
+                            shown_support_count=unit["shown_support_count"],
+                            base_fingerprint=base_fingerprint,
+                            result_fingerprint=result_fingerprint,
+                        )
+                    )
+                logger.warning(
+                    "ArticleEditor pass %d encountered error type %s",
+                    attempt,
+                    type(exc).__name__,
+                )
                 if not unit_outcomes:
                     unit_outcomes = {
                         unit_id: {
@@ -1018,9 +1561,17 @@ class ArticleEditor:
                         }
                         for unit_id in requested_units
                     }
-                previous_attempt_feedback = {
-                    unit_id: dict(outcome) for unit_id, outcome in unit_outcomes.items()
-                }
+                append_pass_outcome(
+                    pass_index=attempt,
+                    reason="editor_pass_error_atomic_rollback",
+                    requested=len(requested_units),
+                    applied=0,
+                    deferred=deferred_count,
+                    unresolved=len(issues_by_unit) + unlocalizable_count,
+                    elapsed=perf_counter() - attempt_started,
+                    base_fingerprint=base_fingerprint,
+                    unknown_unit_id_count=_unknown_unit_count,
+                )
                 if attempt_observer is not None:
                     await attempt_observer.attempt_finished(
                         obs_att_id,
@@ -1098,11 +1649,39 @@ class ArticleEditor:
                 )
                 if not projected:
                     return ""
-                return projected
-            source = sanitize_writer_source_text((support.source_text or "").strip())
+                fact = projected
+                source = ""
+            else:
+                source = sanitize_writer_source_text((support.source_text or "").strip())
+
+            fields = [
+                f"kind={support.support_kind}",
+                f"evidence_kind={support.evidence_kind}",
+                f"temporal_role={support.temporal_role}",
+                f"source_roles={','.join(support.source_roles) if support.source_roles else 'unknown'}",
+                f"framing={_support_framing(support)}",
+            ]
+            if support.story_id:
+                fields.append(f"story_id={support.story_id}")
+            for field_name, value in (
+                ("observed_at", support.observed_at),
+                ("effective_from", support.effective_from),
+                ("effective_until", support.effective_until),
+            ):
+                if value is not None:
+                    fields.append(f"{field_name}={value.isoformat()}")
+            fields.append(f"fact={fact}")
             if source and source != fact:
-                return f"{fact}\nПервичный источник: {source}" if fact else source
-            return fact or source
+                fields.append(f"primary_source={source}")
+            parent_context = sanitize_writer_source_text(
+                (support.reply_parent_context_text or "").strip()
+            )
+            if parent_context:
+                fields.append(
+                    "reply_parent_context (subject/place only; not a status or answer)="
+                    f"{parent_context}"
+                )
+            return "\n".join(fields)
 
         def support_packets(support_ids: list[str] | tuple[str, ...]) -> list[dict[str, str]]:
             packets: list[dict[str, str]] = []
@@ -1258,7 +1837,7 @@ class ArticleEditor:
             }
             return [
                 support_id for support_id in dict.fromkeys(prioritized) if support_id in available
-            ][:_MAX_HEADING_CONTEXT_SUPPORTS]
+            ]
 
         def current_title_repair_supports() -> list[str]:
             """Find current-window article evidence for repairing a historical title.
@@ -1355,17 +1934,16 @@ class ArticleEditor:
                     [sid for claim in draft.title_claims for sid in claim.cited_support_ids],
                     issues_by_unit["TITLE"],
                 )
-            if t_sups or not missing_title:
-                unit_data.append(
-                    {
-                        "unit_id": "TITLE",
-                        "unit_type": "title",
-                        "text": draft.title,
-                        "support_ids": t_sups,
-                        "support_packets": support_packets(t_sups),
-                        "issues": title_issues,
-                    }
-                )
+            unit_data.append(
+                {
+                    "unit_id": "TITLE",
+                    "unit_type": "title",
+                    "text": draft.title,
+                    "support_ids": t_sups,
+                    "support_packets": support_packets(t_sups),
+                    "issues": title_issues,
+                }
+            )
 
         # 2. Lead
         if "LEAD" in issues_by_unit:
@@ -1381,17 +1959,16 @@ class ArticleEditor:
                     [sid for claim in draft.lead_claims for sid in claim.cited_support_ids],
                     lead_issues,
                 )
-            if lead_sups or not missing_lead:
-                unit_data.append(
-                    {
-                        "unit_id": "LEAD",
-                        "unit_type": "lead",
-                        "text": draft.lead,
-                        "support_ids": lead_sups,
-                        "support_packets": support_packets(lead_sups),
-                        "issues": lead_issues,
-                    }
-                )
+            unit_data.append(
+                {
+                    "unit_id": "LEAD",
+                    "unit_type": "lead",
+                    "text": draft.lead,
+                    "support_ids": lead_sups,
+                    "support_packets": support_packets(lead_sups),
+                    "issues": lead_issues,
+                }
+            )
 
         # 3. Sections (Headings and Paragraphs)
         p_idx = 1
@@ -1464,59 +2041,107 @@ class ArticleEditor:
         return unit_data
 
     @staticmethod
-    def _bound_prompt_supports(unit_contexts: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Choose bounded, identifiable evidence packets for each requested unit.
+    def _repair_priority(unit: Mapping[str, Any]) -> int:
+        """Order factual/safety repairs, composition repairs, then cosmetics."""
+        issues = unit.get("issues", ())
+        if any(
+            not isinstance(issue, ArticleReaderQualityFinding)
+            or issue.code == "CHAT_KITCHEN_LEAK"
+            or issue.severity == "blocking"
+            for issue in issues
+        ):
+            return 0
+        cosmetic_classes = {
+            "name_typography",
+            "sentence_completeness",
+            "quote_count_heuristic",
+            "paragraph_rhythm",
+        }
+        if any(
+            article_quality_policy(issue.code).finding_class not in cosmetic_classes
+            for issue in issues
+            if isinstance(issue, ArticleReaderQualityFinding)
+        ):
+            return 1
+        return 2
 
-        Finding-specific supports are first, followed by the other support
-        packets allowed for the unit. The exact IDs and text returned here are
-        the only ones shown to the editor and later allowed for re-grounding.
+    @staticmethod
+    def _bound_prompt_supports(
+        unit_contexts: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Keep a unit only when every mandatory evidence packet fits whole.
+
+        Character limits apply independently to each text unit. Nothing is
+        truncated or silently dropped from its citable support set.
         """
         bounded_units: list[dict[str, Any]] = []
+        omitted_units: list[dict[str, Any]] = []
         for unit in unit_contexts:
+            required_ids = tuple(dict.fromkeys(unit.get("support_ids", ())))
             packets_by_id = {
                 packet["support_id"]: packet
                 for packet in unit.get("support_packets", ())
                 if packet.get("support_id") and packet.get("text")
             }
-            finding_support_ids = [
-                support_id
-                for issue in unit.get("issues", ())
-                for support_id in (getattr(issue, "support_ids", ()) or ())
-            ]
-            ordered_ids = list(
-                dict.fromkeys(
-                    (*finding_support_ids, *unit.get("support_ids", ()), *packets_by_id.keys())
+            missing_ids = tuple(sid for sid in required_ids if sid not in packets_by_id)
+            if not required_ids or missing_ids:
+                omitted_units.append(
+                    {
+                        **unit,
+                        "selection_status": "missing_required_support",
+                        "selection_reason": "required_support_missing",
+                        "required_support_count": len(required_ids),
+                        "shown_support_count": 0,
+                    }
                 )
-            )
-            selected: list[dict[str, str]] = []
-            shown_chars = 0
-            for support_id in ordered_ids:
-                packet = packets_by_id.get(support_id)
-                if packet is None or len(selected) >= _MAX_EDITOR_SUPPORTS:
-                    continue
-                remaining_chars = _MAX_EDITOR_SUPPORT_CONTEXT_CHARS - shown_chars
-                packet_chars = len(f"[{support_id}] {packet['text']}")
-                if len(packet["text"]) > _MAX_EDITOR_SUPPORT_PACKET_CHARS:
-                    continue
-                if remaining_chars < packet_chars:
-                    break
-                text = packet["text"]
-                selected.append({"support_id": support_id, "text": text})
-                shown_chars += packet_chars
+                continue
+
+            ordered_ids = required_ids or tuple(packets_by_id)
+            if len(ordered_ids) > _MAX_EDITOR_SUPPORTS:
+                omitted_units.append(
+                    {
+                        **unit,
+                        "selection_status": "deferred_budget",
+                        "selection_reason": "support_budget_exceeded",
+                        "required_support_count": len(required_ids),
+                        "shown_support_count": 0,
+                    }
+                )
+                continue
+            selected = [packets_by_id[sid] for sid in ordered_ids]
+            rendered = [f"[{packet['support_id']}] {packet['text']}" for packet in selected]
+            if any(len(text) > _MAX_EDITOR_SUPPORT_PACKET_CHARS for text in rendered):
+                omitted_units.append(
+                    {
+                        **unit,
+                        "selection_status": "deferred_budget",
+                        "selection_reason": "support_packet_exceeded",
+                        "required_support_count": len(required_ids),
+                        "shown_support_count": 0,
+                    }
+                )
+                continue
+            if sum(map(len, rendered)) > _MAX_EDITOR_SUPPORT_CONTEXT_CHARS:
+                omitted_units.append(
+                    {
+                        **unit,
+                        "selection_status": "deferred_budget",
+                        "selection_reason": "support_budget_exceeded",
+                        "required_support_count": len(required_ids),
+                        "shown_support_count": 0,
+                    }
+                )
+                continue
 
             shown_ids = tuple(packet["support_id"] for packet in selected)
-            omitted_finding_supports = sum(
-                support_id not in shown_ids for support_id in dict.fromkeys(finding_support_ids)
-            )
-            omitted_count = max(0, len(packets_by_id) - len(selected))
             copied = dict(unit)
             copied["prompt_support_ids"] = shown_ids
-            copied["prompt_supports"] = [
-                f"[{packet['support_id']}] {packet['text']}" for packet in selected
-            ]
-            copied["supports"] = copied["prompt_supports"]
-            copied["support_packets_omitted"] = omitted_count
-            copied["finding_supports_omitted"] = omitted_finding_supports
+            copied["prompt_supports"] = rendered
+            copied["supports"] = rendered
+            copied["support_packets_omitted"] = 0
+            copied["finding_supports_omitted"] = 0
+            copied["required_support_count"] = len(required_ids)
+            copied["shown_support_count"] = len(shown_ids)
             reader_context = dict(copied.get("reader_context") or {})
             if reader_context.get("section_paragraphs"):
                 reader_context["section_paragraphs"] = tuple(
@@ -1531,7 +2156,7 @@ class ArticleEditor:
                 )
                 copied["reader_context"] = reader_context
             bounded_units.append(copied)
-        return bounded_units
+        return bounded_units, omitted_units
 
     @staticmethod
     def _patch_signature(
@@ -1715,10 +2340,10 @@ class ArticleEditor:
             "   - Категорически запрещено удалять весь абзац ([DELETE]), если в нем есть подтвержденная информация.\n\n"
             "7. ОТСУТСТВИЕ ИСТОЧНИКОВ (MISSING_SUPPORT):\n"
             '   - Только если к фрагменту вообще нет никаких подтверждающих фактов в источниках — верните пустую строку "" или "[DELETE]", чтобы удалить этот неподтвержденный фрагмент.\n\n'
-            "8. ЧАТОВАЯ КУХНЯ И ЖАРГОН (CHAT_KITCHEN_LEAK):\n"
-            "   - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать слова чатовой кухни («перекличка», «в перекличках», «в чате», «в каналах», «в пабликах», «в группах», «в комментариях» и т.п.).\n"
-            "   - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать разговорный и сетевой сленг («фигня», «хрень», «херня», «хреново», «нафиг», «пофиг» и т.п.). Даже если в источниках жители выражаются неформально, в тексте статьи переводите их в литературный язык («сохраняются перебои», «трудности», «проблемы»).\n"
-            "   - Замените их нейтральным описанием ситуации от сути события или стандартной городской журналистской атрибуцией («по сообщениям жителей», «горожане отмечают», «картина обратная»).\n\n"
+            "8. МЕХАНИКА ИСТОЧНИКОВ И АВТОРСКАЯ РАЗГОВОРНАЯ РЕЧЬ:\n"
+            "   - Для замечания CHAT_KITCHEN_LEAK уберите только прямое раскрытие технического источника («в чате», «в канале», «в комментариях») и сохраните сообщение с естественной подтверждённой атрибуцией.\n"
+            "   - Для COLLOQUIAL_AUTHOR_PROSE перепишите только разговорные слова автора как спокойную косвенную речь, сохранив реальный факт и атрибуцию.\n"
+            "   - Не редактируйте точные прямые цитаты: разговорные слова в цитате остаются неизменными. Не делайте из обычного разговорного слова утечку источника и не добавляйте статус, причину или географию.\n\n"
             "9. ОБЪЕМ, СТИЛЬ И СОХРАННОСТЬ:\n"
             "   - Сохраняйте естественный журналистский стиль и связность с остальным текстом статьи.\n"
             "   - Не добавляйте никаких новых фактов или деталей, которых нет в предоставленных подтверждениях.\n"
@@ -1759,6 +2384,17 @@ class ArticleEditor:
                 "Если в абзаце есть неподтвержденные детали — аккуратно замените их подтвержденными фактами из источников ниже.\n"
             )
         if previous_attempt_feedback:
+            pass_summary = previous_attempt_feedback.get("_pass_summary")
+            if pass_summary:
+                blocks.extend(
+                    [
+                        "Безопасный итог первого прохода редактора (счётчики, без текста):",
+                        json.dumps(pass_summary, ensure_ascii=False, sort_keys=True),
+                        "Сначала исправьте ещё не рассмотренные фрагменты; для прежних отказов "
+                        "используйте другой grounded вариант.",
+                        "",
+                    ]
+                )
             feedback_for_targets = {
                 unit["unit_id"]: dict(previous_attempt_feedback[unit["unit_id"]])
                 for unit in unit_contexts
@@ -2152,6 +2788,12 @@ class ArticleEditor:
                 "сохраните его текущую формулировку. Любые прямые цитаты оставляйте дословно; "
                 "сжатие выполняйте косвенной речью."
             ),
+            "COLLOQUIAL_AUTHOR_PROSE": (
+                " -> Перепишите только авторскую разговорную формулировку в спокойную косвенную "
+                "речь, сохранив конкретное сообщение, его смысл и атрибуцию. Не заменяйте факт "
+                "общим клише, не добавляйте причину, район, время или статус услуги и не меняйте "
+                "ни одного слова внутри точной прямой цитаты."
+            ),
         }
         instruction = instructions.get(code)
         if instruction is None and policy.repair_scope in {"unit", "support_units", "story_unit"}:
@@ -2370,9 +3012,10 @@ class ArticleEditor:
                 return None, "required_support_unavailable"
             packet = {
                 "support_id": support_id,
-                "text": text,
-                "source_text": source,
+                "story_id": support.story_id,
                 "evidence_kind": support.evidence_kind,
+                "source_roles": list(support.source_roles),
+                "framing": _support_framing(support),
                 "temporal_role": support.temporal_role,
                 "observed_at": support.observed_at.isoformat() if support.observed_at else None,
                 "effective_from": support.effective_from.isoformat()
@@ -2382,6 +3025,18 @@ class ArticleEditor:
                 if support.effective_until
                 else None,
                 "theme_hints": article_support_theme_hints(support),
+                "fact": text,
+                "primary_source": source if source and source != text else None,
+                "reply_parent_context": sanitize_writer_source_text(
+                    support.reply_parent_context_text
+                )
+                or None,
+                "provenance": {
+                    "source_refs": list(support.source_refs),
+                    "fragment_ids": list(support.fragment_ids),
+                    "source_item_ids": list(support.source_item_ids),
+                    "reply_parent_item_id": support.reply_parent_item_id,
+                },
             }
             size = len(json.dumps(packet, ensure_ascii=False))
             if size > _MAX_EDITOR_SUPPORT_PACKET_CHARS:
@@ -2853,6 +3508,77 @@ class ArticleEditor:
                 patches[k.strip()] = ""
 
         return patches
+
+    @staticmethod
+    def _parse_editor_response_details(
+        response: str | None,
+        requested_unit_ids: set[str],
+    ) -> tuple[dict[str, str], str, int]:
+        """Parse tolerant editor envelopes and classify safe shape outcomes."""
+        cleaned = (response or "").strip()
+        if not cleaned:
+            return {}, "unparseable_response", 0
+        match = _JSON_BLOCK_RE.search(cleaned)
+        if match:
+            cleaned = match.group(1)
+        elif cleaned.startswith("```"):
+            lines = cleaned.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].startswith("```"):
+                lines = lines[:-1]
+            cleaned = "\n".join(lines).strip()
+        try:
+            data = json.loads(cleaned)
+        except Exception:
+            start, end = cleaned.find("{"), cleaned.rfind("}")
+            if start < 0 or end <= start:
+                return {}, "unparseable_response", 0
+            try:
+                data = json.loads(cleaned[start : end + 1])
+            except Exception:
+                return {}, "unparseable_response", 0
+
+        if not isinstance(data, dict):
+            return {}, "invalid_response_shape", 0
+        if "units" in data:
+            raw_units = data.get("units")
+            if not isinstance(raw_units, dict):
+                return {}, "invalid_response_shape", 0
+        else:
+            raw_units = {
+                key: value
+                for key, value in data.items()
+                if key not in {"operations", "base_fingerprint"}
+            }
+            if not raw_units and not isinstance(data.get("operations"), list):
+                return {}, "invalid_response_shape", 0
+
+        patches: dict[str, str] = {}
+        unknown_count = 0
+        malformed_values = 0
+        for key, value in raw_units.items():
+            if not isinstance(key, str):
+                malformed_values += 1
+                continue
+            unit_id = key.strip()
+            if unit_id not in requested_unit_ids:
+                unknown_count += 1
+                continue
+            if isinstance(value, str):
+                patches[unit_id] = _normalize_homoglyphs(value.strip())
+            elif isinstance(value, dict) and isinstance(value.get("text"), str):
+                patches[unit_id] = _normalize_homoglyphs(value["text"].strip())
+            elif value is None:
+                patches[unit_id] = ""
+            else:
+                malformed_values += 1
+
+        if unknown_count:
+            return patches, "unknown_unit_ids", unknown_count
+        if malformed_values:
+            return patches, "invalid_response_shape", 0
+        return patches, "completed", 0
 
     def apply_patches(
         self,
