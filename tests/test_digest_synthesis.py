@@ -212,9 +212,9 @@ def test_incomplete_model_claim_atoms_are_derived_from_fixed_facts() -> None:
                     "block_id": block.block_id,
                     "items": [
                         {
-                            "composition_unit_ids": [
-                                unit_for_fact[f"fact:{index}"] for index in (1, 2, 3)
-                            ],
+                            # Model omitted two units from this synthesized item's map;
+                            # Python derives all three from its exact covered facts.
+                            "composition_unit_ids": [unit_for_fact["fact:1"]],
                             "covered_fact_ids": ["fact:1", "fact:2", "fact:3"],
                             "headline": "Свет",
                             "body": "На АКЗ и Крылова перебои, а возле поликлиники света нет.",

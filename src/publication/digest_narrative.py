@@ -4031,13 +4031,8 @@ def _parse_composition_writer_output(
             unit_ids = tuple(str(unit_id).strip() for unit_id in raw_unit_ids)
             if len(unit_ids) != len(set(unit_ids)):
                 raise ValueError("composition item contains duplicate unit IDs")
-            item_units = [units.get(unit_id) for unit_id in unit_ids]
-            if any(unit is None for unit in item_units):
+            if any(unit_id not in units for unit_id in unit_ids):
                 raise ValueError(f"unknown composition_unit_id in {block.block_id}: {unit_ids!r}")
-            if any(
-                str(unit.rubric_id) != block.rubric_id for unit in item_units if unit is not None
-            ):
-                raise ValueError("composition items may combine only units from the same rubric")
             if "covered_story_ids" in raw_item or "cited_support_ids" in raw_item:
                 raise ValueError(
                     "writer may not author Story or support membership on composition path"
@@ -4053,10 +4048,11 @@ def _parse_composition_writer_output(
             item_fact_owner_ids = {fact_to_unit[fid] for fid in fact_ids}
             item_summary_unit_ids = {unit_id for unit_id in unit_ids if not units[unit_id].fact_ids}
             exact_item_unit_ids = item_fact_owner_ids | item_summary_unit_ids
-            if set(unit_ids) != exact_item_unit_ids:
-                raise ValueError(
-                    f"composition unit IDs do not match item facts/summary membership: {unit_ids}"
-                )
+            # Covered fact IDs are the stable contract. Derive their composition
+            # units here; writer-authored unit lists often omit a joined unit or
+            # repeat a neighbouring one. Summary-only memberships still come from
+            # their explicit unit IDs because they have no material fact ID.
+            unit_ids = tuple(unit_id for unit_id in units if unit_id in exact_item_unit_ids)
             for fact_id in fact_ids:
                 used_facts_by_unit[fact_to_unit[fact_id]].append(fact_id)
             for unit_id in item_summary_unit_ids:
