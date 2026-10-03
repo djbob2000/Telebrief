@@ -504,32 +504,39 @@ def test_scattered_power_items_raise_nonblocking_synthesis_prompt() -> None:
 
     reports = tuple(
         ("electricity", location, f"На {location} несколько дней нет света.")
-        for location in ("РТС", "АКЗ", "Крылова", "Коса", "Центр")
+        for location in ("РТС", "АКЗ", "Крылова")
     )
     _, evidence, _, plan = _fixture(*reports)
     block = plan.blocks[0]
-    raw_items = [
-        {
-            "composition_unit_ids": [unit.unit_id],
-            "covered_fact_ids": list(unit.fact_ids),
-            "headline": "",
-            "body": next(
-                fact.text for fact in block.required_facts if fact.fact_id in unit.fact_ids
-            ),
-            "claims": [
-                {"text": fact.text, "covered_fact_ids": [fact.fact_id]}
-                for fact in block.required_facts
-                if fact.fact_id in unit.fact_ids
-            ],
-        }
-        for unit in block.composition_units
-    ]
+    unit_groups = (
+        block.composition_units[:3],
+        block.composition_units[3:5],
+        block.composition_units[5:],
+    )
+    raw_items = []
+    for group in unit_groups:
+        fact_ids = [fact_id for unit in group for fact_id in unit.fact_ids]
+        facts = [fact for fact in block.required_facts if fact.fact_id in fact_ids]
+        raw_items.append(
+            {
+                "composition_unit_ids": [unit.unit_id for unit in group],
+                "covered_fact_ids": fact_ids,
+                "headline": "",
+                "body": " ".join(fact.text for fact in facts),
+                "claims": [
+                    {"text": fact.text, "covered_fact_ids": [fact.fact_id]} for fact in facts
+                ],
+            }
+        )
+    assert len(raw_items) == 3
+    raw_items[0]["body"] = "В отдельном сообщении жители уточнили: " + str(raw_items[0]["body"])
     draft = _parse_composition_writer_output(
         {"blocks": [{"block_id": block.block_id, "items": raw_items}]}, plan=plan
     )
     audit = audit_digest_prose_quality(draft, evidence)
     warning = next(w for w in audit.warnings if w.code == "FRAGMENTED_SERVICE_REPORTS")
     assert warning.block_id == block.block_id
+    assert "SOURCE_META_NARRATION" in {w.code for w in audit.warnings}
     assert audit.is_publishable
 
 

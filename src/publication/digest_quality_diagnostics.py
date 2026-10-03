@@ -10,7 +10,7 @@ from typing import Any, Mapping, Sequence
 from src.publication.digest_narrative import DigestNarrativeDraft
 from src.publication.evidence import PublicationEvidence
 
-DIGEST_DIAGNOSTICS_VERSION = "digest-diagnostics-v4"
+DIGEST_DIAGNOSTICS_VERSION = "digest-diagnostics-v5"
 
 _ATTRIBUTION_PATTERNS = [
     re.compile(
@@ -61,6 +61,13 @@ _CHAT_SLANG_OR_METADATA_RE = re.compile(
 )
 _POWER_REPORT_RE = re.compile(
     r"\b(?:свет\w*|электрич\w*|электроснабж\w*|энергоснабж\w*|обесточ\w*|напряжен\w*)\b",
+    re.IGNORECASE,
+)
+_SOURCE_META_NARRATION_RE = re.compile(
+    r"\b(?:в\s+(?:отдельном|другом|следующем|одном)\s+сообщени\w*|"
+    r"(?:другое|отдельное)\s+сообщени\w*|"
+    r"отдельно\s+(?:жители|горожане)\s+(?:сообща\w*|писа\w*)|"
+    r"в\s+сообщениях\s+(?:упомина\w*|говор\w*|сообща\w*|отмеча\w*))\b",
     re.IGNORECASE,
 )
 _CLASSIFIED_AD_RE = re.compile(
@@ -294,7 +301,7 @@ def audit_digest_prose_quality(
             for idx, item in enumerate(block.items)
             if _POWER_REPORT_RE.search(f"{item.headline} {item.body}")
         ]
-        if len(power_item_indexes) >= 5:
+        if len(power_item_indexes) >= 3:
             warnings.append(
                 DigestQualityWarning(
                     code="FRAGMENTED_SERVICE_REPORTS",
@@ -367,6 +374,20 @@ def audit_digest_prose_quality(
                 )
 
             item_full_text = f"{item.headline} {item.body}"
+            if _SOURCE_META_NARRATION_RE.search(item_full_text):
+                warnings.append(
+                    DigestQualityWarning(
+                        code="SOURCE_META_NARRATION",
+                        message=(
+                            "Describe the supported city development directly; do not narrate "
+                            "separate source messages or list what posts mention."
+                        ),
+                        block_id=block.block_id,
+                        item_index=idx,
+                        headline=item.headline,
+                    )
+                )
+
             if _TECHNICAL_TOKEN_RE.search(item_full_text):
                 warnings.append(
                     DigestQualityWarning(
