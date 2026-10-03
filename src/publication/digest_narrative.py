@@ -24,7 +24,7 @@ from src.publication.evidence import PublicationEvidence
 
 logger = logging.getLogger(__name__)
 
-DIGEST_COMPOSITION_MEMBERSHIP_VERSION = "digest_membership_v2"
+DIGEST_COMPOSITION_MEMBERSHIP_VERSION = "digest_membership_v3"
 
 _INTERNAL_LEAKAGE_RE = re.compile(r"\[(?:story:\d+|SUPPORT\s+\d+|ref-\d+|tg:\S+)\]", re.IGNORECASE)
 _INTERNAL_REPLY_ANNOTATION_RE = re.compile(
@@ -4012,6 +4012,7 @@ def _parse_composition_writer_output(
         if not isinstance(raw_block, Mapping) or not isinstance(raw_block.get("items"), list):
             raise ValueError(f"composition block {block.block_id} must contain items")
         units = {str(unit.unit_id): unit for unit in block.composition_units}
+        fact_by_id = {str(fact.fact_id): fact for fact in block.required_facts}
         fact_records = {str(record.fact_id): record for record in block.composition_fact_records}
         fact_to_unit = {
             str(fact_id): str(unit.unit_id)
@@ -4066,10 +4067,9 @@ def _parse_composition_writer_output(
             stories_for_item: list[str] = []
             supports_for_item: list[str] = []
             claims_raw = raw_item.get("claims")
-            if not isinstance(claims_raw, list) or not claims_raw:
+            if not isinstance(claims_raw, list):
                 raise ValueError(f"composition item {unit_ids} must contain claims")
             claims: list[DigestClaimAtom] = []
-            claim_fact_ids: list[str] = []
             claim_summary_unit_ids: list[str] = []
             for raw_claim in claims_raw:
                 if (
@@ -4081,8 +4081,6 @@ def _parse_composition_writer_output(
                         "writer may not author claim Story/support membership on composition path"
                     )
                 text = str(raw_claim.get("text", "")).strip()
-                if not text:
-                    raise ValueError(f"empty composition claim in units {unit_ids}")
                 raw_claim_facts = raw_claim.get("covered_fact_ids")
                 if not isinstance(raw_claim_facts, list):
                     raise ValueError("composition claim covered_fact_ids must be a list")
@@ -4106,17 +4104,16 @@ def _parse_composition_writer_output(
                 claim_stories: list[str] = []
                 claim_supports: list[str] = []
                 if claim_facts:
-                    for fact_id in claim_facts:
-                        record = fact_records.get(fact_id)
-                        if record is None:
-                            raise ValueError(f"missing provenance record for {fact_id}")
-                        claim_stories.extend(str(sid) for sid in record.story_ids)
-                        claim_supports.extend(str(sid) for sid in record.support_ids)
-                else:
-                    for summary_unit_id in claim_summary_units:
-                        unit = units[summary_unit_id]
-                        claim_stories.extend(str(sid) for sid in unit.story_ids)
-                        claim_supports.extend(str(sid) for sid in unit.support_ids)
+                    # Fact claim text and partition are deterministic metadata. Derive
+                    # them below from covered_fact_ids so an incomplete model-authored
+                    # Claim Atom cannot erase a selected fact or invent claim metadata.
+                    continue
+                if not text:
+                    raise ValueError(f"empty summary-only claim in units {unit_ids}")
+                for summary_unit_id in claim_summary_units:
+                    unit = units[summary_unit_id]
+                    claim_stories.extend(str(sid) for sid in unit.story_ids)
+                    claim_supports.extend(str(sid) for sid in unit.support_ids)
                 claim_story_ids = tuple(dict.fromkeys(claim_stories))
                 claim_support_ids = tuple(dict.fromkeys(claim_supports))
                 if not claim_story_ids or not claim_support_ids:
@@ -4126,18 +4123,32 @@ def _parse_composition_writer_output(
                         text=text,
                         covered_story_ids=claim_story_ids,
                         cited_support_ids=claim_support_ids,
-                        covered_fact_ids=claim_facts,
+                        covered_fact_ids=(),
                         summary_unit_ids=claim_summary_units,
                     )
                 )
-                claim_fact_ids.extend(claim_facts)
                 claim_summary_unit_ids.extend(claim_summary_units)
                 stories_for_item.extend(claim_story_ids)
                 supports_for_item.extend(claim_support_ids)
-            if len(claim_fact_ids) != len(set(claim_fact_ids)) or set(claim_fact_ids) != set(
-                fact_ids
-            ):
-                raise ValueError(f"claims do not exactly partition item facts in {unit_ids}")
+            for fact_id in fact_ids:
+                fact = fact_by_id.get(fact_id)
+                record = fact_records.get(fact_id)
+                if fact is None or record is None:
+                    raise ValueError(f"missing exact fact provenance for {fact_id}")
+                fact_story_ids = tuple(dict.fromkeys(str(sid) for sid in record.story_ids))
+                fact_support_ids = tuple(dict.fromkeys(str(sid) for sid in record.support_ids))
+                if not fact_story_ids or not fact_support_ids:
+                    raise ValueError(f"fact {fact_id} has no derived provenance")
+                claims.append(
+                    DigestClaimAtom(
+                        text=str(fact.text),
+                        covered_story_ids=fact_story_ids,
+                        cited_support_ids=fact_support_ids,
+                        covered_fact_ids=(fact_id,),
+                    )
+                )
+                stories_for_item.extend(fact_story_ids)
+                supports_for_item.extend(fact_support_ids)
             if (
                 len(claim_summary_unit_ids) != len(set(claim_summary_unit_ids))
                 or set(claim_summary_unit_ids) != item_summary_unit_ids

@@ -198,6 +198,60 @@ def test_synthesis_of_separate_street_units_keeps_full_coverage_and_grounding() 
         _parse_composition_writer_output(raw, plan=plan)
 
 
+def test_incomplete_model_claim_atoms_are_derived_from_fixed_facts() -> None:
+    cards, evidence, _, plan = _fixture()
+    block = plan.blocks[0]
+    unit_for_fact = {
+        fact_id: unit.unit_id for unit in block.composition_units for fact_id in unit.fact_ids
+    }
+    fact_text = {fact.fact_id: fact.text for fact in block.required_facts}
+    result = _parse_composition_writer_output(
+        {
+            "blocks": [
+                {
+                    "block_id": block.block_id,
+                    "items": [
+                        {
+                            "composition_unit_ids": [
+                                unit_for_fact[f"fact:{index}"] for index in (1, 2, 3)
+                            ],
+                            "covered_fact_ids": ["fact:1", "fact:2", "fact:3"],
+                            "headline": "Свет",
+                            "body": "На АКЗ и Крылова перебои, а возле поликлиники света нет.",
+                            # The writer omitted all three atom rows. Python owns the
+                            # fixed fact-to-support mapping, so the parser derives them.
+                            "claims": [],
+                        },
+                        {
+                            "composition_unit_ids": [unit_for_fact["fact:4"]],
+                            "covered_fact_ids": ["fact:4"],
+                            "headline": "Вода",
+                            "body": "По сообщению жителя, " + fact_text["fact:4"].lower(),
+                            "claims": [
+                                {
+                                    "text": fact_text["fact:4"],
+                                    "covered_fact_ids": ["fact:4"],
+                                }
+                            ],
+                        },
+                    ],
+                }
+            ]
+        },
+        plan=plan,
+    )
+    power = result.blocks[0].items[0]
+    assert set(power.covered_fact_ids) == {"fact:1", "fact:2", "fact:3"}
+    assert {claim.text for claim in power.claims} == {
+        fact_text["fact:1"],
+        fact_text["fact:2"],
+        fact_text["fact:3"],
+    }
+    assert {story_id for item in result.blocks[0].items for story_id in item.covered_story_ids} == {
+        card.id for card in cards
+    }
+
+
 @pytest.mark.parametrize("invalid", [False, True])
 def test_editor_recomposition_preserves_all_facts_or_rolls_back(invalid: bool) -> None:
     import asyncio
