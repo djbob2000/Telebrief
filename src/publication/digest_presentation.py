@@ -2454,6 +2454,10 @@ def _clean_fact_sentence(text: str) -> str:
 def _is_usable_fact_line(text: str) -> bool:
     """Filter out chat noise, resident questions, classified ads, lost & found, and meta comments."""
     raw_l = text.casefold()
+    from src.publication.story_quality import is_non_editorial_fact
+
+    if is_non_editorial_fact(raw_l):
+        return False
     if any(
         k in raw_l
         for k in (
