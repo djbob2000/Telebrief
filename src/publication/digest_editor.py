@@ -366,7 +366,7 @@ class DigestEditor:
                 "targeted_for_recomposition exactly once. Do not include facts from other items; "
                 "use target_recomposition_fact_ids from the user input as an exact checklist and "
                 "copy every ID into exactly one replacement item's covered_fact_ids. "
-                "the program restores non-target fact items byte-for-byte. Keep standalone "
+                "The program restores non-target fact items byte-for-byte. Keep standalone "
                 "summary-only items unchanged. If a targeted fact item also carries summary-only "
                 "units, preserve each such unit exactly once: include its unit ID in one replacement "
                 "item's composition_unit_ids and include a matching summary-only claim with that "

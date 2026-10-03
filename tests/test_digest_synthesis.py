@@ -328,11 +328,14 @@ def test_editor_recomposition_preserves_all_facts_or_rolls_back(invalid: bool) -
     assert "OVERLONG_SYNTHESIS" in {w.code for w in audit.warnings}
 
     captured_system_prompt = ""
+    captured_user_prompt = ""
 
     class Provider:
         async def chat_completion(self, **kwargs):
             nonlocal captured_system_prompt
+            nonlocal captured_user_prompt
             captured_system_prompt = kwargs["messages"][0]["content"]
+            captured_user_prompt = kwargs["messages"][1]["content"]
             replacement = [item(["fact:1", "fact:2", "fact:3", "fact:5"])]
             replacement[0]["composition_unit_ids"] = [replacement[0]["composition_unit_ids"][0]]
             replacement[0]["claims"][0]["text"] = "3 октября жители сообщают об отключении света."
@@ -342,20 +345,24 @@ def test_editor_recomposition_preserves_all_facts_or_rolls_back(invalid: bool) -
                 {"blocks": [{"block_id": block.block_id, "recomposed_items": replacement}]}
             )
 
-    result = asyncio.run(
-        DigestEditor(provider=Provider()).polish_and_compress(
-            original,
-            plan=plan,
-            evidence=evidence,
-            target_item_ids=(original.blocks[0].items[0].item_id,),
-            recompose_block_ids=(block.block_id,),
-        )
+    edit = DigestEditor(provider=Provider()).polish_and_compress(
+        original,
+        plan=plan,
+        evidence=evidence,
+        target_item_ids=(original.blocks[0].items[0].item_id,),
+        recompose_block_ids=(block.block_id,),
     )
+    if invalid:
+        with pytest.raises(ValueError, match="missing facts"):
+            asyncio.run(edit)
+    else:
+        result = asyncio.run(edit)
     assert "600 characters" in captured_system_prompt
     assert "source messages" in captured_system_prompt
-    if invalid:
-        assert result == original
-    else:
+    if not invalid:
+        assert json.loads(captured_user_prompt)["target_recomposition_fact_ids"] == sorted(
+            original.blocks[0].items[0].covered_fact_ids
+        )
         assert len(result.blocks[0].items) == 2
         assert {fid for i in result.blocks[0].items for fid in i.covered_fact_ids} == set(texts)
         assert {sid for i in result.blocks[0].items for sid in i.cited_support_ids} == {
@@ -754,21 +761,20 @@ def test_editor_rejects_power_recomposition_that_keeps_four_separate_items() -> 
                 }
             )
 
-    result = asyncio.run(
-        DigestEditor(provider=Provider()).polish_and_compress(
-            draft,
-            plan=plan,
-            evidence=evidence,
-            target_item_ids=tuple(
-                item.item_id
-                for item in draft.blocks[0].items
-                if set(item.covered_fact_ids).intersection(power_fact_ids)
-            ),
-            recompose_block_ids=(block.block_id,),
+    with pytest.raises(ValueError, match="exceeds the cohesive reader-item limit"):
+        asyncio.run(
+            DigestEditor(provider=Provider()).polish_and_compress(
+                draft,
+                plan=plan,
+                evidence=evidence,
+                target_item_ids=tuple(
+                    item.item_id
+                    for item in draft.blocks[0].items
+                    if set(item.covered_fact_ids).intersection(power_fact_ids)
+                ),
+                recompose_block_ids=(block.block_id,),
+            )
         )
-    )
-
-    assert result == draft
 
 
 @pytest.mark.parametrize("power_count", [3, 4])

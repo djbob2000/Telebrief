@@ -19,7 +19,7 @@ from src.publication.repository import PublicationPolicyRepository
 
 logger = logging.getLogger(__name__)
 
-DIGEST_EDITORIALIZER_PROMPT_VERSION = "digest-editorializer-v10-recomposition-meta-narration"
+DIGEST_EDITORIALIZER_PROMPT_VERSION = "digest-editorializer-v11-fact-checklist-retry"
 
 ARTICLE_PUBLICATION_TYPES: frozenset[str] = frozenset(
     {"daily_article", "article", "weekly_article", "monthly_article"}
