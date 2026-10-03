@@ -10,7 +10,7 @@ from typing import Any, Mapping, Sequence
 from src.publication.digest_narrative import DigestNarrativeDraft
 from src.publication.evidence import PublicationEvidence
 
-DIGEST_DIAGNOSTICS_VERSION = "digest-diagnostics-v7"
+DIGEST_DIAGNOSTICS_VERSION = "digest-diagnostics-v8"
 
 _ATTRIBUTION_PATTERNS = [
     re.compile(
@@ -65,11 +65,14 @@ _POWER_REPORT_RE = re.compile(
 )
 MAX_POWER_REPORT_ITEMS_PER_BLOCK = 3
 _SOURCE_META_NARRATION_RE = re.compile(
-    r"\b(?:в\s+(?:отдельном|другом|следующем|одном|одной|другой|отдельной)\s+"
-    r"(?:сообщени\w*|публикаци\w*|пост\w*)|"
+    r"\b(?:в\s+(?:(?:отдельном|другом|следующем|одном|одной|другой|отдельной)\s+"
+    r"(?:сообщени\w*|публикаци\w*|пост\w*)|(?:одном|одной)\s+из\s+"
+    r"(?:сообщени\w*|публикаци\w*|пост\w*))|"
     r"(?:другое|отдельное)\s+(?:сообщени\w*|публикаци\w*|пост\w*)|"
     r"(?:сообщени\w*|публикаци\w*|пост\w*)\s+(?:описыва\w*|уточня\w*|говор\w*|"
     r"сообща\w*|отмеча\w*)|"
+    r"(?:также\s+)?сообща(?:лось|ется)\s+(?:об?\s+|что\b)|"
+    r"сообща(?:лось|ется)\s+в\s+(?:городе|Бердянске)\b|"
     r"отдельно\s+(?:(?:жители|горожане)\s+)?(?:сообща\w*|писа\w*)|"
     r"в\s+сообщениях\s+(?:упомина\w*|говор\w*|сообща\w*|отмеча\w*))\b",
     re.IGNORECASE,

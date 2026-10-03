@@ -830,6 +830,51 @@ def test_power_fragmentation_threshold_matches_three_item_editor_limit(power_cou
     assert audit.is_publishable
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        "По их подсчётам, в одном из сообщений отсутствие электричества длилось 64 дня.",
+        "Также сообщалось об отсутствии света в районе РТС.",
+        "В Бердянске заполняют систему отопления, сообщается в городе.",
+    ],
+)
+def test_source_meta_narration_variants_trigger_editorial_repair(body: str) -> None:
+    from src.publication.digest_quality_diagnostics import audit_digest_prose_quality
+
+    _, evidence, _, plan = _fixture()
+    block = plan.blocks[0]
+    fact_ids = [fact.fact_id for fact in block.required_facts]
+    units = [unit for unit in block.composition_units if unit.fact_ids]
+    fact_text = {fact.fact_id: fact.text for fact in block.required_facts}
+    draft = _parse_composition_writer_output(
+        {
+            "blocks": [
+                {
+                    "block_id": block.block_id,
+                    "items": [
+                        {
+                            "composition_unit_ids": [unit.unit_id for unit in units],
+                            "covered_fact_ids": fact_ids,
+                            "headline": "",
+                            "body": body,
+                            "claims": [
+                                {"text": fact_text[fact_id], "covered_fact_ids": [fact_id]}
+                                for fact_id in fact_ids
+                            ],
+                        }
+                    ],
+                }
+            ]
+        },
+        plan=plan,
+    )
+
+    audit = audit_digest_prose_quality(draft, evidence)
+
+    assert "SOURCE_META_NARRATION" in {warning.code for warning in audit.warnings}
+    assert audit.is_publishable
+
+
 def test_named_city_chat_reference_is_removed_without_inventing_a_poster() -> None:
     from src.publication.digest_narrative import _fix_chat_leaks
 
