@@ -26,7 +26,7 @@ class ServiceSubjectHint:
 
 @dataclass(frozen=True)
 class PublicationEvidence:
-    """A single factual evidence unit bound to an exact source fragment."""
+    """Evidence bound to a frozen fragment or its explicitly named own revision."""
 
     evidence_id: str
     story_id: int
@@ -45,3 +45,9 @@ class PublicationEvidence:
     reply_parent_context_text: str = ""
     reply_parent_item_id: int | None = None
     service_subject_hint: ServiceSubjectHint | None = None
+    # Own immutable item revision, separate from the reply's parent context.
+    # Digest projection may expose selected verbatim details from this revision;
+    # article eligibility and fragment wording do not depend on these fields.
+    source_item_revision_id: int | None = None
+    source_item_context_text: str = ""
+    source_scope: Literal["fragment", "source_item_revision"] = "fragment"

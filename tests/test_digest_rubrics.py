@@ -144,3 +144,71 @@ def test_missing_education_destination_keeps_the_valid_fallback() -> None:
     actual = _classify(card, _rubrics("other"))
 
     assert actual == "other"
+
+
+def test_dosaaf_enrollment_with_empty_category_is_classified_as_education() -> None:
+    card = _card(
+        topic="Бердянский клуб ДОСААФ открыл набор на дрессировку собак по программе ОКД",
+        summary=(
+            "Бердянский клуб служебного собаководства ЗРОО ДОСААФ объявил набор на курс "
+            "дрессировки ОКД. Детали уточняются."
+        ),
+        category="",
+    )
+
+    actual = _classify(card, _rubrics("economy", "education_culture"))
+
+    assert actual == "education_culture"
+
+
+def test_enrollment_on_training_without_the_word_course_is_education() -> None:
+    card = _card(
+        topic="Бердянский клуб ДОСААФ открыл набор на дрессировку собак по программе ОКД",
+        summary="Клуб служебного собаководства объявил набор на дрессировку собак.",
+        category="general",
+    )
+
+    actual = _classify(card, _rubrics("economy", "education_culture"))
+
+    assert actual == "education_culture"
+
+
+@pytest.mark.parametrize(
+    ("topic", "summary", "expected_rubric"),
+    [
+        (
+            "В школе, где проводят курсы дрессировки, отключили свет",
+            "После аварии здание осталось без электричества.",
+            "infrastructure",
+        ),
+        (
+            "Автобус №4 не идет к клубу, где открыт набор на курс дрессировки",
+            "Маршрут изменен.",
+            "mobility",
+        ),
+        (
+            "Банкомат в школе, где проходят курсы, временно не работает",
+            "Жителям недоступно снятие наличных.",
+            "civic_services",
+        ),
+        (
+            "Пожар в школе, где проходят курсы дрессировки",
+            "В здании произошло возгорание.",
+            "safety",
+        ),
+    ],
+    ids=["school-power-outage", "club-transit", "school-atm", "school-fire"],
+)
+def test_higher_priority_story_with_course_location_keeps_its_rubric(
+    topic: str,
+    summary: str,
+    expected_rubric: str,
+) -> None:
+    card = _card(topic=topic, summary=summary, category="")
+
+    actual = _classify(
+        card,
+        _rubrics("education_culture", "infrastructure", "mobility", "civic_services", "safety"),
+    )
+
+    assert actual == expected_rubric

@@ -16,9 +16,27 @@ from src.editorial_models import StoryCard
 
 logger = logging.getLogger(__name__)
 
-RUBRIC_CLASSIFIER_VERSION = "digest-rubric-embedding-v2"
+RUBRIC_CLASSIFIER_VERSION = "digest-rubric-embedding-v3"
 
 _EDUCATION_RUBRIC_IDS = ("education_culture", "education", "culture")
+_NON_EDUCATION_SERVICE_FAMILIES = frozenset(
+    {
+        "banking",
+        "civic_services",
+        "gas",
+        "heating",
+        "health",
+        "lift",
+        "municipal",
+        "power",
+        "safety",
+        "social",
+        "telecom",
+        "transport",
+        "urban_transport",
+        "water",
+    }
+)
 _CURRENCY_TERM = r"(?:валют\w*|доллар\w*|евро|рубл\w*|юан\w*|фунт\w*|франк\w*|гривн\w*|тенг\w*)"
 _EXCHANGE_RATE_RE = re.compile(
     rf"\bкурс\w*\s+(?:обмен\w*|{_CURRENCY_TERM})\b|"
@@ -38,9 +56,13 @@ _EDUCATION_COURSE_RE = re.compile(
 )
 _EDUCATION_ENROLLMENT_RE = re.compile(
     r"\b(?:набор\w*|запис\w*|при[её]м\w*|принима\w*|набира\w*|приглаша\w*)\b"
-    r".{0,48}\b(?:курс\w*|секци\w*|кружк\w*|школ\w*|колледж\w*|училищ\w*|"
+    r".{0,48}\b(?:дрессиров\w*|подготовк\w*|обучен\w*|заняти\w*|урок\w*|"
+    r"изучени\w*|преподав\w*|язык\w*|рисован\w*|танц\w*|шахмат\w*|"
+    r"программирован\w*|искусств\w*|курс\w*|секци\w*|кружк\w*|школ\w*|колледж\w*|училищ\w*|"
     r"университет\w*|академи\w*)\b|"
-    r"\b(?:курс\w*|секци\w*|кружк\w*|школ\w*|колледж\w*|училищ\w*|"
+    r"\b(?:дрессиров\w*|подготовк\w*|обучен\w*|заняти\w*|урок\w*|изучени\w*|"
+    r"преподав\w*|язык\w*|рисован\w*|танц\w*|шахмат\w*|программирован\w*|"
+    r"искусств\w*|курс\w*|секци\w*|кружк\w*|школ\w*|колледж\w*|училищ\w*|"
     r"университет\w*|академи\w*)\b.{0,48}\b(?:набор\w*|запис\w*|при[её]м\w*|"
     r"принима\w*|набира\w*|приглаша\w*)\b",
     re.IGNORECASE,
@@ -214,6 +236,15 @@ class DigestRubricClassifier:
                 matched_rid = "safety"
             elif c_cat in ("economy", "business") and (
                 education_rid := _education_priority_rubric_id(c_text, known_rubric_ids)
+            ):
+                matched_rid = education_rid
+                matched_method = "education_priority"
+            elif (
+                c_cat in ("", "other", "general")
+                and (education_rid := _education_priority_rubric_id(c_text, known_rubric_ids))
+                and not detect_service_families(c_text).intersection(
+                    _NON_EDUCATION_SERVICE_FAMILIES
+                )
             ):
                 matched_rid = education_rid
                 matched_method = "education_priority"

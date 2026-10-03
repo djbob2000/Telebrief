@@ -16,7 +16,7 @@ from src.publication.digest_presentation import (
     validate_digest_fact_ids,
 )
 
-COMPOSITION_POLICY_VERSION = "digest_composition_v4"
+COMPOSITION_POLICY_VERSION = "digest_composition_v5"
 
 
 class DigestFactRelationKind(str, Enum):
@@ -770,6 +770,161 @@ def _classify(left: DigestFactRecord, right: DigestFactRecord) -> DigestFactRela
     return DigestFactRelationKind.RELATED_ONLY
 
 
+_CORE_SERVICE_FACT_CATEGORIES = frozenset(
+    {
+        "banking",
+        "civic_service",
+        "civic_services",
+        "communications",
+        "connectivity",
+        "electricity",
+        "gas",
+        "health",
+        "heating",
+        "mobility",
+        "municipal_service",
+        "municipal_services",
+        "power",
+        "safety",
+        "security",
+        "telecom",
+        "transport",
+        "water",
+    }
+)
+_CORE_SERVICE_FACT_TERMS = (
+    "electric",
+    "electricity",
+    "power",
+    "water",
+    "heat",
+    "heating",
+    "gas",
+    "connectivity",
+    "telecom",
+    "internet",
+    "wifi",
+    "transport",
+    "transit",
+    "bus",
+    "tram",
+    "trolleybus",
+    "bank",
+    "pension",
+    "municipal",
+    "hospital",
+    "clinic",
+    "safety",
+    "security",
+    "strike",
+    "свет",
+    "света",
+    "свете",
+    "свету",
+    "светом",
+    "электричество",
+    "электричества",
+    "электричестве",
+    "электричеству",
+    "электричеством",
+    "энергия",
+    "энергии",
+    "энергию",
+    "энергией",
+    "вода",
+    "воды",
+    "воде",
+    "воду",
+    "водой",
+    "водою",
+    "тепло",
+    "тепла",
+    "тепле",
+    "теплом",
+    "газ",
+    "газа",
+    "газу",
+    "газом",
+    "газе",
+    "связь",
+    "связи",
+    "связью",
+    "интернет",
+    "интернета",
+    "интернету",
+    "интернетом",
+    "интернете",
+    "вайфай",
+    "вайфая",
+    "вайфаю",
+    "вайфаем",
+    "банк",
+    "банка",
+    "банке",
+    "банку",
+    "банком",
+    "банки",
+    "банков",
+)
+_CORE_SERVICE_FACT_PREFIXES = (
+    "электроснабж",
+    "электросет",
+    "электроэнерг",
+    "водоснабж",
+    "водопровод",
+    "теплоснабж",
+    "отоплен",
+    "интернет",
+    "газоснабж",
+    "газопровод",
+    "автобус",
+    "трамва",
+    "троллейбус",
+    "маршрут",
+    "пенсион",
+    "муниципаль",
+    "больниц",
+    "поликлиник",
+)
+_CORE_SAFETY_FACT_TERMS = (
+    "safety",
+    "security",
+    "strike",
+)
+_CORE_SAFETY_FACT_PREFIXES = ("обстрел", "пожар", "взрыв", "эвакуац")
+
+
+def _matches_fact_signal(text: str, words: tuple[str, ...], prefixes: tuple[str, ...]) -> bool:
+    normalized = text.casefold()
+    tokens = _words(normalized)
+    return (
+        bool(tokens.intersection(words))
+        or any(token.startswith(prefix) for token in tokens for prefix in prefixes)
+        or ("wifi" in words and bool(re.search(r"\bwi[\s-]?fi\b", normalized)))
+    )
+
+
+def _fact_signal_text(fact: DigestFactRecord | None) -> str:
+    if fact is None or fact.epistemic_kind.casefold() in {"question", "resident_question"}:
+        return ""
+    return " ".join((fact.canonical_service, fact.rubric_id, fact.text)).casefold()
+
+
+def _core_service_fact_signal(fact: DigestFactRecord | None) -> bool:
+    if fact is None:
+        return False
+    signal = _fact_signal_text(fact)
+    if not signal:
+        return False
+    category_ids = {
+        value.strip().casefold().replace("-", "_").replace(" ", "_")
+        for value in (fact.canonical_service, fact.rubric_id)
+    }
+    return bool(category_ids & _CORE_SERVICE_FACT_CATEGORIES) or _matches_fact_signal(
+        signal, _CORE_SERVICE_FACT_TERMS, _CORE_SERVICE_FACT_PREFIXES
+    )
+
+
 def _priority(card: Any, fact: DigestFactRecord | None) -> int:
     raw_importance = getattr(card, "importance", "medium")
     if isinstance(raw_importance, (int, float)) and not isinstance(raw_importance, bool):
@@ -802,14 +957,13 @@ def _priority(card: Any, fact: DigestFactRecord | None) -> int:
             " ".join(str(t) for t in (getattr(card, "tags", ()) or ())),
         )
     )
-    service_signal = _service_domain_signal(card)
-    urgency = (
-        24
-        if any(token in signals for token in ("security", "safety", "безопас", "обстрел", "strike"))
-        else 14
-        if service_signal
-        else 0
+    fact_signal = _fact_signal_text(fact)
+    safety_signal = _matches_fact_signal(
+        f"{signals} {fact_signal}", _CORE_SAFETY_FACT_TERMS, _CORE_SAFETY_FACT_PREFIXES
     )
+    core_service_signal = _core_service_fact_signal(fact)
+    service_signal = _service_domain_signal(card) or core_service_signal
+    urgency = 32 if safety_signal else 24 if core_service_signal else 14 if service_signal else 0
     current = 8 if fact and (fact.effective_time or fact.observed_time) else 0
     return importance + urgency + current
 
@@ -1029,19 +1183,29 @@ def build_digest_composition(
             min((u.unit_id for u in package), default=""),
         )
     )
-    # A first package from each rubric is considered before repeat packages,
-    # rewarding breadth without requiring a fixed topic count.
+    record_by_id = {record.fact_id: record for record in records}
+    core_service_packages: list[list[DigestCompositionUnit]] = []
+    other_packages: list[list[DigestCompositionUnit]] = []
+    for package in package_list:
+        has_core_service_fact = any(
+            _core_service_fact_signal(record_by_id.get(fact_id))
+            for unit in package
+            for fact_id in unit.fact_ids
+        )
+        (core_service_packages if has_core_service_fact else other_packages).append(package)
+    # Preserve breadth for remaining material, after grounded core-service
+    # packages have had a chance to use the budget.
     seen_rubrics: set[str] = set()
     first_packages: list[list[DigestCompositionUnit]] = []
     rest_packages: list[list[DigestCompositionUnit]] = []
-    for package in package_list:
+    for package in other_packages:
         rubric = min((u.rubric_id for u in package), default="")
         if rubric not in seen_rubrics:
             seen_rubrics.add(rubric)
             first_packages.append(package)
         else:
             rest_packages.append(package)
-    package_list = first_packages + rest_packages
+    package_list = core_service_packages + first_packages + rest_packages
 
     admitted_packages: list[list[DigestCompositionUnit]] = []
     deferred_packages: list[list[DigestCompositionUnit]] = []

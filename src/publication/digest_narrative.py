@@ -144,6 +144,14 @@ def _fix_redundant_headline_and_body(
     """Ensure headline and body do not trigger REDUNDANT_HEADLINE_IN_BODY."""
     from src.publication.digest_quality_diagnostics import _check_redundant_headline_in_body
 
+    # For one complete observation, retain the entire body (and attribution)
+    # rather than manufacturing a second version or trimming factual prose.
+    comparison_body = _strip_complete_attribution_prefix(body, _BODY_ATTRIBUTION_PREFIX_RE)
+    norm_h = " ".join(headline.casefold().split()).strip(" .,:;!-–—")
+    norm_b = " ".join(comparison_body.casefold().split()).strip(" .,:;!-–—")
+    if norm_h and norm_h == norm_b:
+        return "", body
+
     if not _check_redundant_headline_in_body(headline, body):
         return headline, body
 
@@ -205,7 +213,7 @@ _HEADLINE_QUOTED_SPAN_RE = re.compile(r"«[^»]*»|“[^”]*”|„[^“]*“|�
 _BODY_ATTRIBUTION_PREFIX_RE = re.compile(
     r"^(?:(?:"
     r"по\s+(?:сообщениям|словам|информации|данным)\s+(?:местн(?:ого|ых)\s+)?(?:жител(?:ей|я)|жительниц[ы]?|горожан(?:ина)?|очевидц(?:ев|а))"
-    r"|(?:(?:местн(?:ый|ая|ые)\s+)?жител(?:и|ь)|жительниц(?:а|ы)|горожан(?:е|ин)|очевид(?:цы|ец))\s+(?:сообща(?:ют|ет)|пиш(?:ут|ет)|отмеча(?:ют|ет)|жалу(?:ются|ется)|делят(?:ся|ся)|делится|рассказыва(?:ют|ет))"
+    r"|(?:(?:местн(?:ый|ая|ые)\s+)?жител(?:и|ь)|жительниц(?:а|ы)|горожан(?:е|ин)|очевид(?:цы|ец))\s+(?:сообща(?:ют|ет)|сообщил(?:а|и)?|пиш(?:ут|ет)|отмеча(?:ют|ет)|жалу(?:ются|ется)|делят(?:ся|ся)|делится|рассказыва(?:ют|ет))"
     r")\s*[,:]?\s*(?:что\s+)?)",
     re.IGNORECASE,
 )
@@ -1988,6 +1996,24 @@ def _composition_visible_risk_validation(
     }
     resolver = _load_digest_geography_resolver(plan.edition_slug)
     visible_item_text = f"{item.headline} {item.body}"
+    # A clock value absent from every exact item support is unsupported even
+    # when mixed fact geography prevents a finer clause-to-fact binding.
+    # Missing metadata alone remains NOT_EVALUATED, as below.
+    item_support_ids = {
+        str(support_id) for fact_id in fact_ids for support_id in records[fact_id].support_ids
+    }
+    visible_clocks = [
+        risk for risk in extract_concrete_claims(visible_item_text) if risk.kind == "time"
+    ]
+    if visible_clocks and item_support_ids and item_support_ids.issubset(support_map):
+        exact_item_supports = [support_map[sid] for sid in sorted(item_support_ids)]
+        for risk in visible_clocks:
+            if find_unsupported_claims(risk.raw, exact_item_supports):
+                unsupported.append(risk)
+                violations.append(
+                    f"UNSUPPORTED_CONCRETE_CLAIM: [time] '{risk.raw}' "
+                    f"is absent from exact item supports in block {plan_block.block_id}"
+                )
     if re.search(
         r"(?i)\b(?:свет\w*|электр\w*|вод\w*|газ\w*|отоплен\w*|интернет\w*|связ\w*|автобус\w*|транспорт\w*)\b",
         visible_item_text,

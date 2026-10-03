@@ -25,7 +25,7 @@ from src.processing.event_analysis import EventAnalysisPayload
 from src.processing.operational_semantics import derive_operational_observations
 from src.publication.editorial_adapter import FrozenEditorialInput
 from src.publication.models import PublicationInput
-from src.publication.policies import ARTICLE_PUBLICATION_TYPES
+from src.publication.policies import ARTICLE_PUBLICATION_TYPES, DIGEST_PUBLICATION_TYPES
 from src.publication.repository import PublicationRepository
 from src.timezones import normalize_timezone_name
 
@@ -149,7 +149,7 @@ class EventEditorialAdapter:
                 SELECT f.id, f.text_content, s.id, s.platform, s.name, s.role, s.url,
                        s.external_id, si.id, sir.id, si.canonical_url, si.author_name,
                        COALESCE(si.published_at, si.first_collected_at, f.created_at),
-                       si.parent_item_id
+                       si.parent_item_id, sir.text_content
                 FROM source_fragments f
                 JOIN source_item_revisions sir ON sir.id = f.source_item_revision_id
                 JOIN source_items si ON si.id = sir.source_item_id
@@ -210,6 +210,7 @@ class EventEditorialAdapter:
                     collected_at,
                 ) = f_row[:13]
                 parent_item_id = f_row[13] if len(f_row) > 13 else None
+                own_item_text = str(f_row[14] or "") if len(f_row) > 14 else ""
                 reply_parent_text = (
                     parent_text_by_item_id.get(int(parent_item_id), "")
                     if parent_item_id is not None
@@ -228,6 +229,8 @@ class EventEditorialAdapter:
                 frag_meta_map[fid] = {
                     "source_id": src_id,
                     "source_item_id": item_id,
+                    "source_item_revision_id": rev_id,
+                    "source_item_context_text": own_item_text,
                     "source_role": src_role or "unknown",
                     "observed_at": obs_time,
                     "source_ref": ref_key,
@@ -289,6 +292,8 @@ class EventEditorialAdapter:
                                 source_ref=meta["source_ref"],
                                 source_id=meta["source_id"],
                                 source_item_id=meta["source_item_id"],
+                                source_item_revision_id=meta["source_item_revision_id"],
+                                source_item_context_text=meta["source_item_context_text"],
                                 source_role=meta["source_role"],
                                 observed_at=meta["observed_at"],
                                 reply_parent_context_text=meta["reply_parent_context_text"],
@@ -312,6 +317,8 @@ class EventEditorialAdapter:
                                 source_ref=meta["source_ref"],
                                 source_id=meta["source_id"],
                                 source_item_id=meta["source_item_id"],
+                                source_item_revision_id=meta["source_item_revision_id"],
+                                source_item_context_text=meta["source_item_context_text"],
                                 source_role=meta["source_role"],
                                 observed_at=meta["observed_at"],
                                 reply_parent_context_text=meta["reply_parent_context_text"],
@@ -331,6 +338,8 @@ class EventEditorialAdapter:
                             source_ref=meta["source_ref"],
                             source_id=meta["source_id"],
                             source_item_id=meta["source_item_id"],
+                            source_item_revision_id=meta["source_item_revision_id"],
+                            source_item_context_text=meta["source_item_context_text"],
                             source_role=meta["source_role"],
                             observed_at=meta["observed_at"],
                             reply_parent_context_text=meta["reply_parent_context_text"],
@@ -676,11 +685,15 @@ class EventEditorialAdapter:
             evidence=all_evidence,
             article_context=article_ctx,
         )
+        if run is not None and run.publication_type in DIGEST_PUBLICATION_TYPES:
+            from src.publication.digest_source_material import project_digest_source_material
+
+            analysis = project_digest_source_material(analysis)
         bundle = PreparedBundle(
             records=records,
             prompt_text="",
             total_messages=len(records),
-            candidate_count=len(story_cards),
+            candidate_count=len(analysis.cards),
         )
 
         return FrozenEditorialInput(
