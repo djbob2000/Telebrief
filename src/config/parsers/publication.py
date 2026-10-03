@@ -697,4 +697,7 @@ def _parse_publication_editorial_config(settings_dict: dict) -> PublicationEdito
         ),
         article_editor_enabled=bool(raw.get("article_editor_enabled", False)),
         article_editor_max_attempts=_val_nonneg_int("article_editor_max_attempts", 2),
+        article_editor_reasoning_effort=_val_reasoning_effort(
+            "article_editor_reasoning_effort", "none"
+        ),
     )

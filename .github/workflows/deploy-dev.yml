@@ -169,8 +169,8 @@ jobs:
             test "$runtime_schema" = "$applied_schema"
 
             # Clean up old unused images to save disk space
-            echo "==> Pruning dangling images..."
-            docker image prune -f
+            echo "==> Pruning unused images..."
+            docker image prune -a -f
 
             # Display running containers
             echo "==> Current container status:"

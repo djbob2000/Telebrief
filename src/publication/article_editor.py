@@ -276,11 +276,13 @@ class ArticleEditor:
         *,
         temperature: float = 0.2,
         max_output_tokens: int = 32768,
+        reasoning_effort: str | None = "none",
     ) -> None:
         self.provider = provider
         self.model = model
         self.temperature = temperature
         self.max_output_tokens = min(max_output_tokens, 32768)
+        self.reasoning_effort = reasoning_effort
         self.last_attempt_count = 0
         self.last_provider_attempts: list[dict[str, Any]] = []
         self.last_assessment: ArticleAssessmentCheckpoint | None = None
@@ -783,6 +785,16 @@ class ArticleEditor:
             _unknown_unit_count = 0
             try:
                 self.last_attempt_count += 1
+                configured_reasoning = (
+                    getattr(config, "article_editor_reasoning_effort", None)
+                    if config is not None
+                    else None
+                )
+                resolved_reasoning = (
+                    configured_reasoning
+                    if configured_reasoning is not None
+                    else self.reasoning_effort
+                )
                 with capture_provider_attempts(self.provider) as counts:
                     try:
                         response = await self.provider.chat_completion(
@@ -793,7 +805,7 @@ class ArticleEditor:
                             model=self.model,
                             temperature=self.temperature,
                             max_tokens=self.max_output_tokens,
-                            reasoning_effort="none",
+                            reasoning_effort=resolved_reasoning,
                             response_format={"type": "json_object"},
                         )
                     finally:

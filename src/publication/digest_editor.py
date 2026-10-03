@@ -31,6 +31,10 @@ logger = logging.getLogger(__name__)
 _JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 
 
+class DigestRecompositionError(ValueError):
+    """Safe-to-retry structural rejection with no source prose attached."""
+
+
 def _resolve_approved_merges(
     *,
     draft: DigestNarrativeDraft,
@@ -360,6 +364,8 @@ class DigestEditor:
                 "recomposed_items and leave items/merges empty. This is presentation regrouping, "
                 "not fact deletion: represent every fact from items marked "
                 "targeted_for_recomposition exactly once. Do not include facts from other items; "
+                "use target_recomposition_fact_ids from the user input as an exact checklist and "
+                "copy every ID into exactly one replacement item's covered_fact_ids. "
                 "the program restores non-target fact items byte-for-byte. Keep standalone "
                 "summary-only items unchanged. If a targeted fact item also carries summary-only "
                 "units, preserve each such unit exactly once: include its unit ID in one replacement "
@@ -385,9 +391,37 @@ class DigestEditor:
                 "Use natural attribution such as 'по сообщениям жителей', not descriptions of chats. "
                 f"During a recomposition batch, include each authorized block in recomposed_items and leave its items/merges empty. You may omit untouched blocks; the program preserves them byte-for-byte. Group all targeted power reports into no more than {MAX_POWER_REPORT_ITEMS_PER_BLOCK} cohesive reader items, with a clear subject and an evidence-supported relation; do not turn each street or Story into its own paragraph. Non-target services such as water and heating are restored by the program. Do not repeat the same polyclinic or district observation in different items."
             )
+        target_recomposition_fact_ids = sorted(
+            {
+                str(fact_id)
+                for block in draft.blocks
+                for item in block.items
+                if item.item_id in recompose_target_ids
+                for fact_id in item.covered_fact_ids
+            }
+        )
+        target_recomposition_summary_unit_ids = sorted(
+            {
+                str(unit_id)
+                for block in draft.blocks
+                if block.block_id in recompose_ids
+                for item in block.items
+                if item.item_id in recompose_target_ids
+                for unit_id in (
+                    item.composition_unit_ids
+                    or ((item.composition_unit_id,) if item.composition_unit_id else ())
+                )
+                if any(
+                    str(unit.unit_id) == str(unit_id) and not unit.fact_ids
+                    for unit in plan_blocks[block.block_id].composition_units
+                )
+            }
+        )
         user_prompt = json.dumps(
             {
                 "target_item_ids": sorted(target_ids),
+                "target_recomposition_fact_ids": target_recomposition_fact_ids,
+                "target_recomposition_summary_unit_ids": target_recomposition_summary_unit_ids,
                 "blocks": editor_blocks,
             },
             ensure_ascii=False,
@@ -461,6 +495,11 @@ class DigestEditor:
                 if not isinstance(raw_block["recomposed_items"], list):
                     raise ValueError("recomposed_items must be a list")
                 recomposed[block_id] = raw_block["recomposed_items"]
+            if recompose_ids and set(recomposed) != recompose_ids:
+                missing_blocks = sorted(recompose_ids - set(recomposed))
+                raise DigestRecompositionError(
+                    "recomposition omitted authorized blocks: " + ", ".join(missing_blocks)
+                )
             if recomposed:
                 # Reuse the production parser: exact membership and evidence ownership,
                 # not model-authored provenance. Untouched blocks remain byte-for-byte intact.
@@ -489,8 +528,24 @@ class DigestEditor:
                             len(returned_fact_ids) != len(set(returned_fact_ids))
                             or set(returned_fact_ids) != target_fact_ids
                         ):
-                            raise ValueError(
-                                "recomposition must partition only its targeted facts exactly once"
+                            duplicate_fact_ids = sorted(
+                                {
+                                    fact_id
+                                    for fact_id in returned_fact_ids
+                                    if returned_fact_ids.count(fact_id) > 1
+                                }
+                            )
+                            missing_fact_ids = sorted(target_fact_ids - set(returned_fact_ids))
+                            extra_fact_ids = sorted(set(returned_fact_ids) - target_fact_ids)
+                            details = []
+                            if missing_fact_ids:
+                                details.append("missing facts: " + ", ".join(missing_fact_ids))
+                            if extra_fact_ids:
+                                details.append("extra facts: " + ", ".join(extra_fact_ids))
+                            if duplicate_fact_ids:
+                                details.append("duplicate facts: " + ", ".join(duplicate_fact_ids))
+                            raise DigestRecompositionError(
+                                "recomposition fact partition mismatch (" + "; ".join(details) + ")"
                             )
                         target_summary_unit_ids = {
                             str(unit_id)
@@ -665,7 +720,7 @@ class DigestEditor:
                         and power_report_item_count(checked_block.items)
                         > MAX_POWER_REPORT_ITEMS_PER_BLOCK
                     ):
-                        raise ValueError(
+                        raise DigestRecompositionError(
                             "power recomposition exceeds the cohesive reader-item limit"
                         )
                 # Do not mix legacy patches with structural replacements in one batch.
@@ -825,6 +880,8 @@ class DigestEditor:
                 type(exc).__name__,
                 exc,
             )
+            if recompose_ids and isinstance(exc, DigestRecompositionError):
+                raise
             return draft
 
     async def polish_and_compress(

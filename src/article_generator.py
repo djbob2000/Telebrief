@@ -1755,10 +1755,14 @@ class ArticleGenerator:
                             "editorial_repair_max_output_tokens",
                             32768,
                         )
+                        editor_reasoning_effort = getattr(
+                            editorial_config, "article_editor_reasoning_effort", "none"
+                        )
                         editor = ArticleEditor(
                             provider=self.provider,
                             model=self.model,
                             max_output_tokens=editor_max_tokens,
+                            reasoning_effort=editor_reasoning_effort,
                         )
                         editor_attempts = min(
                             getattr(editorial_config, "article_editor_max_attempts", 2), 2

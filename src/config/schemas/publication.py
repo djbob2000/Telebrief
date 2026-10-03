@@ -206,6 +206,7 @@ class PublicationEditorialConfig:
     digest_allow_deterministic_fallback: bool = False
     article_editor_enabled: bool = False
     article_editor_max_attempts: int = 2
+    article_editor_reasoning_effort: str | None = "none"
 
     def __post_init__(self) -> None:
         if self.conflict_window_minutes <= 0:
@@ -234,13 +235,12 @@ class PublicationEditorialConfig:
             raise ValueError("digest_narrative_timeout_seconds must be a positive integer")
         if self.selection_max_output_tokens <= 0:
             raise ValueError("selection_max_output_tokens must be a positive integer")
-        if (
-            self.selection_reasoning_effort is not None
-            and self.selection_reasoning_effort not in ALLOWED_REASONING_EFFORTS
-        ):
-            raise ValueError(
-                f"selection_reasoning_effort must be one of {sorted(ALLOWED_REASONING_EFFORTS)} or null"
-            )
+        for field_name in ("selection_reasoning_effort", "article_editor_reasoning_effort"):
+            effort = getattr(self, field_name)
+            if effort is not None and effort not in ALLOWED_REASONING_EFFORTS:
+                raise ValueError(
+                    f"{field_name} must be one of {sorted(ALLOWED_REASONING_EFFORTS)} or null"
+                )
         if not (1 <= self.digest_city_situation_max_items <= 12):
             raise ValueError("digest_city_situation_max_items must be between 1 and 12")
         if not (1 <= self.digest_city_situation_max_details_per_item <= 4):

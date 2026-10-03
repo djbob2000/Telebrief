@@ -171,6 +171,7 @@ settings:
     article_allow_deterministic_fallback: false
     article_editor_enabled: true
     article_editor_max_attempts: 3
+    article_editor_reasoning_effort: "high"
 
   digest_mode: "digest"
 

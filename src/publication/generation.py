@@ -650,7 +650,10 @@ class PublicationGenerationService:
                                 rendered_artifact,
                                 rendered_audit,
                             )
-                            from src.publication.digest_editor import DigestEditor
+                            from src.publication.digest_editor import (
+                                DigestEditor,
+                                DigestRecompositionError,
+                            )
 
                             editor = DigestEditor(provider=writer_provider)
                             structural_warning_codes = {
@@ -659,14 +662,22 @@ class PublicationGenerationService:
                             }
                             repair_call_limit = 2 if recompose_block_ids else 1
                             digest_repair_max_calls = repair_call_limit
+                            recomposition_feedback = ""
                             for repair_call in range(repair_call_limit):
                                 attempt_findings = list(repair_findings)
                                 if repair_call:
+                                    retry_feedback = (
+                                        "The previous response was rejected: "
+                                        + recomposition_feedback
+                                        if recomposition_feedback
+                                        else "The previous recomposition did not resolve the "
+                                        "flagged structural finding."
+                                    )
                                     attempt_findings.append(
-                                        "EDITORIAL_CONSTRAINT: The previous recomposition did "
-                                        "not resolve the flagged structural finding. Regroup the "
-                                        "targeted facts into fewer reader items and preserve every "
-                                        "fact and summary unit exactly once."
+                                        "EDITORIAL_CONSTRAINT: "
+                                        + retry_feedback
+                                        + " Regroup the targeted facts into fewer reader items "
+                                        "and preserve every fact and summary unit exactly once."
                                     )
                                 edit_att_id = await observer.attempt_started(
                                     "repair",
@@ -757,6 +768,8 @@ class PublicationGenerationService:
                                         repair_used = True
                                         break
                                 except Exception as edit_exc:
+                                    if isinstance(edit_exc, DigestRecompositionError):
+                                        recomposition_feedback = str(edit_exc)
                                     await observer.attempt_finished(
                                         edit_att_id,
                                         "failed",
