@@ -131,7 +131,7 @@ _NON_EDITORIAL_PAYLOAD_RE = re.compile(
     r"жив\w*\s+(?:дома|как\s+и\s+жил)|"
     r"упомина\w*\s+(?:район|бердянск)|"
     r"депутат\w*[^.!?]{0,80}(?:чат|пиар)|"
-    r"отвечая\s+на\s+вопрос|почему\s+район\w*[^.!?]{0,40}называ\w*|"
+    r"почему\s+район\w*[^.!?]{0,40}называ\w*|"
     r"(?:немц\w*\s+там\s+селил\w*|подземн\w*\s+ход\w*)|"
     r"район\w*\s+самол[её]т[^.!?]{0,40}забрал\w*|"
     r"громк\w*\s+зву\w*[^.!?]{0,60}(?:требу\w*\s+уточн|детал\w*\s+не\s+уточн)|"
@@ -158,18 +158,10 @@ _NON_EDITORIAL_PAYLOAD_RE = re.compile(
     # Private beauty, repair, and personal services / advertisements
     r"(?:маникюр\w*|педикюр\w*|мастер\w*\s+маникюра|наращиван\w*\s+ресниц|ресничк\w*)|"
     r"(?:стрижк\w*|парикмахер\w*|ногт\w*|бров\w*|косметолог\w*|массаж\w*)|"
-    r"(?:пирсинг\w*|тату\b|татуировк\w*|прокол\w*\s+уш\w*|где\s+делают\s+пирсинг)|"
-    r"(?:(?:в\s+ответ\s+на|отвечая\s+на)\s+вопрос,?\s+где\b)|"
     r"(?:ремонт\s+(?:стиральн\w*|холодильн\w*|телевизор\w*|обув\w*|одежд\w*|замк\w*|двер\w*|окон\w*))|"
-    # Vehicle and property classifieds / sales / rentals / giveaways
-    r"(?:бесплатно\s+(?:отда[её]м|отда[юе]т|забирайте|забрать)|отда[её]м\s+бесплатно|отда[юе]т\s+даром|отдам\s+даром|самовывоз\w*)|"
-    r"(?:отда[юе]т\s+древесин\w*|распилить\s+и\s+забрать|отдам\s+дрова|отдадут\s+дрова|доски\s+и\s+бруски)|"
+    # Vehicle and property classifieds / sales / rentals
     r"(?:прода[её]тся|продам|куплю|сдам|сда[её]тся)\s+(?:ваз\b|авто\b|машин\w*|квартир\w*|дом\b|гараж\w*|вещи|мебель)|"
     r"в\s+отличном\s+состоянии|торг\s+(?:уместен|при\s+осмотре)|"
-    # Subjective emotional complaints about personnel or doctors without medical facts
-    r"(?:нет\s+адекватных\s+(?:врачей|специалистов|докторов)|критически\s+(?:отозва\w*|высказа\w*)\s+о\s+(?:доступности|качестве)\s+врачей)|"
-    # Contextless switch-off claims on non-utility objects
-    r"(?:памятник\w*|монумент\w*|стел\w*)\s+(?:выключ\w*|отключ\w*)|(?:выключ\w*|отключ\w*)\s+(?:памятник\w*|монумент\w*|стел\w*)|"
     # Private freight, moving, cargo requests
     r"(?:нужна\s+(?:грузов\w*|машин\w*|газель)|грузов\w*\s+машин\w*\s+для\s+перевоз\w*|перевозк\w*\s+вещей|перевезти\s+вещи|без\s+мебели,?\s+просто\s+коробки)|"
     # Domestic pet gossip / runaway animal banter
@@ -207,6 +199,7 @@ _CIVIC_EVENT_TOKENS_RE = re.compile(
     r"взорв\w*|взрыв\w*|повред\w*|разруш\w*|"
     r"ремонтир\w*|почин\w*|чин[яи]\w*|провод\w*|прове[лд]\w*|"
     r"откры\w*|закры\w*|запуст\w*|пуск\w*|пода[юе]\w*|подач\w*|"
+    r"выда[юеё]\w*|разда[юеё]\w*|отда[юеё]\w*|"
     r"ход[яи]\w*|курсир\w*|перевоз\w*|"
     r"списа\w*|подорож\w*|подешев\w*|зафиксир\w*|наблюда\w*|"
     r"сниз\w*|повыс\w*|вырос\w*|раст[еу]\w*|увелич\w*|уменьш\w*|"
@@ -274,6 +267,53 @@ _LOCATION_STATIC_ROUTE_REFERENCE_RE = re.compile(
 _INTERNAL_REPLY_ANNOTATION_RE = re.compile(
     r"\s*\(in_reply_to:\s*\".*\"\)\s*$",
     re.IGNORECASE | re.DOTALL,
+)
+
+_GIVEAWAY_RE = re.compile(
+    r"\b(?:бесплатно\s+(?:отда[её]м|отда[юе]т|забирайте|забрать)|"
+    r"отда[её]м\s+бесплатно|отда[юе]т\s+даром|отдам\s+даром|"
+    r"отда[юе]т\s+древесин\w*|распилить\s+и\s+забрать|отдам\s+дрова|"
+    r"отдадут\s+дрова|доски\s+и\s+бруски)\b",
+    re.IGNORECASE,
+)
+_DOCTOR_OPINION_RE = re.compile(
+    r"\b(?:нет\s+адекватных\s+(?:врачей|специалистов|докторов)|"
+    r"критически\s+(?:отозва\w*|высказа\w*)\s+о\s+(?:доступности|качестве)\s+врачей)\b",
+    re.IGNORECASE,
+)
+_ANSWER_CONTEXT_RE = re.compile(
+    r"\b(?:в\s+ответ\s+на|отвечая\s+на)\s+вопрос[,\s]+где\b[^,.:;!?]*",
+    re.IGNORECASE,
+)
+_COMMUNITY_DISTRIBUTION_RE = re.compile(
+    r"\b(?:пункт\w*\s+(?:выдач\w*|помощ\w*)|"
+    r"семь\w*\s+без\s+отоплен\w*|нуждающ\w*)\b",
+    re.IGNORECASE,
+)
+# Only match an unidentified object and a switch verb with conversational
+# qualifiers between them. A named monument, lighting, repair or other actual
+# event remains publishable from one community report.
+_MONUMENT_SWITCH_RE = re.compile(
+    r"\b(?:"
+    r"(?:памятник\w*|монумент\w*|стел\w*)"
+    r"(?:[\s,—-]|по\s+сообщению|только\s+что|сегодня|вчера|сейчас|уже|снова|опять)+"
+    r"(?:выключ\w*|отключ\w*)|"
+    r"(?:выключ\w*|отключ\w*)"
+    r"(?:[\s,—-]|только\s+что|сегодня|вчера|сейчас|уже|снова|опять)+"
+    r"(?:памятник\w*|монумент\w*|стел\w*))\b",
+    re.IGNORECASE,
+)
+_PUBLIC_ACCESS_SUBJECT_RE = re.compile(
+    r"\b(?:вод\w*|водоканал\w*|электр\w*|свет\w*|газ\w*|отоплен\w*|"
+    r"интернет\w*|связ\w*|автобус\w*|транспорт\w*|банк\w*|почт\w*|"
+    r"больниц\w*|поликлиник\w*|врач\w*|терапевт\w*|пенсион\w*|соцзащит\w*|"
+    r"пункт\w*\s+(?:выдач\w*|помощ\w*|обогрев\w*))\b",
+    re.IGNORECASE,
+)
+_PUBLIC_ACCESS_PREDICATE_RE = re.compile(
+    r"\b(?:доступ\w*|недоступ\w*|работа\w*|приним\w*|пода[юе]\w*|"
+    r"выда[юе]\w*|откры\w*|закры\w*|организ\w*|подвоз\w*|нет|нету|отсутству\w*)\b",
+    re.IGNORECASE,
 )
 
 
@@ -389,6 +429,63 @@ def _is_question_without_event(text: str) -> bool:
     )
 
 
+def is_non_editorial_fact(text: str) -> bool:
+    """Recognize pure noise without vetoing factual reports on the same topic.
+
+    Context markers are not topic bans or corroboration requirements. Check
+    each evidence text separately so a private reply cannot delete a mixed
+    Story. This also keeps noise out of required digest facts while leaving
+    the original evidence and its provenance untouched.
+    """
+    if not text:
+        return False
+    if _NON_EDITORIAL_PAYLOAD_RE.search(text) or _is_location_context_without_event(text):
+        return True
+
+    markers = (_GIVEAWAY_RE, _DOCTOR_OPINION_RE, _ANSWER_CONTEXT_RE, _MONUMENT_SWITCH_RE)
+    if not any(marker.search(text) for marker in markers):
+        return False
+
+    # Keep independent factual clauses in the same support, whatever their
+    # theme. A school enrollment, fair or library update does not need to be
+    # an operational utility report to survive a neighbouring chat opener.
+    if any(
+        not any(marker.search(clause) for marker in markers)
+        and not _is_location_context_without_event(clause)
+        and has_meaningful_predicate(clause)
+        for clause in re.split(r"[.!?;:]\s*", text)
+        if clause.strip()
+    ):
+        return False
+    if _GIVEAWAY_RE.search(text) and _COMMUNITY_DISTRIBUTION_RE.search(text):
+        return False
+
+    residual = text
+    for marker in markers:
+        residual = marker.sub(" ", residual)
+    # A where-question is context, but its answer may contain any useful
+    # local update. Assess the answer with the existing predicate rule,
+    # without requiring a utility topic or a particular punctuation style.
+    if (
+        _ANSWER_CONTEXT_RE.search(text)
+        and not _is_location_context_without_event(residual)
+        and has_meaningful_predicate(residual)
+    ):
+        return False
+    # The opinion or unidentified switch itself must not count as the event.
+    # Preserve concrete source-backed information alongside it, including a
+    # practical public-service answer or access to a relief distribution.
+    if _CONCRETE_EVENT_SIGNAL_RE.search(residual):
+        return False
+    if _PUBLIC_ACCESS_SUBJECT_RE.search(residual) and _PUBLIC_ACCESS_PREDICATE_RE.search(residual):
+        return False
+    if _MONUMENT_SWITCH_RE.search(text) and re.search(
+        r"\b(?:подсвет\w*|освещ\w*|электр\w*)\b", text, re.IGNORECASE
+    ):
+        return False
+    return True
+
+
 def validate_story_publication_eligibility(
     payload: Any, fallback_text: str = "", edition_slug: str = "berdyansk"
 ) -> tuple[bool, str | None]:
@@ -472,6 +569,14 @@ def validate_story_publication_eligibility(
         return False, "lost_and_found_pet"
 
     if _NON_EDITORIAL_PAYLOAD_RE.search(all_story_text):
+        return False, "non_editorial_payload"
+
+    # Reject only a noise-only Story; do not let its headline upgrade pure
+    # context into an event or let one irrelevant reply suppress useful facts.
+    non_question_items = [
+        item for item in non_question_items if not is_non_editorial_fact(getattr(item, "text", ""))
+    ]
+    if not non_question_items:
         return False, "non_editorial_payload"
 
     # Rule 2b: Check for external city events without focus anchors
@@ -654,7 +759,8 @@ def validate_story_publication_eligibility(
     # possible explosion or concrete outage are accepted even when the source
     # uses colloquial wording that lacks a standard verb.
     if not any(
-        (_is_usable_fact_line(text) or _CONCRETE_EVENT_SIGNAL_RE.search(text))
+        not is_non_editorial_fact(text)
+        and (_is_usable_fact_line(text) or _CONCRETE_EVENT_SIGNAL_RE.search(text))
         and (has_meaningful_predicate(text) or _CONCRETE_EVENT_SIGNAL_RE.search(text))
         for text in reader_texts
         if text

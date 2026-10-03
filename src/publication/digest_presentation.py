@@ -2491,7 +2491,6 @@ def _is_usable_fact_line(text: str) -> bool:
         r"каменн\w*\s+пещер\w*|"
         r"не\s*долго\s+музыка\s+играла|"
         r"музыка\s+играла|"
-        r"в\s+ответ\s+на\s+вопрос|"
         r"видимо\s+нет|"
         r"где[- ]то\s+есть\b.*?в\s+ответ|"
         r"кому\s+включали\b|"
@@ -2512,9 +2511,9 @@ def _is_usable_fact_line(text: str) -> bool:
     ):
         return False
 
-    from src.publication.story_quality import _NON_EDITORIAL_PAYLOAD_RE
+    from src.publication.story_quality import is_non_editorial_fact
 
-    if _NON_EDITORIAL_PAYLOAD_RE.search(t_l):
+    if is_non_editorial_fact(t_l):
         return False
 
     # Short chat reactions can acquire a predicate during Event-First
