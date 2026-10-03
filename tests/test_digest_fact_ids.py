@@ -293,3 +293,81 @@ def test_presentation_plan_rejects_duplicate_required_fact_ids() -> None:
 
     with pytest.raises(DigestCoverageInvariantError, match="DIGEST_DUPLICATE_REQUIRED_FACT_ID"):
         plan.with_composition(composition)
+
+
+def test_non_editorial_payload_filtered_out() -> None:
+    from src.publication.story_quality import validate_story_publication_eligibility
+
+    noisy_stories = [
+        # Piercing / beauty salon Q&A
+        SimpleNamespace(
+            headline="Студия Рутрокс находится возле музыкальной школы",
+            digest_summary="Такой адрес студии назвали в ответ на вопрос, где в городе делают пирсинг уха.",
+            evidence_items=[
+                SimpleNamespace(
+                    text="Такой адрес назвали в ответ на вопрос, где делают пирсинг",
+                    kind="community_report",
+                    publication_use="PUBLISH",
+                )
+            ],
+        ),
+        # Classified giveaways / wood
+        SimpleNamespace(
+            headline="На даче бесплатно отдают древесину от трёх засохших вишен",
+            digest_summary="Автор сообщения предлагает распилить и забрать деревья; также есть доски и бруски.",
+            evidence_items=[
+                SimpleNamespace(
+                    text="Бесплатно отдают древесину, распилить и забрать",
+                    kind="community_report",
+                    publication_use="PUBLISH",
+                )
+            ],
+        ),
+        # Subjective emotional complaints about doctors without facts
+        SimpleNamespace(
+            headline="Житель критически отозвался о доступности врачей",
+            digest_summary="В сообщении прозвучало: У нас нет адекватных врачей, которые помогут.",
+            evidence_items=[
+                SimpleNamespace(
+                    text="У нас нет адекватных врачей, которые помогут справиться с проблемой",
+                    kind="community_report",
+                    publication_use="PUBLISH",
+                )
+            ],
+        ),
+        # Contextless monument switch-off
+        SimpleNamespace(
+            headline="Памятник, по сообщению, только что выключили",
+            digest_summary="В сообщении сказано, что памятник выключили только что.",
+            evidence_items=[
+                SimpleNamespace(
+                    text="Памятник только что выключили",
+                    kind="community_report",
+                    publication_use="PUBLISH",
+                )
+            ],
+        ),
+        # Static location context without event
+        SimpleNamespace(
+            headline="На улице Шевченко находится военкомат",
+            digest_summary="Житель Бердянска сообщает, что военкомат расположен на улице Шевченко.",
+            evidence_items=[
+                SimpleNamespace(
+                    text="На улице Шевченко находится военкомат",
+                    kind="community_report",
+                    publication_use="PUBLISH",
+                )
+            ],
+        ),
+    ]
+
+    for payload in noisy_stories:
+        eligible, reason = validate_story_publication_eligibility(payload)
+        assert not eligible, (
+            f"Expected story to be ineligible, but got eligible: {payload.headline}"
+        )
+        assert reason in (
+            "non_editorial_payload",
+            "location_context_without_event",
+            "lacks_meaningful_predicate",
+        )
