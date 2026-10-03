@@ -299,8 +299,12 @@ def test_editor_recomposition_preserves_all_facts_or_rolls_back(invalid: bool) -
     audit = audit_digest_prose_quality(original, evidence)
     assert "OVERLONG_SYNTHESIS" in {w.code for w in audit.warnings}
 
+    captured_system_prompt = ""
+
     class Provider:
         async def chat_completion(self, **kwargs):
+            nonlocal captured_system_prompt
+            captured_system_prompt = kwargs["messages"][0]["content"]
             replacement = [item(["fact:1", "fact:2", "fact:3"]), item(["fact:4"])]
             replacement[0]["composition_unit_ids"] = [replacement[0]["composition_unit_ids"][0]]
             replacement[0]["claims"][0]["text"] = "3 октября жители сообщают об отключении света."
@@ -318,6 +322,8 @@ def test_editor_recomposition_preserves_all_facts_or_rolls_back(invalid: bool) -
             recompose_block_ids=(block.block_id,),
         )
     )
+    assert "600 characters" in captured_system_prompt
+    assert "source messages" in captured_system_prompt
     if invalid:
         assert result == original
     else:
