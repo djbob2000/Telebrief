@@ -4127,20 +4127,47 @@ class DigestNarrativeWriter:
         }
         if model:
             chat_kwargs["model"] = model
-        raw_response = await self._provider.chat_completion(**chat_kwargs)
-        cleaned = (raw_response or "").strip()
-        if cleaned.startswith("```"):
-            lines = cleaned.splitlines()
-            if lines and lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].startswith("```"):
-                lines = lines[:-1]
-            cleaned = "\n".join(lines).strip()
-        first_brace, last_brace = cleaned.find("{"), cleaned.rfind("}")
-        if first_brace < 0 or last_brace <= first_brace:
-            raise ValueError("composition writer response did not contain a JSON object")
-        parsed = json.loads(cleaned[first_brace : last_brace + 1])
-        return _parse_composition_writer_output(parsed, plan=plan)
+        for attempt in range(2):
+            raw_response = await self._provider.chat_completion(**chat_kwargs)
+            cleaned = (raw_response or "").strip()
+            if cleaned.startswith("```"):
+                lines = cleaned.splitlines()
+                if lines and lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].startswith("```"):
+                    lines = lines[:-1]
+                cleaned = "\n".join(lines).strip()
+            first_brace, last_brace = cleaned.find("{"), cleaned.rfind("}")
+            if first_brace < 0 or last_brace <= first_brace:
+                if attempt == 0:
+                    continue
+                raise ValueError("composition writer response did not contain a JSON object")
+            try:
+                parsed = json.loads(cleaned[first_brace : last_brace + 1])
+                return _parse_composition_writer_output(parsed, plan=plan)
+            except (ValueError, json.JSONDecodeError) as exc:
+                if attempt == 0:
+                    logger.warning(
+                        "Composition draft attempt 1 failed validation (%s); requesting repair from writer",
+                        exc,
+                    )
+                    messages = list(chat_kwargs["messages"])
+                    messages.append({"role": "assistant", "content": cleaned})
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"Your previous response had a validation error: {exc}.\n"
+                                "Please fix this error and output the complete corrected JSON. "
+                                "Make sure every listed fact ID appears in covered_fact_ids of exactly one item, "
+                                "and every claim partitions those facts."
+                            ),
+                        }
+                    )
+                    chat_kwargs["messages"] = messages
+                    continue
+                raise
+        raise ValueError("composition writer failed to produce valid output after retry")
 
     async def generate_journalistic_digest(
         self,
