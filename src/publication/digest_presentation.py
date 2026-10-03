@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -16,6 +18,23 @@ from src.publication.city_situation import (
     CitySituationRollup,
 )
 from src.publication.errors import DigestCoverageInvariantError
+
+
+def validate_digest_fact_ids(facts: Sequence[Any], *, error_code: str) -> None:
+    """Fail before fact-ID keyed processing can silently discard duplicate records."""
+    seen: set[str] = set()
+    for fact in facts:
+        raw_fact_id = (
+            fact.get("fact_id", "") if isinstance(fact, Mapping) else getattr(fact, "fact_id", "")
+        )
+        fact_id = str(raw_fact_id or "").strip()
+        if not fact_id:
+            raise DigestCoverageInvariantError(f"{error_code}:empty_fact_id")
+        if fact_id in seen:
+            safe_id = repr(fact_id[:120])
+            raise DigestCoverageInvariantError(f"{error_code}:duplicate_fact_id:{safe_id}")
+        seen.add(fact_id)
+
 
 DigestPresentationUnitKind = Literal["SYNTHESIS", "NORMAL", "BRIEF_ROLLUP"]
 
@@ -307,11 +326,20 @@ class DigestPresentationPlan:
 
     def with_composition(self, composition: Any) -> DigestPresentationPlan:
         """Freeze the admitted Story/fact membership on this existing presentation plan."""
+        composition_records = tuple(getattr(composition, "fact_records", ()))
+        validate_digest_fact_ids(
+            self.required_facts,
+            error_code="DIGEST_DUPLICATE_REQUIRED_FACT_ID",
+        )
+        validate_digest_fact_ids(
+            composition_records,
+            error_code="DIGEST_DUPLICATE_COMPOSITION_FACT_ID",
+        )
         admitted_story_ids = set(getattr(composition, "admitted_story_ids", ()))
         admitted_fact_ids = set(getattr(composition, "admitted_fact_ids", ()))
         records = {
-            getattr(record, "fact_id", ""): record
-            for record in getattr(composition, "fact_records", ())
+            str(getattr(record, "fact_id", "") or "").strip(): record
+            for record in composition_records
         }
         admitted_support_ids = {
             support_id
@@ -327,9 +355,10 @@ class DigestPresentationPlan:
         }
         enriched_facts = []
         for fact in self.required_facts:
-            if fact.fact_id not in admitted_fact_ids:
+            fact_id = str(fact.fact_id or "").strip()
+            if fact_id not in admitted_fact_ids:
                 continue
-            record = records.get(fact.fact_id)
+            record = records.get(fact_id)
             if record is None:
                 enriched_facts.append(fact)
                 continue
@@ -346,13 +375,14 @@ class DigestPresentationPlan:
                     source_published_at=record.source_publication_time,
                 )
             )
-        known_ids = {fact.fact_id for fact in self.required_facts}
-        for record in getattr(composition, "fact_records", ()):
-            if record.fact_id in known_ids or record.fact_id not in admitted_fact_ids:
+        known_ids = {str(fact.fact_id or "").strip() for fact in self.required_facts}
+        for record in composition_records:
+            record_fact_id = str(record.fact_id or "").strip()
+            if record_fact_id in known_ids or record_fact_id not in admitted_fact_ids:
                 continue
             enriched_facts.append(
                 RequiredDigestFact(
-                    fact_id=record.fact_id,
+                    fact_id=record_fact_id,
                     rubric_id=record.rubric_id,
                     subject_key=record.canonical_subject or "local_report",
                     subject_label=record.canonical_subject or "Местное сообщение",
@@ -431,7 +461,7 @@ class DigestPresentationPlan:
                 # can be matched only through their exact source refs.
                 kept_items = []
                 for item in getattr(city_situation, "items", ()) or ():
-                    item_fact_id = str(getattr(item, "fact_id", "") or "")
+                    item_fact_id = str(getattr(item, "fact_id", "") or "").strip()
                     item_supports = set(getattr(item, "source_refs", ()) or ())
                     item_supports.update(getattr(item, "current_source_refs", ()) or ())
                     if item_fact_id:
@@ -650,32 +680,78 @@ def _canonical_city_situation_subject(item: CitySituationItem) -> str | None:
     return None
 
 
-def _derive_situation_fact_id(group_id: str, item: CitySituationItem, idx: int) -> str:
-    if getattr(item, "fact_id", None):
-        return str(item.fact_id).strip()
-    loc = (item.location or "").strip()
-    detail = (item.detail or "").strip()
-    detail = re.sub(r"\s*\(in_reply_to:[^)]*\)", "", detail, flags=re.IGNORECASE).strip()
-    if "центр" in loc.casefold() and ("170" in detail or "напряжен" in detail.casefold()):
-        return "center_voltage"
+def _fact_id_time(value: Any) -> str | None:
+    if value is None:
+        return None
+    isoformat = getattr(value, "isoformat", None)
+    return str(isoformat()) if callable(isoformat) else str(value)
 
-    if loc and loc.casefold() not in (
-        "бердянск",
-        "город",
-        "г. бердянск",
-        "г.бердянск",
-        "бердянськ",
-        "city",
-    ):
-        slug = re.sub(r"[^\w]+", "_", loc.casefold()).strip("_")
-        if slug:
-            return slug
-    if detail:
-        slug = re.sub(r"[^\w]+", "_", detail[:30].casefold()).strip("_")
-        if slug and slug not in ("бердянск", "город"):
-            return slug
-    clean_grp = group_id.split(":", 1)[-1] if ":" in group_id else group_id
-    return f"{clean_grp}_fact_{idx + 1}"
+
+def _generated_digest_fact_id(
+    topic_namespace: str,
+    *,
+    text: str,
+    location: str,
+    service_state: str,
+    support_ids: Sequence[str],
+    observed_at: Any = None,
+    effective_at: Any = None,
+    source_published_at: Any = None,
+) -> str:
+    """Build a stable ID from canonical topic and the complete fact provenance."""
+    canonical_namespace = _norm_key(topic_namespace)
+    namespace_slug = re.sub(r"[^\w]+", "_", canonical_namespace).strip("_") or "digest_fact"
+    payload = {
+        "effective_at": _fact_id_time(effective_at),
+        "location": (location or "").strip(),
+        "observed_at": _fact_id_time(observed_at),
+        "service_state": (service_state or "").strip().casefold(),
+        "source_published_at": _fact_id_time(source_published_at),
+        "support_ids": sorted(
+            {str(support_id).strip() for support_id in support_ids if str(support_id).strip()}
+        ),
+        "text": (text or "").strip(),
+        "topic_namespace": canonical_namespace,
+    }
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    discriminator = hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:20]
+    return f"{namespace_slug}_{discriminator}"
+
+
+def _assign_unique_generated_fact_ids(
+    facts: Sequence[RequiredDigestFact], generated: Sequence[bool]
+) -> tuple[RequiredDigestFact, ...]:
+    if len(facts) != len(generated):
+        raise DigestCoverageInvariantError("DIGEST_FACT_ID_ASSIGNMENT_MISMATCH")
+    explicit_facts = tuple(fact for fact, is_generated in zip(facts, generated) if not is_generated)
+    validate_digest_fact_ids(
+        explicit_facts,
+        error_code="DIGEST_DUPLICATE_REQUIRED_FACT_ID",
+    )
+    used_ids = {fact.fact_id.strip() for fact in explicit_facts}
+    assigned: list[RequiredDigestFact] = []
+    for fact, is_generated in zip(facts, generated):
+        if not is_generated:
+            assigned.append(fact)
+            continue
+        base_id = fact.fact_id.strip()
+        candidate_id = base_id
+        suffix = 2
+        while candidate_id in used_ids:
+            candidate_id = f"{base_id}_{suffix}"
+            suffix += 1
+        used_ids.add(candidate_id)
+        assigned.append(replace(fact, fact_id=candidate_id))
+    validate_digest_fact_ids(
+        assigned,
+        error_code="DIGEST_DUPLICATE_REQUIRED_FACT_ID",
+    )
+    return tuple(assigned)
 
 
 def _matches_card(card_id: str, evi: Any, eid: str) -> bool:
@@ -692,52 +768,6 @@ def _matches_card(card_id: str, evi: Any, eid: str) -> bool:
         except (ValueError, TypeError):
             pass
     return False
-
-
-def _derive_observation_fact_id(card_id: str, obs: Any, idx: int) -> str:
-    loc = (getattr(obs, "location", "") or "").strip()
-    detail = (getattr(obs, "detail", "") or "").strip()
-    if "центр" in loc.casefold() and ("170" in detail or "напряжен" in detail.casefold()):
-        return "center_voltage"
-    if loc:
-        slug = re.sub(r"[^\w]+", "_", loc.casefold()).strip("_")
-        if slug:
-            return slug
-    if detail:
-        slug = re.sub(r"[^\w]+", "_", detail[:30].casefold()).strip("_")
-        if slug:
-            return slug
-    return f"{card_id}_obs_{idx + 1}"
-
-
-def _derive_hard_fact_id(card_id: str, text: str, idx: int) -> str:
-    cf = text.casefold()
-    if "центр" in cf and ("170" in text or "напряжен" in cf):
-        return "center_voltage"
-    for candidate in (
-        "нагорная часть",
-        "нагорной части",
-        "нагорная",
-        "слободка",
-        "слободке",
-        "колония",
-        "колонии",
-        "петровского",
-        "ул. петровского",
-        "самолёт",
-        "самолет",
-    ):
-        if candidate in cf:
-            slug = re.sub(r"[^\w]+", "_", candidate).strip("_")
-            if "нагорн" in slug:
-                return "нагорная_часть"
-            if "слободк" in slug:
-                return "слободка"
-            if "петровск" in slug:
-                return "ул_петровского"
-            return slug
-    slug = re.sub(r"[^\w]+", "_", text[:30].casefold()).strip("_")
-    return slug or f"{card_id}_fact_{idx + 1}"
 
 
 def _resolve_fact_supports(
@@ -832,8 +862,9 @@ def build_required_digest_facts(
             card_refs_map[card.id] = refs
 
         required_facts: list[RequiredDigestFact] = []
+        generated_fact_ids: list[bool] = []
 
-        for f_idx, item in enumerate(city_situation.items):
+        for item in city_situation.items:
             canonical_subj = _canonical_city_situation_subject(item)
             if canonical_subj is None:
                 continue
@@ -848,7 +879,7 @@ def build_required_digest_facts(
                 continue
 
             group_id = f"situation:{canonical_subj}"
-            fact_id = _derive_situation_fact_id(group_id, item, f_idx)
+            explicit_fact_id = str(getattr(item, "fact_id", "") or "").strip()
 
             # Resolve allowed support IDs from current_source_refs / source_refs
             item_refs = tuple(
@@ -904,13 +935,31 @@ def build_required_digest_facts(
 
             # Fail closed if unmapped to any selected story
             if not fact_stories:
-                raise DigestCoverageInvariantError(f"UNMAPPED_REQUIRED_FACT:{fact_id}")
+                diagnostic_fact_id = explicit_fact_id or group_id
+                raise DigestCoverageInvariantError(f"UNMAPPED_REQUIRED_FACT:{diagnostic_fact_id}")
 
             # Derive rubric_id from the first owning StoryCard
             first_owning_card = card_by_id.get(fact_stories[0])
             rubric_id = getattr(first_owning_card, "rubric_id", "") or "infrastructure"
             item_kind, item_observed, item_published = _exact_evidence_metadata(
                 item_refs, evidence_map, fact_text
+            )
+            observed_at = item_observed or getattr(item, "last_observed_at", None)
+            fact_support_ids = tuple(dict.fromkeys(fact_supports))
+            topic_rubrics = sorted(
+                {
+                    getattr(card_by_id.get(story_id), "rubric_id", "") or "infrastructure"
+                    for story_id in fact_stories
+                }
+            )
+            fact_id = explicit_fact_id or _generated_digest_fact_id(
+                f"{'|'.join(topic_rubrics)}:{canonical_subj}",
+                text=fact_text,
+                location=str(getattr(item, "location", "") or ""),
+                service_state=str(getattr(item, "state", "") or ""),
+                support_ids=fact_support_ids,
+                observed_at=observed_at,
+                source_published_at=item_published,
             )
 
             required_facts.append(
@@ -920,22 +969,23 @@ def build_required_digest_facts(
                     subject_key=item.subject_key or canonical_subj,
                     subject_label=item.subject_label or canonical_subj.title(),
                     story_ids=tuple(fact_stories),
-                    support_ids=tuple(dict.fromkeys(fact_supports)),
+                    support_ids=fact_support_ids,
                     text=fact_text,
                     original_location=str(getattr(item, "location", "") or ""),
-                    observed_at=item_observed or getattr(item, "last_observed_at", None),
+                    observed_at=observed_at,
                     service_state=str(getattr(item, "state", "") or ""),
                     epistemic_kind=item_kind,
                     source_published_at=item_published,
                 )
             )
+            generated_fact_ids.append(not bool(explicit_fact_id))
 
-        return tuple(required_facts)
+        return _assign_unique_generated_fact_ids(required_facts, generated_fact_ids)
 
     # Event-First canonical extraction directly from StoryCards without city_situation
     card_by_id = {c.id: c for c in cards}
-    required_facts = []
-    seen_fact_ids: set[str] = set()
+    card_required_facts: list[RequiredDigestFact] = []
+    card_generated_fact_ids: list[bool] = []
 
     for card in cards:
         service_family = _canonical_service_family(card)
@@ -953,7 +1003,7 @@ def build_required_digest_facts(
 
         obs_list = getattr(card, "operational_observations", []) or []
         if obs_list:
-            for o_idx, obs in enumerate(obs_list):
+            for obs in obs_list:
                 o_loc = getattr(obs, "location", "") or ""
                 o_detail = getattr(obs, "detail", "") or ""
                 o_text = f"{o_loc}: {o_detail}".strip(": ") if o_loc else o_detail
@@ -994,11 +1044,6 @@ def build_required_digest_facts(
                     ):
                         continue
 
-                fact_id = _derive_observation_fact_id(card.id, obs, o_idx)
-                if fact_id in seen_fact_ids:
-                    fact_id = f"{fact_id}_{o_idx + 1}"
-                seen_fact_ids.add(fact_id)
-
                 obs_refs = list(getattr(obs, "source_refs", []) or [])
                 for fid in getattr(obs, "source_fragment_ids", []) or []:
                     ref_fid = f"fragment:{fid}"
@@ -1013,27 +1058,40 @@ def build_required_digest_facts(
                 obs_kind, obs_time, obs_published = _exact_evidence_metadata(
                     obs_refs, evidence_map, o_text
                 )
+                obs_effective_at = getattr(obs, "effective_from", None)
+                obs_subject_key = getattr(obs, "subject_key", "") or subj_key
+                fact_id = _generated_digest_fact_id(
+                    f"{rubric_id}:{obs_subject_key}",
+                    text=o_text,
+                    location=o_loc,
+                    service_state=str(getattr(obs, "state", "") or ""),
+                    support_ids=obs_supports,
+                    observed_at=obs_time,
+                    effective_at=obs_effective_at,
+                    source_published_at=obs_published,
+                )
 
-                required_facts.append(
+                card_required_facts.append(
                     RequiredDigestFact(
                         fact_id=fact_id,
                         rubric_id=rubric_id,
-                        subject_key=getattr(obs, "subject_key", "") or subj_key,
+                        subject_key=obs_subject_key,
                         subject_label=getattr(obs, "subject_label", "") or subj_label,
                         story_ids=(card.id,),
                         support_ids=obs_supports,
                         text=o_text,
                         original_location=o_loc,
-                        effective_at=getattr(obs, "effective_from", None),
+                        effective_at=obs_effective_at,
                         observed_at=obs_time,
                         service_state=str(getattr(obs, "state", "") or ""),
                         epistemic_kind=obs_kind,
                         source_published_at=obs_published,
                     )
                 )
+                card_generated_fact_ids.append(True)
         else:
             hf_list = getattr(card, "hard_facts", []) or []
-            for h_idx, hf in enumerate(hf_list):
+            for hf in hf_list:
                 hf_text = getattr(hf, "text", "").strip()
                 if not hf_text:
                     continue
@@ -1041,11 +1099,6 @@ def build_required_digest_facts(
                     continue
                 if is_operational and not _OPERATIONAL_SERVICE_KW_RE.search(hf_text):
                     continue
-                fact_id = _derive_hard_fact_id(card.id, hf_text, h_idx)
-                if fact_id in seen_fact_ids:
-                    fact_id = f"{fact_id}_{h_idx + 1}"
-                seen_fact_ids.add(fact_id)
-
                 hf_refs = list(getattr(hf, "source_refs", []) or [])
                 hf_supports = _resolve_fact_supports(hf_refs, card, evidence_map, hf_text)
                 hf_sups_list = list(hf_supports)
@@ -1055,8 +1108,25 @@ def build_required_digest_facts(
                 hf_kind, hf_time, hf_published = _exact_evidence_metadata(
                     hf_refs, evidence_map, hf_text
                 )
+                original_location = "; ".join(
+                    dict.fromkeys(
+                        str(a).strip() for a in (getattr(hf, "areas", ()) or ()) if str(a).strip()
+                    )
+                )
+                hf_effective_at = getattr(hf, "effective_from", None)
+                hf_state = str(getattr(hf, "state", "") or "")
+                fact_id = _generated_digest_fact_id(
+                    f"{rubric_id}:{subj_key}",
+                    text=hf_text,
+                    location=original_location,
+                    service_state=hf_state,
+                    support_ids=hf_supports,
+                    observed_at=hf_time,
+                    effective_at=hf_effective_at,
+                    source_published_at=hf_published,
+                )
 
-                required_facts.append(
+                card_required_facts.append(
                     RequiredDigestFact(
                         fact_id=fact_id,
                         rubric_id=rubric_id,
@@ -1065,20 +1135,15 @@ def build_required_digest_facts(
                         story_ids=(card.id,),
                         support_ids=hf_supports,
                         text=hf_text,
-                        original_location="; ".join(
-                            dict.fromkeys(
-                                str(a).strip()
-                                for a in (getattr(hf, "areas", ()) or ())
-                                if str(a).strip()
-                            )
-                        ),
+                        original_location=original_location,
                         observed_at=hf_time,
                         epistemic_kind=hf_kind,
                         source_published_at=hf_published,
                     )
                 )
+                card_generated_fact_ids.append(True)
 
-    return tuple(required_facts)
+    return _assign_unique_generated_fact_ids(card_required_facts, card_generated_fact_ids)
 
 
 _PRIORITY_RUBRIC_WEIGHTS = {

@@ -15,7 +15,10 @@ from src.publication.article_claims import (
     extract_concrete_claims,
     find_unsupported_claims,
 )
-from src.publication.digest_presentation import RequiredDigestFact
+from src.publication.digest_presentation import (
+    RequiredDigestFact,
+    validate_digest_fact_ids,
+)
 from src.publication.errors import DigestCoverageInvariantError
 from src.publication.evidence import PublicationEvidence
 
@@ -424,6 +427,16 @@ def _composition_narrative_plan(
 ) -> DigestNarrativePlan:
     """Project the frozen composition without re-clustering or guessing membership."""
     composition = getattr(presentation_plan, "composition", None)
+    presentation_required_facts = tuple(getattr(presentation_plan, "required_facts", ()) or ())
+    composition_fact_records = tuple(getattr(composition, "fact_records", ()) or ())
+    validate_digest_fact_ids(
+        presentation_required_facts,
+        error_code="DIGEST_DUPLICATE_REQUIRED_FACT_ID",
+    )
+    validate_digest_fact_ids(
+        composition_fact_records,
+        error_code="DIGEST_DUPLICATE_COMPOSITION_FACT_ID",
+    )
     units = tuple(getattr(composition, "units", ()) or ())
     if not units:
         if getattr(composition, "admitted_story_ids", ()) or getattr(
@@ -459,13 +472,13 @@ def _composition_narrative_plan(
     seen_fact_ids: set[str] = set()
     fact_records = {
         str(getattr(record, "fact_id", "")): record
-        for record in (getattr(composition, "fact_records", ()) or ())
+        for record in composition_fact_records
         if getattr(record, "fact_id", "")
     }
     composition_relations = tuple(getattr(composition, "relations", ()) or ())
     required_facts = {
         str(getattr(fact, "fact_id", "")): fact
-        for fact in (getattr(presentation_plan, "required_facts", ()) or ())
+        for fact in presentation_required_facts
         if getattr(fact, "fact_id", "")
     }
     card_ids = {str(getattr(card, "id", "")) for card in cards}

@@ -10,7 +10,11 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any
 
-from src.publication.digest_presentation import DigestPresentationPlan, RequiredDigestFact
+from src.publication.digest_presentation import (
+    DigestPresentationPlan,
+    RequiredDigestFact,
+    validate_digest_fact_ids,
+)
 
 COMPOSITION_POLICY_VERSION = "digest_composition_v4"
 
@@ -854,6 +858,10 @@ def build_digest_composition(
     rubric_fallback_id: str = "other",
 ) -> DigestCompositionResult:
     """Build exact fact relations and choose a deterministic, feasible pre-write digest plan."""
+    validate_digest_fact_ids(
+        plan.required_facts,
+        error_code="DIGEST_DUPLICATE_REQUIRED_FACT_ID",
+    )
     card_list = tuple(cards or ())
     by_id = {str(getattr(c, "id", "")): c for c in card_list}
     records = _fact_records(
@@ -864,6 +872,10 @@ def build_digest_composition(
         snapshot_at,
         rubric_labels=rubric_labels,
         rubric_fallback_id=rubric_fallback_id,
+    )
+    validate_digest_fact_ids(
+        records,
+        error_code="DIGEST_DUPLICATE_COMPOSITION_FACT_ID",
     )
     relations: list[DigestFactRelation] = []
     for i, left in enumerate(records):
