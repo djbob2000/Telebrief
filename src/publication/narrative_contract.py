@@ -163,9 +163,10 @@ def build_digest_narrative_contract(*, output_language: str = "Russian") -> str:
     1. What happened + concrete micro-locations/streets/districts (in parentheses if listing multiple).
     2. Explanation, cause, or technical background from specialists/authorities (ONLY if grounded in evidence).
     3. Practical consequences, resident adaptations, or status of hotlines/emergency services.
-- The headline must be fact-first / answer-first: a bold mini-summary answering "what happened?".
-- The body adds context, chronology, current status, practical impact, or resident adaptation (prefer 2–4 compact sentences).
-- Do not repeat the headline verbatim in the body.
+- When useful, use a fact-first / answer-first headline: a bold mini-summary answering "what happened?".
+- For developed or synthesized items, the body adds supported context, chronology, current status, practical impact, or resident adaptation. Do not repeat the headline with synonyms.
+- Compact observations: If one supported observation has no further details, use an empty headline and put the complete fact with natural attribution in one concise body sentence. Preserve its Story/fact coverage and claims. Do not add detail or extra sentences merely to fill a headline-and-body format.
+- Substantive Clarity: State the known entity or service and include supplied dates, actions, access conditions, and destinations when they add practical value. Report the substantive update directly instead of "В сообщении говорится...". Never invent an institution type, month, bank, destination, or instructions to fill missing context. Useful partial information remains publishable with honest uncertainty; incompleteness alone is not a reason to suppress a community report.
 - Attribution Discipline (Attribution Once): Do NOT repeat conversational attribution ("жители сообщают", "по сообщениям жителей", "горожане пишут") in both the headline and body of the same item. If the headline already states attribution, the body proceeds directly to facts and adaptation; if the body uses attribution, the headline should be a direct factual headline without conversational boilerplate.
 - Do not output one giant paragraph for an entire rubric.
 

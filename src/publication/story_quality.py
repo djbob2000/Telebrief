@@ -319,6 +319,26 @@ _PUBLIC_ACCESS_PREDICATE_RE = re.compile(
     r"выда[юе]\w*|откры\w*|закры\w*|организ\w*|подвоз\w*|нет|нету|отсутству\w*)\b",
     re.IGNORECASE,
 )
+_BARE_OPENING_FRAGMENT_RE = re.compile(
+    r"(?:с\s+\d{1,2}\s*(?:[-–]?\s*го)?\s+числа\s+в\s+[«\"]?[\w-]+[»\"]?\s+открытие|"
+    r"открытие\s+в\s+[«\"]?[\w-]+[»\"]?\s+с\s+\d{1,2}\s*(?:[-–]?\s*го)?\s+числа)"
+    r"[.!\s]*",
+    re.IGNORECASE,
+)
+_ANNOUNCEMENT_SIGNPOST_RE = re.compile(
+    r"\b(?:(?:посмотреть|написано|пишут)\s+(?:может\s+)?на\s+двери|"
+    r"(?:может\s+)?на\s+двери\s+(?:посмотреть|написано|пишут)|"
+    r"информаци\w*\s+на\s+двери)\b",
+    re.IGNORECASE,
+)
+_EMPTY_ANNOUNCEMENT_META_RE = re.compile(
+    r"\bинформаци\w*\s+об\s+открытии\s+(?:заведения|учреждения)\b",
+    re.IGNORECASE,
+)
+_EMPTY_SIGNPOST_RESIDUAL_RE = re.compile(
+    r"(?:[\s,.:;!?—-]|(?:может|наверное|там|информация|объявление)\b)*",
+    re.IGNORECASE,
+)
 
 
 def is_generic_service_entity(entity: str, subject_label: str = "", subject_key: str = "") -> bool:
@@ -433,6 +453,26 @@ def _is_question_without_event(text: str) -> bool:
     )
 
 
+def _is_announcement_context_without_event(text: str) -> bool:
+    """Reject empty opening/signpost replies, retaining actual posted facts.
+
+    A partial date is not a reason to drop an identified shop or service.
+    Match only a complete bare fragment with no institution type or event
+    detail, and inspect what a door notice actually says before filtering it.
+    """
+    cleaned = _INTERNAL_REPLY_ANNOTATION_RE.sub("", text.strip()).strip()
+    cleaned = _ATTRIBUTION_PREFIX_RE.sub("", cleaned).strip()
+    if _BARE_OPENING_FRAGMENT_RE.fullmatch(cleaned):
+        return True
+    if not _ANNOUNCEMENT_SIGNPOST_RE.search(cleaned):
+        return False
+    residual = _ANNOUNCEMENT_SIGNPOST_RE.sub(" ", cleaned)
+    residual = _EMPTY_ANNOUNCEMENT_META_RE.sub(" ", residual)
+    # Posted hours and access details may be useful noun phrases. Lack of a
+    # recognized verb is not evidence that a notice contains no actual facts.
+    return bool(_EMPTY_SIGNPOST_RESIDUAL_RE.fullmatch(residual))
+
+
 def is_non_editorial_fact(text: str) -> bool:
     """Recognize pure noise without vetoing factual reports on the same topic.
 
@@ -443,7 +483,11 @@ def is_non_editorial_fact(text: str) -> bool:
     """
     if not text:
         return False
-    if _NON_EDITORIAL_PAYLOAD_RE.search(text) or _is_location_context_without_event(text):
+    if (
+        _NON_EDITORIAL_PAYLOAD_RE.search(text)
+        or _is_location_context_without_event(text)
+        or _is_announcement_context_without_event(text)
+    ):
         return True
 
     markers = (_GIVEAWAY_RE, _DOCTOR_OPINION_RE, _ANSWER_CONTEXT_RE, _MONUMENT_SWITCH_RE)

@@ -18,6 +18,59 @@ logger = logging.getLogger(__name__)
 
 RUBRIC_CLASSIFIER_VERSION = "digest-rubric-embedding-v2"
 
+_EDUCATION_RUBRIC_IDS = ("education_culture", "education", "culture")
+_CURRENCY_TERM = r"(?:валют\w*|доллар\w*|евро|рубл\w*|юан\w*|фунт\w*|франк\w*|гривн\w*|тенг\w*)"
+_EXCHANGE_RATE_RE = re.compile(
+    rf"\bкурс\w*\s+(?:обмен\w*|{_CURRENCY_TERM})\b|"
+    rf"\b(?:валютн\w*|обменн\w*)\s+курс\w*\b|"
+    rf"\bпо\s+курсу\b.{{0,48}}\b{_CURRENCY_TERM}\b|"
+    r"\bобменник\w*.{0,64}\bкурс\w*\b",
+    re.IGNORECASE,
+)
+_EDUCATION_COURSE_RE = re.compile(
+    r"\bкурс\w*\b.{0,64}\b(?:дрессиров\w*|подготовк\w*|обучен\w*|заняти\w*|"
+    r"урок\w*|изучени\w*|преподав\w*|язык\w*|рисован\w*|танц\w*|шахмат\w*|"
+    r"программирован\w*|искусств\w*|секци\w*|кружк\w*)\b|"
+    r"\b(?:дрессиров\w*|подготовк\w*|обучен\w*|заняти\w*|урок\w*|изучени\w*|"
+    r"преподав\w*|язык\w*|рисован\w*|танц\w*|шахмат\w*|программирован\w*|"
+    r"искусств\w*|секци\w*|кружк\w*)\b.{0,64}\bкурс\w*\b",
+    re.IGNORECASE,
+)
+_EDUCATION_ENROLLMENT_RE = re.compile(
+    r"\b(?:набор\w*|запис\w*|при[её]м\w*|принима\w*|набира\w*|приглаша\w*)\b"
+    r".{0,48}\b(?:курс\w*|секци\w*|кружк\w*|школ\w*|колледж\w*|училищ\w*|"
+    r"университет\w*|академи\w*)\b|"
+    r"\b(?:курс\w*|секци\w*|кружк\w*|школ\w*|колледж\w*|училищ\w*|"
+    r"университет\w*|академи\w*)\b.{0,48}\b(?:набор\w*|запис\w*|при[её]м\w*|"
+    r"принима\w*|набира\w*|приглаша\w*)\b",
+    re.IGNORECASE,
+)
+_EDUCATION_CLUB_ACTIVITY_RE = re.compile(
+    r"\b(?:откры\w*|работа\w*|провод\w*|нача\w*|старт\w*|заняти\w*)\b"
+    r".{0,48}\b(?:секци\w*|кружк\w*)\b|"
+    r"\b(?:секци\w*|кружк\w*)\b.{0,48}"
+    r"\b(?:откры\w*|работа\w*|провод\w*|нача\w*|старт\w*|заняти\w*)\b",
+    re.IGNORECASE,
+)
+
+
+def _education_priority_rubric_id(
+    text: str,
+    known_rubric_ids: set[str],
+) -> str | None:
+    """Return an available education rubric for clear current learning activity."""
+    if _EXCHANGE_RATE_RE.search(text):
+        return None
+    if not (
+        _EDUCATION_COURSE_RE.search(text)
+        or _EDUCATION_ENROLLMENT_RE.search(text)
+        or _EDUCATION_CLUB_ACTIVITY_RE.search(text)
+    ):
+        return None
+    return next(
+        (rubric_id for rubric_id in _EDUCATION_RUBRIC_IDS if rubric_id in known_rubric_ids), None
+    )
+
 
 @dataclass(frozen=True)
 class RubricAssignment:
@@ -26,7 +79,8 @@ class RubricAssignment:
     story_id: str
     rubric_id: str
     score: float | None
-    method: str  # "semantic" | "legacy_hint" | "family_fallback" | "fallback"
+    # "semantic" | "legacy_hint" | "education_priority" | "family_fallback" | "fallback"
+    method: str
 
 
 def story_classification_text(card: StoryCard) -> str:
@@ -98,6 +152,7 @@ class DigestRubricClassifier:
             return [], []
 
         known_rubrics_by_id = {r.id: r for r in rubrics.items}
+        known_rubric_ids = set(known_rubrics_by_id)
         fallback_rubric = rubrics.fallback
 
         assignments_by_card_id: dict[str, RubricAssignment] = {}
@@ -157,6 +212,11 @@ class DigestRubricClassifier:
                 )
             ) and "safety" in known_rubrics_by_id:
                 matched_rid = "safety"
+            elif c_cat in ("economy", "business") and (
+                education_rid := _education_priority_rubric_id(c_text, known_rubric_ids)
+            ):
+                matched_rid = education_rid
+                matched_method = "education_priority"
             elif c_cat in known_rubrics_by_id and c_cat not in ("other", "general"):
                 if c_cat == "focus":
                     is_lifestyle = bool(

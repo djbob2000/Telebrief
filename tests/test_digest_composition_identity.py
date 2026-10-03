@@ -329,3 +329,93 @@ def test_same_address_facts_keep_story_support_and_situation_membership(
     else:
         assert set(blocks_by_rubric["utilities"].story_ids) == {"story:101", "story:102"}
         assert set(blocks_by_rubric["utilities"].support_ids) == expected_supports
+
+
+def test_fix_duplicated_attribution_cleans_infix_headline_attribution() -> None:
+    from src.publication.digest_narrative import _fix_duplicated_attribution
+
+    hl = "В районе РТС, по словам жителя, неделю нет света"
+    body = "Житель сообщает, что электроснабжение в районе РТС отсутствует уже неделю."
+    clean_hl, clean_body = _fix_duplicated_attribution(hl, body)
+    assert "по словам жителя" not in clean_hl
+    assert clean_hl == "В районе РТС неделю нет света"
+    assert clean_body == body
+
+
+def test_compact_observation_keeps_fact_coverage_and_renders_once() -> None:
+    from src.editorial_models import EditorialAnalysis, PreparedBundle
+    from src.publication.digest_narrative import (
+        _parse_composition_writer_output,
+        sanitize_digest_narrative_draft,
+        validate_digest_narrative,
+    )
+    from src.publication.editorial_adapter import FrozenEditorialInput
+    from src.publication.renderers import PublicationDigestRenderer
+
+    text = "Житель сообщает, что на улице Горбенко неделю нет света."
+    story = _story("story:101", "utilities", "source-power")
+    fact = _required_fact("power-gorbenko", "utilities", story.id, "source-power", text)
+    unit = DigestCompositionUnit(
+        unit_id="unit-power",
+        rubric_id="utilities",
+        fact_ids=(fact.fact_id,),
+        story_ids=(story.id,),
+        support_ids=("source-power",),
+        canonical_area_key="unknown:Горбенко",
+        priority=40,
+    )
+    composition = DigestCompositionResult(
+        units=(unit,),
+        relations=(),
+        dispositions=(),
+        admitted_story_ids=frozenset({story.id}),
+        admitted_fact_ids=frozenset({fact.fact_id}),
+        estimated_visible_character_count=100,
+        fact_records=(_record(fact.fact_id, "utilities", story.id, "source-power", text),),
+    )
+    plan = _composition_narrative_plan(
+        cards=(story,),
+        rubrics=({"id": "utilities", "title": "Коммунальная обстановка"},),
+        presentation_plan=DigestPresentationPlan(
+            story_ids=(story.id,), required_facts=(fact,), composition=composition
+        ),
+    )
+    draft = _parse_composition_writer_output(
+        {
+            "blocks": [
+                {
+                    "block_id": plan.blocks[0].block_id,
+                    "items": [
+                        {
+                            "composition_unit_ids": [unit.unit_id],
+                            "covered_fact_ids": [fact.fact_id],
+                            "headline": "",
+                            "body": text,
+                            "claims": [{"text": text, "covered_fact_ids": [fact.fact_id]}],
+                        }
+                    ],
+                }
+            ]
+        },
+        plan=plan,
+    )
+    draft = sanitize_digest_narrative_draft(draft)
+    validation = validate_digest_narrative(draft, plan, {"source-power": text})
+    assert validation.is_valid, validation.violations
+    item = draft.blocks[0].items[0]
+    assert item.headline == ""
+    assert item.body == text
+    assert item.covered_story_ids == (story.id,)
+    assert item.covered_fact_ids == (fact.fact_id,)
+    assert item.cited_support_ids == ("source-power",)
+    frozen = FrozenEditorialInput(
+        analysis=EditorialAnalysis(cards=[story]),
+        writer_bundle=PreparedBundle(
+            records={}, prompt_text="", total_messages=1, candidate_count=1
+        ),
+    )
+    _, lead, rendered = PublicationDigestRenderer().render_grouped_digest(
+        frozen, narrative_draft=draft
+    )
+    assert lead == ""
+    assert rendered.count(text) == 1

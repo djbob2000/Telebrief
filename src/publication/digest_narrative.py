@@ -188,21 +188,44 @@ def _fix_redundant_headline_and_body(
 
 _HEADLINE_ATTRIBUTION_PREFIX_RE = re.compile(
     r"^(?:(?:"
-    r"по\s+(?:сообщениям|словам|информации|данным)\s+(?:жителей|горожан|очевидцев)"
-    r"|(?:(?:местный\s+)?жител(?:и|ь)|горожан(?:е|ин)|очевид(?:цы|ец))\s+(?:сообща(?:ют|ет)|пиш(?:ут|ет)|отмеча(?:ют|ет)|жалу(?:ются|ется)|делят(?:ся|ся)|рассказыва(?:ют|ет))"
+    r"по\s+(?:сообщениям|словам|информации|данным)\s+(?:местн(?:ого|ых)\s+)?(?:жител(?:ей|я)|жительниц[ы]?|горожан(?:ина)?|очевидц(?:ев|а))"
+    r"|(?:(?:местн(?:ый|ая|ые)\s+)?жител(?:и|ь)|жительниц(?:а|ы)|горожан(?:е|ин)|очевид(?:цы|ец))\s+(?:сообща(?:ют|ет)|пиш(?:ут|ет)|отмеча(?:ют|ет)|жалу(?:ются|ется)|делят(?:ся|ся)|делится|рассказыва(?:ют|ет))"
     r"|(?:в\s+(?:соцсетях|местных\s+пабликах|сети|каналах)\s+(?:пишут|сообщают|появились))"
-    r"|сообщают\s+(?:жители|горожане|очевидцы)"
+    r"|сообща(?:ют|ет)\s+(?:жители|житель|горожане|горожанин|очевидцы|очевидец)"
     r")\s*(?:о\s+|об\s+|про\s+)?[,:]?\s*(?:что\s+)?)",
     re.IGNORECASE,
 )
 
+_HEADLINE_ATTRIBUTION_INFIX_RE = re.compile(
+    r",?\s*\bпо\s+(?:сообщениям|словам|информации|данным)\s+(?:местн(?:ого|ых)\s+)?(?:жител(?:ей|я)|жительниц[ы]?|горожан(?:ина)?|очевидц(?:ев|а))\b\s*,\s+",
+    re.IGNORECASE,
+)
+_HEADLINE_QUOTED_SPAN_RE = re.compile(r"«[^»]*»|“[^”]*”|„[^“]*“|‘[^’]*’|‹[^›]*›|\"[^\"]*\"|'[^']*'")
+
 _BODY_ATTRIBUTION_PREFIX_RE = re.compile(
     r"^(?:(?:"
-    r"по\s+(?:сообщениям|словам|информации|данным)\s+(?:жителей|горожан|очевидцев)"
-    r"|(?:(?:местный\s+)?жител(?:и|ь)|горожан(?:е|ин)|очевид(?:цы|ец))\s+(?:сообща(?:ют|ет)|пиш(?:ут|ет)|отмеча(?:ют|ет)|жалу(?:ются|ется)|делят(?:ся|ся)|рассказыва(?:ют|ет))"
+    r"по\s+(?:сообщениям|словам|информации|данным)\s+(?:местн(?:ого|ых)\s+)?(?:жител(?:ей|я)|жительниц[ы]?|горожан(?:ина)?|очевидц(?:ев|а))"
+    r"|(?:(?:местн(?:ый|ая|ые)\s+)?жител(?:и|ь)|жительниц(?:а|ы)|горожан(?:е|ин)|очевид(?:цы|ец))\s+(?:сообща(?:ют|ет)|пиш(?:ут|ет)|отмеча(?:ют|ет)|жалу(?:ются|ется)|делят(?:ся|ся)|делится|рассказыва(?:ют|ет))"
     r")\s*[,:]?\s*(?:что\s+)?)",
     re.IGNORECASE,
 )
+
+
+def _strip_complete_attribution_prefix(text: str, pattern: re.Pattern[str]) -> str:
+    """Strip a leading attribution only when it ends at an explicit boundary."""
+    match = pattern.match(text)
+    if match is None:
+        return text
+
+    matched_prefix = match.group().strip()
+    has_explicit_boundary = matched_prefix.endswith((",", ":")) or re.search(
+        r"\bчто$",
+        matched_prefix,
+        flags=re.IGNORECASE,
+    )
+    if not has_explicit_boundary:
+        return text
+    return text[match.end() :]
 
 
 def _fix_duplicated_attribution(headline: str, body: str) -> tuple[str, str]:
@@ -212,15 +235,31 @@ def _fix_duplicated_attribution(headline: str, body: str) -> tuple[str, str]:
     if not _check_duplicated_attribution(headline, body):
         return headline, body
 
-    # 1. Prefer stripping conversational attribution from headline so headline is a crisp subject
-    new_headline = _HEADLINE_ATTRIBUTION_PREFIX_RE.sub("", headline).strip()
+    # 1. Prefer stripping conversational attribution from headline prefix so headline is a crisp subject
+    new_headline = _strip_complete_attribution_prefix(
+        headline,
+        _HEADLINE_ATTRIBUTION_PREFIX_RE,
+    ).strip()
     if new_headline and len(new_headline) >= 5:
         new_headline = new_headline[0].upper() + new_headline[1:]
         if not _check_duplicated_attribution(new_headline, body):
             return new_headline, body
 
-    # 2. If headline still has attribution, strip attribution from beginning of body
-    new_body = _BODY_ATTRIBUTION_PREFIX_RE.sub("", body).strip()
+    # 2. Strip only a complete, unqualified attribution phrase outside quotes.
+    quoted_attribution = any(
+        _HEADLINE_ATTRIBUTION_INFIX_RE.search(quoted_span.group())
+        for quoted_span in _HEADLINE_QUOTED_SPAN_RE.finditer(headline)
+    )
+    if not quoted_attribution:
+        new_headline = _HEADLINE_ATTRIBUTION_INFIX_RE.sub(" ", headline).strip()
+        new_headline = re.sub(r"\s{2,}", " ", new_headline)
+        if new_headline and len(new_headline) >= 5:
+            new_headline = new_headline[0].upper() + new_headline[1:]
+            if not _check_duplicated_attribution(new_headline, body):
+                return new_headline, body
+
+    # 3. If headline still has attribution, strip attribution from beginning of body
+    new_body = _strip_complete_attribution_prefix(body, _BODY_ATTRIBUTION_PREFIX_RE).strip()
     if new_body and len(new_body) >= 15:
         new_body = new_body[0].upper() + new_body[1:]
         if not _check_duplicated_attribution(headline, new_body):
@@ -4090,7 +4129,7 @@ class DigestNarrativeWriter:
             '"composition_unit_ids":["one or more exact unit IDs from this same-rubric block"],'
             '"covered_fact_ids":["exact facts this item covers; empty only when all named units are summary-only"],'
             '"emoji":"optional short semantic emoji",'
-            '"headline":"short specific reader headline",'
+            '"headline":"specific reader headline, or empty only for a compact single observation with its full attributed fact in the body",'
             '"body":"cohesive concise prose",'
             '"claims":[{"text":"one grounded proposition",'
             '"covered_fact_ids":["exact fact IDs supporting this claim"],'
@@ -4108,7 +4147,7 @@ class DigestNarrativeWriter:
             "- Do not output covered_story_ids or cited_support_ids. Python derives both from the frozen fact-to-evidence map.\n"
             "- Use only facts and PUBLISH supports provided for that unit. A single PUBLISH community report is publishable: preserve its reported/uncertain status with natural attribution; do not demand corroboration or official confirmation. Never upgrade it to an established or official fact.\n"
             "- Keep a concrete local location attached to its own fact. Do not infer proximity, a shared district, a cause, or a city-wide condition. When one item weaves units from different locations, mention each named place in its own clause or sentence; a shared rubric is not a shared neighborhood. Use only explicitly supported localized contrasts.\n"
-            "- Avoid chat/forum language, filler, generic status phrases, advice, and invented context. Use a specific headline and readable body; do not repeat the headline verbatim.\n\n"
+            "- Avoid chat/forum language, filler, generic status phrases, advice, and invented context. Use a specific headline for synthesized items. For a compact item with one supported observation, the headline may be empty and the body must contain the full fact with natural attribution. Do not repeat a nonempty headline verbatim.\n\n"
             f"{build_digest_narrative_contract(output_language=language)}\n\n"
             "Return only valid JSON matching this schema; include every input block in the same order:\n"
             f"{schema_desc}"
