@@ -628,15 +628,17 @@ class PublicationGenerationService:
                             if recompose_block_ids:
                                 affected_item_ids = tuple(
                                     dict.fromkeys(
-                                        (
-                                            *affected_item_ids,
-                                            *(
-                                                item.item_id
-                                                for block in draft_cand.blocks
-                                                if block.block_id in recompose_block_ids
-                                                for item in block.items
-                                            ),
-                                        )
+                                        item.item_id
+                                        for warning in rendered_audit.prose_audit.warnings
+                                        if warning.code
+                                        in {"OVERLONG_SYNTHESIS", "FRAGMENTED_SERVICE_REPORTS"}
+                                        and warning.block_id in recompose_block_ids
+                                        and warning.item_index is not None
+                                        for block in draft_cand.blocks
+                                        if block.block_id == warning.block_id
+                                        and warning.item_index < len(block.items)
+                                        for item in (block.items[warning.item_index],)
+                                        if item.item_id
                                     )
                                 )
                             repair_checkpoint = (

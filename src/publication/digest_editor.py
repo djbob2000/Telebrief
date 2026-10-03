@@ -228,12 +228,30 @@ class DigestEditor:
             return draft
 
         recompose_ids = set(recompose_block_ids)
-        if not recompose_ids.issubset(plan_blocks) or any(
-            item.item_id not in target_ids
-            for block in draft.blocks
-            if block.block_id in recompose_ids
-            for item in block.items
-        ):
+        if not recompose_ids.issubset(plan_blocks):
+            return draft
+        recompose_target_ids: set[str] = set()
+        for block in draft.blocks:
+            if block.block_id not in recompose_ids:
+                continue
+            unit_by_id = {
+                str(unit.unit_id): unit for unit in plan_blocks[block.block_id].composition_units
+            }
+            for item in block.items:
+                item_unit_ids = item.composition_unit_ids or (
+                    (item.composition_unit_id,) if item.composition_unit_id else ()
+                )
+                has_summary_membership = any(
+                    unit_id in unit_by_id and not unit_by_id[unit_id].fact_ids
+                    for unit_id in item_unit_ids
+                )
+                if (
+                    item.item_id in target_ids
+                    and item.covered_fact_ids
+                    and not has_summary_membership
+                ):
+                    recompose_target_ids.add(item.item_id)
+        if recompose_ids and not recompose_target_ids:
             return draft
 
         editor_blocks: list[dict[str, Any]] = []
@@ -317,6 +335,7 @@ class DigestEditor:
                         "emoji": item.emoji,
                         "headline": item.headline,
                         "body": item.body,
+                        "targeted_for_recomposition": item.item_id in recompose_target_ids,
                     }
                 )
             editor_blocks.append(
@@ -345,8 +364,10 @@ class DigestEditor:
             system_prompt += (
                 "\nFor blocks explicitly marked allow_recomposition, you may instead return "
                 "recomposed_items and leave items/merges empty. This is presentation regrouping, "
-                "not fact deletion: represent EVERY supplied fact exactly once. The program retains "
-                "summary-only items unchanged, so do not put their unit IDs in replacement items. "
+                "not fact deletion: represent every fact from items marked "
+                "targeted_for_recomposition exactly once. Do not include facts from other items; "
+                "the program restores those items byte-for-byte. It also retains summary-only items "
+                "unchanged, so do not put their unit IDs in replacement items. "
                 "Combine related reports into readable paragraphs of roughly "
                 "250–500 characters; never exceed 600 characters in one item. If a connected "
                 "service story is longer, split it into two or three narrative groups by place or "
@@ -363,7 +384,7 @@ class DigestEditor:
                 "In reports of bus prices distinguish the destination paid for from the final "
                 "destination of a passing bus; never turn the latter into the fare destination. "
                 "Use natural attribution such as 'по сообщениям жителей', not descriptions of chats. "
-                "During a recomposition batch, include each authorized block in recomposed_items and leave its items/merges empty. You may omit untouched blocks; the program preserves them byte-for-byte. If there are several power reports, group them into no more than three cohesive reader items, with a clear subject and an evidence-supported relation; do not turn each street or Story into its own paragraph. Other services such as water and heating can remain separate items. Do not repeat the same polyclinic or district observation in different items."
+                "During a recomposition batch, include each authorized block in recomposed_items and leave its items/merges empty. You may omit untouched blocks; the program preserves them byte-for-byte. Group the targeted power reports into no more than three cohesive reader items, with a clear subject and an evidence-supported relation; do not turn each street or Story into its own paragraph. Non-target services such as water and heating are restored by the program. Do not repeat the same polyclinic or district observation in different items."
             )
         user_prompt = json.dumps(
             {
@@ -449,6 +470,26 @@ class DigestEditor:
                     items = recomposed.get(block.block_id)
                     if items is not None:
                         plan_block = plan_blocks[block.block_id]
+                        target_fact_ids = {
+                            str(fact_id)
+                            for item in block.items
+                            if item.item_id in recompose_target_ids
+                            for fact_id in item.covered_fact_ids
+                        }
+                        returned_fact_ids = [
+                            str(fact_id)
+                            for raw_item in items
+                            if isinstance(raw_item, Mapping)
+                            and isinstance(raw_item.get("covered_fact_ids"), list)
+                            for fact_id in raw_item["covered_fact_ids"]
+                        ]
+                        if (
+                            len(returned_fact_ids) != len(set(returned_fact_ids))
+                            or set(returned_fact_ids) != target_fact_ids
+                        ):
+                            raise ValueError(
+                                "recomposition must partition only its targeted facts exactly once"
+                            )
                         fact_text_by_id = {
                             str(fact.fact_id): str(fact.text) for fact in plan_block.required_facts
                         }
@@ -456,9 +497,6 @@ class DigestEditor:
                             str(fact_id): str(unit.unit_id)
                             for unit in plan_block.composition_units
                             for fact_id in unit.fact_ids
-                        }
-                        unit_by_id = {
-                            str(unit.unit_id): unit for unit in plan_block.composition_units
                         }
                         normalized_items: list[Any] = []
                         for raw_item in items:
@@ -502,24 +540,20 @@ class DigestEditor:
                                 (item.composition_unit_id,) if item.composition_unit_id else ()
                             )
                             if (
-                                not item.covered_fact_ids
-                                and item_unit_ids
-                                and all(
-                                    unit_id in unit_by_id and not unit_by_id[unit_id].fact_ids
-                                    for unit_id in item_unit_ids
-                                )
+                                item.item_id not in recompose_target_ids
+                                or not item.covered_fact_ids
                             ):
                                 items.append(
                                     {
                                         "composition_unit_ids": list(item_unit_ids),
-                                        "covered_fact_ids": [],
+                                        "covered_fact_ids": list(item.covered_fact_ids),
                                         "headline": item.headline,
                                         "body": item.body,
                                         "emoji": item.emoji,
                                         "claims": [
                                             {
                                                 "text": claim.text,
-                                                "covered_fact_ids": [],
+                                                "covered_fact_ids": list(claim.covered_fact_ids),
                                                 "summary_unit_ids": list(claim.summary_unit_ids),
                                             }
                                             for claim in item.claims

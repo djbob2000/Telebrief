@@ -262,7 +262,9 @@ def test_editor_recomposition_preserves_all_facts_or_rolls_back(invalid: bool) -
     from src.publication.digest_narrative import DigestNarrativeBlockDraft, DigestNarrativeDraft
     from src.publication.digest_quality_diagnostics import audit_digest_prose_quality
 
-    _, evidence, _, plan = _fixture()
+    _, evidence, _, plan = _fixture(
+        ("electricity", "Лиски", "В Лисках подали электричество после отключения.")
+    )
     original_plan = plan
     block = plan.blocks[0]
     untouched_block = replace(
@@ -303,7 +305,10 @@ def test_editor_recomposition_preserves_all_facts_or_rolls_back(invalid: bool) -
             "blocks": [
                 {
                     "block_id": block.block_id,
-                    "items": [item(list(texts))],
+                    "items": [
+                        item(["fact:1", "fact:2", "fact:3", "fact:5"]),
+                        item(["fact:4"]),
+                    ],
                 }
             ]
         },
@@ -314,7 +319,7 @@ def test_editor_recomposition_preserves_all_facts_or_rolls_back(invalid: bool) -
         blocks=(
             DigestNarrativeBlockDraft(
                 block_id=block.block_id,
-                items=(long_item,),
+                items=(long_item, original.blocks[0].items[1]),
             ),
             DigestNarrativeBlockDraft(block_id=untouched_block.block_id, items=()),
         )
@@ -328,7 +333,7 @@ def test_editor_recomposition_preserves_all_facts_or_rolls_back(invalid: bool) -
         async def chat_completion(self, **kwargs):
             nonlocal captured_system_prompt
             captured_system_prompt = kwargs["messages"][0]["content"]
-            replacement = [item(["fact:1", "fact:2", "fact:3"]), item(["fact:4"])]
+            replacement = [item(["fact:1", "fact:2", "fact:3", "fact:5"])]
             replacement[0]["composition_unit_ids"] = [replacement[0]["composition_unit_ids"][0]]
             replacement[0]["claims"][0]["text"] = "3 октября жители сообщают об отключении света."
             if invalid:
@@ -342,6 +347,7 @@ def test_editor_recomposition_preserves_all_facts_or_rolls_back(invalid: bool) -
             original,
             plan=plan,
             evidence=evidence,
+            target_item_ids=(original.blocks[0].items[0].item_id,),
             recompose_block_ids=(block.block_id,),
         )
     )
@@ -356,6 +362,7 @@ def test_editor_recomposition_preserves_all_facts_or_rolls_back(invalid: bool) -
             sid for i in original.blocks[0].items for sid in i.cited_support_ids
         }
         assert all("3 октября" not in claim.text for claim in result.blocks[0].items[0].claims)
+        assert result.blocks[0].items[1].body == original.blocks[0].items[1].body
         assert result.blocks[1].block_id == untouched_block.block_id
         assert result.blocks[1].items == ()
 

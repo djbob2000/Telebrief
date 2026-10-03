@@ -10,7 +10,7 @@ from typing import Any, Mapping, Sequence
 from src.publication.digest_narrative import DigestNarrativeDraft
 from src.publication.evidence import PublicationEvidence
 
-DIGEST_DIAGNOSTICS_VERSION = "digest-diagnostics-v6"
+DIGEST_DIAGNOSTICS_VERSION = "digest-diagnostics-v7"
 
 _ATTRIBUTION_PATTERNS = [
     re.compile(
@@ -305,19 +305,20 @@ def audit_digest_prose_quality(
             if _POWER_REPORT_RE.search(f"{item.headline} {item.body}")
         ]
         if len(power_item_indexes) >= 3:
-            warnings.append(
-                DigestQualityWarning(
-                    code="FRAGMENTED_SERVICE_REPORTS",
-                    message=(
-                        "Power observations are scattered across too many separate items. "
-                        "Weave related locations and timelines into a few readable passages "
-                        "while preserving every distinct report."
-                    ),
-                    block_id=block.block_id,
-                    item_index=power_item_indexes[0],
-                    headline=block.items[power_item_indexes[0]].headline,
+            for item_index in power_item_indexes:
+                warnings.append(
+                    DigestQualityWarning(
+                        code="FRAGMENTED_SERVICE_REPORTS",
+                        message=(
+                            "Power observations are scattered across too many separate items. "
+                            "Weave related locations and timelines into a few readable passages "
+                            "while preserving every distinct report."
+                        ),
+                        block_id=block.block_id,
+                        item_index=item_index,
+                        headline=block.items[item_index].headline,
+                    )
                 )
-            )
         for idx, item in enumerate(block.items):
             detail_item_count += 1
             num_covered = len(item.covered_story_ids)
