@@ -80,6 +80,95 @@ def _record(
     )
 
 
+def test_required_fact_location_prefix_does_not_duplicate_its_exact_evidence() -> None:
+    text = "Житель сообщает, что на улице Крылова 12 дней нет электричества."
+    source_ref = "telegram:source:1:item:728902:rev:58367:frag:94670"
+    card = _story("story:34799", "infrastructure", source_ref)
+    evidence_id = "story:34799:evidence:0:frag:94670"
+    evidence = PublicationEvidence(
+        evidence_id=evidence_id,
+        story_id=34799,
+        text=text,
+        source_text=text,
+        kind="service_access",
+        publication_use="PUBLISH",
+        fragment_id=94670,
+        source_ref=source_ref,
+        source_id=1,
+        source_item_id=728902,
+        source_role="community",
+        observed_at=dt.datetime(2026, 10, 3, tzinfo=dt.timezone.utc),
+    )
+    fact = RequiredDigestFact(
+        fact_id="power-krylova",
+        rubric_id="infrastructure",
+        subject_key="electricity",
+        subject_label="Электроснабжение",
+        story_ids=(card.id,),
+        support_ids=(source_ref,),
+        text=f"ул. Крылова, Бердянск: {text}",
+        original_location="ул. Крылова, Бердянск",
+        service_state="UNAVAILABLE",
+    )
+    result = build_digest_composition(
+        DigestPresentationPlan(story_ids=(card.id,), required_facts=(fact,)),
+        (card,),
+        {evidence_id: evidence},
+        edition_slug="berdyansk",
+        snapshot_at=None,
+        max_chars=4096,
+        reserved_chars=0,
+        include_statistics=False,
+    )
+    assert len(result.fact_records) == 1
+    assert result.fact_records[0].fact_id == fact.fact_id
+    assert evidence_id in result.fact_records[0].support_ids
+    assert "fragment:94670" in result.fact_records[0].support_ids
+    assert result.admitted_story_ids == {card.id}
+
+
+def test_same_fragment_different_claim_is_not_merged_with_a_required_fact() -> None:
+    source_ref = "telegram:source:1:item:10:rev:101:frag:1"
+    card = _story("story:1", "infrastructure", source_ref)
+    evidence_id = "story:1:evidence:0:frag:1"
+    evidence = PublicationEvidence(
+        evidence_id=evidence_id,
+        story_id=1,
+        text="Света нет 12 дней.",
+        source_text="Света нет 12 дней.",
+        kind="service_access",
+        publication_use="PUBLISH",
+        fragment_id=1,
+        source_ref=source_ref,
+        source_id=1,
+        source_item_id=10,
+        source_role="community",
+        observed_at=dt.datetime(2026, 10, 3, tzinfo=dt.timezone.utc),
+    )
+    fact = RequiredDigestFact(
+        fact_id="water",
+        rubric_id="infrastructure",
+        subject_key="water",
+        subject_label="Вода",
+        story_ids=(card.id,),
+        support_ids=(source_ref,),
+        text="Крылова: Воды нет.",
+        original_location="Крылова",
+    )
+    result = build_digest_composition(
+        DigestPresentationPlan(story_ids=(card.id,), required_facts=(fact,)),
+        (card,),
+        {evidence_id: evidence},
+        edition_slug="berdyansk",
+        snapshot_at=None,
+        max_chars=4096,
+        reserved_chars=0,
+        include_statistics=False,
+    )
+    assert len(result.fact_records) == 2
+    assert {r.text for r in result.fact_records} == {fact.text, evidence.text}
+
+
 def test_composition_rejects_duplicate_required_fact_ids_before_records_are_built() -> None:
     power = _story("story:101", "utilities", "source-power")
     water = _story("story:102", "water", "source-water")

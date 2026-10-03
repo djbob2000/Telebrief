@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 # ruff: noqa: S101
+from dataclasses import asdict
+from types import SimpleNamespace
+
 import pytest
 
 from src.editorial_models import StoryCard
-from src.publication.digest_composition import build_digest_composition
+from src.publication.digest_composition import _core_service_domains, build_digest_composition
 from src.publication.digest_presentation import DigestPresentationPlan, RequiredDigestFact
 
 
@@ -66,6 +69,45 @@ def _compose(candidates, *, max_chars: int, reserved_chars: int = 70):
             "zzz_core": "Core service",
         },
     )
+
+
+def test_rubric_and_incidental_landmark_do_not_supply_a_core_service_domain() -> None:
+    advert = _candidate(
+        "story:watch", "civic_services", "repair", "Повторяется объявление «Ремонт часов»."
+    )
+    power = _candidate(
+        "story:power",
+        "infrastructure",
+        "electricity",
+        "Возле городской поликлиники вторые сутки нет света.",
+    )
+    result = _compose([advert, power], max_chars=4096)
+    records = {record.story_ids[0]: record for record in result.fact_records}
+
+    assert _core_service_domains(records["story:watch"]) == set()
+    assert _core_service_domains(records["story:power"]) == {"power"}
+
+
+def test_domain_breadth_does_not_defer_a_second_critical_service_report() -> None:
+    critical = [
+        _candidate(
+            f"story:critical-{index}",
+            "infrastructure",
+            "electricity",
+            f"На улице {index} нет света.",
+        )
+        for index in range(2)
+    ]
+    critical = [
+        (SimpleNamespace(**{**asdict(card), "importance": "critical"}), fact)
+        for card, fact in critical
+    ]
+    water = _candidate("story:water", "infrastructure", "water", "Вода подаётся ночью.")
+
+    result = _compose([*critical, water], max_chars=310)
+
+    assert {card.id for card, _ in critical} <= result.admitted_story_ids
+    assert result.failure_reason == ""
 
 
 def test_core_service_facts_are_admitted_before_secondary_rubric_breadth() -> None:
@@ -132,6 +174,39 @@ def test_useful_single_source_nonutility_fact_is_admitted_when_budget_has_room()
     assert result.units[0].support_ids == ("source:story:course",)
     disposition = next(item for item in result.dispositions if item.candidate_id == "story:course")
     assert disposition.disposition == "selected"
+
+
+def test_power_reports_do_not_consume_the_budget_before_other_core_services() -> None:
+    power = [
+        _candidate(
+            f"story:power-{index}",
+            "infrastructure",
+            "electricity",
+            f"На улице {street} жители сообщают, что света нет уже вторые сутки.",
+        )
+        for index, street in enumerate(
+            ("Крылова", "Баха", "Тургенева", "Шевченко", "Ленина", "Горбенко", "РТС", "АКЗ")
+        )
+    ]
+    water = _candidate(
+        "story:water",
+        "infrastructure",
+        "water",
+        "Вода подаётся на верхние этажи только ночью раз в 5–6 дней.",
+    )
+    transit = _candidate(
+        "story:transit", "mobility", "transport", "Автобус №4 ходит примерно раз в час."
+    )
+    connection = _candidate(
+        "story:connection",
+        "communications",
+        "connectivity",
+        "На Орджоникидзе не работают мобильная связь и интернет.",
+    )
+    result = _compose([*power, water, transit, connection], max_chars=850, reserved_chars=128)
+    assert {"story:water", "story:transit", "story:connection"} <= result.admitted_story_ids
+    assert any(card.id in result.admitted_story_ids for card, _ in power)
+    assert result.estimated_visible_character_count <= 850
 
 
 @pytest.mark.parametrize(

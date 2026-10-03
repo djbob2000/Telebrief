@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from src.publication.article_length import ArticleLengthProfile
 
 ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v13"
-DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v8-composition"
+DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v9-composition"
 
 
 def build_article_narrative_contract(
@@ -176,6 +176,7 @@ def build_digest_narrative_contract(*, output_language: str = "Russian") -> str:
 - Do not collapse concrete evidence into generic summaries when useful supported specifics exist.
 - Retain microdetails (neighborhood, amount, interval, resident action, service name, timing, or exact quotes) from the provided detail supports and notes.
 - Synthesize multiple messages into a single cohesive development rather than enumerating individual messages.
+- An aggregate report and its individual street facts may overlap. Express the shared factual detail once in one synthesized item and name every corresponding fact ID in that item's coverage metadata; do not follow a synthesis with separate bullets repeating its streets, durations, or measurements.
 - No artificial length padding: On quiet days with few events, state supported facts concisely without filler. On rich days, synthesize thoroughly.
 
 4. Composition Membership & Grouping Rules:

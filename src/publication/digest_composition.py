@@ -16,7 +16,7 @@ from src.publication.digest_presentation import (
     validate_digest_fact_ids,
 )
 
-COMPOSITION_POLICY_VERSION = "digest_composition_v5"
+COMPOSITION_POLICY_VERSION = "digest_composition_v6"
 
 
 class DigestFactRelationKind(str, Enum):
@@ -537,8 +537,8 @@ def _fact_records(
             if not matched_facts:
                 # Some frozen RequiredDigestFacts predate the adapter's
                 # generated evidence IDs and carry only `fragment:<id>`.
-                # Link those only when exact claim text and same-story source
-                # provenance agree, and exactly one required fact fits.
+                # Link exact text (optionally with the plan's verbatim location
+                # prefix) only with same-story provenance and one matching fact.
                 item_provenance = {
                     *source_refs,
                     *(f"fragment:{fid}" for fid in fragment_ids if fid),
@@ -546,7 +546,13 @@ def _fact_records(
                 exact_claim_matches = [
                     fact
                     for fact in story_facts
-                    if fact.text.strip() == ev_text
+                    if (
+                        fact.text.strip() == ev_text
+                        or (
+                            fact.original_location.strip()
+                            and fact.text.strip() == f"{fact.original_location.strip()}: {ev_text}"
+                        )
+                    )
                     and item_provenance.intersection(fact.support_ids)
                 ]
                 if len(exact_claim_matches) == 1:
@@ -907,7 +913,7 @@ def _matches_fact_signal(text: str, words: tuple[str, ...], prefixes: tuple[str,
 def _fact_signal_text(fact: DigestFactRecord | None) -> str:
     if fact is None or fact.epistemic_kind.casefold() in {"question", "resident_question"}:
         return ""
-    return " ".join((fact.canonical_service, fact.rubric_id, fact.text)).casefold()
+    return " ".join((fact.canonical_service, fact.text)).casefold()
 
 
 def _core_service_fact_signal(fact: DigestFactRecord | None) -> bool:
@@ -918,11 +924,65 @@ def _core_service_fact_signal(fact: DigestFactRecord | None) -> bool:
         return False
     category_ids = {
         value.strip().casefold().replace("-", "_").replace(" ", "_")
-        for value in (fact.canonical_service, fact.rubric_id)
+        for value in (fact.canonical_service,)
     }
     return bool(category_ids & _CORE_SERVICE_FACT_CATEGORIES) or _matches_fact_signal(
         signal, _CORE_SERVICE_FACT_TERMS, _CORE_SERVICE_FACT_PREFIXES
     )
+
+
+def _core_service_domains(fact: DigestFactRecord) -> set[str]:
+    """Presentation breadth within core services, based only on grounded facts."""
+    if not _core_service_fact_signal(fact):
+        return set()
+    signal = _fact_signal_text(fact)
+    domain_signals = {
+        "power": (
+            ("power", "electricity", "свет", "света", "свете", "свету", "светом"),
+            ("electric", "электричество", "электроснабж", "электросет", "электроэнерг"),
+        ),
+        "water": (
+            ("water", "вода", "воды", "воде", "воду", "водой", "водою"),
+            ("water_", "водоснабж", "водопровод"),
+        ),
+        "gas": (
+            ("gas", "газ", "газа", "газу", "газом", "газе"),
+            ("gas_", "газоснабж", "газопровод"),
+        ),
+        "heating": (
+            ("heat", "heating", "тепло", "тепла", "тепле", "теплом"),
+            ("heating_", "теплоснабж", "отоплен"),
+        ),
+        "connectivity": (
+            ("connectivity", "telecom", "wifi", "связь", "связи", "связью"),
+            ("connectivity_", "telecom_", "internet", "интернет", "вайфай"),
+        ),
+        "transport": (
+            ("transport", "mobility", "transit", "bus", "tram", "trolleybus"),
+            ("transport_", "urban_transport", "автобус", "трамва", "троллейбус", "маршрут"),
+        ),
+        "safety": (_CORE_SAFETY_FACT_TERMS, _CORE_SAFETY_FACT_PREFIXES),
+        "health": (("health", "hospital", "clinic"), ("больниц", "поликлиник")),
+        "civic": (
+            ("bank", "banking", "pension", "municipal", "civic_services"),
+            ("банк", "пенсион", "муниципаль", "civic_service"),
+        ),
+    }
+    # A hospital used as a landmark for a power outage does not establish a
+    # health-service update. Prefer a known service; use claim text otherwise.
+    service_domains = {
+        domain
+        for domain, (words, prefixes) in domain_signals.items()
+        if _matches_fact_signal(fact.canonical_service, words, prefixes)
+    }
+    if service_domains:
+        return service_domains
+    domains = {
+        domain
+        for domain, (words, prefixes) in domain_signals.items()
+        if _matches_fact_signal(signal, words, prefixes)
+    }
+    return domains or {"core_other"}
 
 
 def _priority(card: Any, fact: DigestFactRecord | None) -> int:
@@ -1184,9 +1244,17 @@ def build_digest_composition(
         )
     )
     record_by_id = {record.fact_id: record for record in records}
+    essential_packages: list[list[DigestCompositionUnit]] = []
     core_service_packages: list[list[DigestCompositionUnit]] = []
     other_packages: list[list[DigestCompositionUnit]] = []
     for package in package_list:
+        if any(
+            _is_essential(by_id.get(story_id), unit.priority)
+            for unit in package
+            for story_id in unit.story_ids
+        ):
+            essential_packages.append(package)
+            continue
         has_core_service_fact = any(
             _core_service_fact_signal(record_by_id.get(fact_id))
             for unit in package
@@ -1205,13 +1273,13 @@ def build_digest_composition(
             first_packages.append(package)
         else:
             rest_packages.append(package)
-    package_list = core_service_packages + first_packages + rest_packages
-
     admitted_packages: list[list[DigestCompositionUnit]] = []
     deferred_packages: list[list[DigestCompositionUnit]] = []
     used = 0
     charged_rubrics: set[str] = set()
-    for package in package_list:
+
+    def admit(package: list[DigestCompositionUnit]) -> bool:
+        nonlocal used
         package_rubrics = {u.rubric_id for u in package}
         marginal = sum(u.estimated_character_cost for u in package)
         marginal += sum(heading_cost[r] for r in package_rubrics - charged_rubrics)
@@ -1219,7 +1287,31 @@ def build_digest_composition(
             admitted_packages.append(package)
             charged_rubrics.update(package_rubrics)
             used += marginal
+            return True
+        return False
+
+    # Offer distinct supported service domains space before repeating power (or
+    # any other domain). An oversized package cannot reserve a domain or prevent
+    # a later feasible package from representing it. Story admission stays atomic.
+    covered_core_domains: set[str] = set()
+    repeat_core_packages: list[list[DigestCompositionUnit]] = []
+    for package in essential_packages + core_service_packages:
+        domains = set().union(
+            *(
+                _core_service_domains(record_by_id[fact_id])
+                for unit in package
+                for fact_id in unit.fact_ids
+            )
+        )
+        essential = package in essential_packages
+        if (essential or domains - covered_core_domains) and admit(package):
+            covered_core_domains.update(domains)
+        elif essential:
+            deferred_packages.append(package)
         else:
+            repeat_core_packages.append(package)
+    for package in repeat_core_packages + first_packages + rest_packages:
+        if not admit(package):
             deferred_packages.append(package)
 
     admitted_units = [unit for package in admitted_packages for unit in package]

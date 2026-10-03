@@ -18,7 +18,7 @@ _CORRECTION_OFFER_RE = re.compile(
     re.IGNORECASE,
 )
 _WATCH_AD_RE = re.compile(r"\bремонт\s+часов\b", re.IGNORECASE)
-_WATCH_FRAGMENT_RE = re.compile(r"\b(?:время|режим)\s+работы\b", re.IGNORECASE)
+_WATCH_FRAGMENT_RE = re.compile(r"\b(?:ремонт\s+часов|(?:время|режим)\s+работы)\b", re.IGNORECASE)
 _PENSION_AD_RE = re.compile(r"\bпомощь\s+с\s+пенсиями[^.!?\n]{0,65}банками\b", re.IGNORECASE)
 _PENSION_FRAGMENT_RE = re.compile(
     r"\b(?:перевод\s+выплат|смена\s+банка\s+для\s+получения\s+пенсии)\b",

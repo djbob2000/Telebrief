@@ -94,6 +94,23 @@ def test_private_pension_and_watch_fragments_do_not_become_digest_stories() -> N
     assert original.evidence[watch.evidence_id].source_item_context_text == _WATCH_AD
 
 
+def test_repeated_watch_service_ad_is_context_but_a_real_service_change_survives() -> None:
+    advert = _evidence(
+        18047,
+        "В Бердянске повторяется объявление «Ремонт часов» без указания адреса и контактов.",
+        _WATCH_AD,
+    )
+    change = _evidence(
+        18048, "Приём часов отменили из-за отсутствия света.", _WATCH_AD, fragment_id=2
+    )
+
+    projected = project_digest_source_material(_analysis(advert, change))
+
+    assert [card.id for card in projected.cards] == ["story:18048"]
+    assert projected.evidence[advert.evidence_id].publication_use == "CONTEXT"
+    assert projected.evidence[change.evidence_id].publication_use == "PUBLISH"
+
+
 def test_course_ad_fragments_keep_one_substantive_story_and_exact_practical_details() -> None:
     teaser = _evidence(
         35681, "В Бердянске предлагается услуга по коррекции поведения собак.", _COURSE_AD
