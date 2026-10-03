@@ -617,6 +617,35 @@ class PublicationGenerationService:
                                     for item in block.items
                                     if item.item_id
                                 )
+                            recompose_block_ids = tuple(
+                                dict.fromkeys(
+                                    w.block_id
+                                    for w in rendered_audit.prose_audit.warnings
+                                    if w.code
+                                    in {"OVERLONG_SYNTHESIS", "FRAGMENTED_SERVICE_REPORTS"}
+                                )
+                            )
+                            if recompose_block_ids:
+                                affected_item_ids = tuple(
+                                    dict.fromkeys(
+                                        (
+                                            *affected_item_ids,
+                                            *(
+                                                item.item_id
+                                                for block in draft_cand.blocks
+                                                if block.block_id in recompose_block_ids
+                                                for item in block.items
+                                            ),
+                                        )
+                                    )
+                                )
+                            repair_checkpoint = (
+                                draft_cand,
+                                val_res,
+                                coverage_trace,
+                                rendered_artifact,
+                                rendered_audit,
+                            )
                             edit_att_id = await observer.attempt_started(
                                 "repair",
                                 metadata={
@@ -644,20 +673,42 @@ class PublicationGenerationService:
                                         or getattr(self.config.settings, "ai_model", None),
                                         violations=repair_findings,
                                         target_item_ids=affected_item_ids,
+                                        recompose_block_ids=recompose_block_ids,
                                     )
                                 repair_used = True
                                 draft_cand = sanitize_digest_narrative_draft(repaired_draft)
                                 val_res, coverage_trace, rendered_artifact, rendered_audit = (
                                     _evaluate_candidate(draft_cand)
                                 )
+                                recompose_accepted = not recompose_block_ids
+                                if recompose_block_ids:
+                                    recompose_accepted = (
+                                        draft_cand != repair_checkpoint[0]
+                                        and val_res.is_valid
+                                        and rendered_audit.is_publishable
+                                        and coverage_trace.story_coverage >= 1.0
+                                        and coverage_trace.material_fact_coverage >= 1.0
+                                    )
+                                if recompose_block_ids and not recompose_accepted:
+                                    (
+                                        draft_cand,
+                                        val_res,
+                                        coverage_trace,
+                                        rendered_artifact,
+                                        rendered_audit,
+                                    ) = repair_checkpoint
                                 await observer.attempt_finished(
                                     edit_att_id,
                                     "succeeded"
-                                    if val_res.is_valid and rendered_audit.is_publishable
+                                    if val_res.is_valid
+                                    and rendered_audit.is_publishable
+                                    and recompose_accepted
                                     else "failed",
                                     error_kind=(
                                         None
-                                        if val_res.is_valid and rendered_audit.is_publishable
+                                        if val_res.is_valid
+                                        and rendered_audit.is_publishable
+                                        and recompose_accepted
                                         else "digest_editor_combined_repair_unresolved"
                                     ),
                                     metadata={
@@ -671,6 +722,14 @@ class PublicationGenerationService:
                                     },
                                 )
                             except Exception as edit_exc:
+                                if recompose_block_ids:
+                                    (
+                                        draft_cand,
+                                        val_res,
+                                        coverage_trace,
+                                        rendered_artifact,
+                                        rendered_audit,
+                                    ) = repair_checkpoint
                                 await observer.attempt_finished(
                                     edit_att_id,
                                     "failed",

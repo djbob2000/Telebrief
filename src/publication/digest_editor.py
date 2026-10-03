@@ -14,6 +14,7 @@ from src.publication.digest_narrative import (
     DigestEditorialItemDraft,
     DigestNarrativeBlockDraft,
     DigestNarrativeDraft,
+    _parse_composition_writer_output,
     _publish_support_texts,
     _same_fact_group_merge_id,
     _same_fact_merge_id,
@@ -187,6 +188,7 @@ class DigestEditor:
         violations: Sequence[str] | None,
         target_item_ids: Sequence[str] | None,
         allowed_merges: Mapping[str, Any],
+        recompose_block_ids: Sequence[str] = (),
     ) -> DigestNarrativeDraft:
         """Target text-only repair while keeping frozen provenance immutable."""
         provider = self._provider
@@ -223,6 +225,15 @@ class DigestEditor:
             )
         except (AttributeError, TypeError, ValueError, StopIteration) as exc:
             logger.warning("Invalid approved digest merge map (%s); returning original draft", exc)
+            return draft
+
+        recompose_ids = set(recompose_block_ids)
+        if not recompose_ids.issubset(plan_blocks) or any(
+            item.item_id not in target_ids
+            for block in draft.blocks
+            if block.block_id in recompose_ids
+            for item in block.items
+        ):
             return draft
 
         editor_blocks: list[dict[str, Any]] = []
@@ -314,6 +325,7 @@ class DigestEditor:
                     "rubric_id": plan_block.rubric_id,
                     "items": raw_items,
                     "allowed_merges": approved_by_block.get(block.block_id, []),
+                    "allow_recomposition": block.block_id in recompose_ids,
                 }
             )
 
@@ -329,6 +341,25 @@ class DigestEditor:
             "Omit unchanged items. Keep every block present and in its original order.\n"
             + ("Requested validation issues:\n" + "\n".join(repair_lines) if repair_lines else "")
         )
+        if recompose_ids:
+            system_prompt += (
+                "\nFor blocks explicitly marked allow_recomposition, you may instead return "
+                "recomposed_items and leave items/merges empty. This is presentation regrouping, "
+                "not fact deletion: represent EVERY supplied fact exactly once. The program retains "
+                "summary-only items unchanged, so do not put their unit IDs in replacement items. "
+                "Combine related reports into readable paragraphs of roughly "
+                "250–500 characters; avoid a giant street-by-street paragraph. Keep common details "
+                "once while retaining each distinct duration, location, observation time and uncertainty. "
+                "Do not invent geography or connective causes. Each replacement item has "
+                "composition_unit_ids, covered_fact_ids, headline (short label or empty), body, emoji, "
+                "claims [{text, covered_fact_ids, summary_unit_ids}]. Do not supply Story/support IDs: "
+                "the program derives those from frozen facts. Each claim must describe its actual "
+                "supported observation, with its exact fact IDs. Preserve all unique detail. "
+                "In reports of bus prices distinguish the destination paid for from the final "
+                "destination of a passing bus; never turn the latter into the fare destination. "
+                "Use natural attribution such as 'по сообщениям жителей', not descriptions of chats. "
+                "During a recomposition batch leave other blocks present with empty items and merges; do not patch them. If there are several power reports, group them into no more than three cohesive reader items, with a clear subject and an evidence-supported relation; do not turn each street or Story into its own paragraph. Other services such as water and heating can remain separate items. Do not repeat the same polyclinic or district observation in different items."
+            )
         user_prompt = json.dumps(
             {
                 "target_item_ids": sorted(target_ids),
@@ -370,6 +401,144 @@ class DigestEditor:
             ]
             if received_ids != expected_block_ids:
                 raise ValueError("editor changed, omitted, or reordered blocks")
+
+            recomposed: dict[str, list[Any]] = {}
+            for raw_block in raw_blocks:
+                if "recomposed_items" not in raw_block:
+                    continue
+                block_id = str(raw_block["block_id"])
+                if (
+                    block_id not in recompose_ids
+                    or raw_block.get("items")
+                    or raw_block.get("merges")
+                ):
+                    raise ValueError("unapproved or mixed recomposition")
+                if not isinstance(raw_block["recomposed_items"], list):
+                    raise ValueError("recomposed_items must be a list")
+                recomposed[block_id] = raw_block["recomposed_items"]
+            if recomposed:
+                # Reuse the production parser: exact membership and evidence ownership,
+                # not model-authored provenance. Untouched blocks remain byte-for-byte intact.
+                parser_blocks = []
+                for block in draft.blocks:
+                    items = recomposed.get(block.block_id)
+                    if items is not None:
+                        plan_block = plan_blocks[block.block_id]
+                        fact_text_by_id = {
+                            str(fact.fact_id): str(fact.text) for fact in plan_block.required_facts
+                        }
+                        fact_unit_by_id = {
+                            str(fact_id): str(unit.unit_id)
+                            for unit in plan_block.composition_units
+                            for fact_id in unit.fact_ids
+                        }
+                        unit_by_id = {
+                            str(unit.unit_id): unit for unit in plan_block.composition_units
+                        }
+                        normalized_items: list[Any] = []
+                        for raw_item in items:
+                            if not isinstance(raw_item, Mapping):
+                                raise ValueError("recomposed item must be an object")
+                            fact_ids = raw_item.get("covered_fact_ids")
+                            if not isinstance(fact_ids, list) or not isinstance(
+                                raw_item.get("claims"), list
+                            ):
+                                raise ValueError(
+                                    "recomposed facts and claims must be explicit lists"
+                                )
+                            normalized = dict(raw_item)
+                            # Unit membership is determined from exact fact IDs, never from
+                            # model-authored provenance. The parser still verifies this map.
+                            normalized["composition_unit_ids"] = list(
+                                dict.fromkeys(
+                                    fact_unit_by_id[str(fact_id)]
+                                    for fact_id in fact_ids
+                                    if str(fact_id) in fact_unit_by_id
+                                )
+                            )
+                            # Claim Atoms are fixed-evidence metadata, not model-authored
+                            # paraphrases. Visible prose is separately checked against these
+                            # exact facts by the normal Evidence Boundary validator.
+                            normalized["claims"] = [
+                                {
+                                    "text": fact_text_by_id[str(fact_id)],
+                                    "covered_fact_ids": [str(fact_id)],
+                                    "summary_unit_ids": [],
+                                }
+                                for fact_id in fact_ids
+                                if str(fact_id) in fact_text_by_id
+                            ]
+                            if len(normalized["claims"]) != len(fact_ids):
+                                raise ValueError("recomposed item references an unknown fact")
+                            normalized_items.append(normalized)
+                        items = normalized_items
+                        for item in block.items:
+                            item_unit_ids = item.composition_unit_ids or (
+                                (item.composition_unit_id,) if item.composition_unit_id else ()
+                            )
+                            if (
+                                not item.covered_fact_ids
+                                and item_unit_ids
+                                and all(
+                                    unit_id in unit_by_id and not unit_by_id[unit_id].fact_ids
+                                    for unit_id in item_unit_ids
+                                )
+                            ):
+                                items.append(
+                                    {
+                                        "composition_unit_ids": list(item_unit_ids),
+                                        "covered_fact_ids": [],
+                                        "headline": item.headline,
+                                        "body": item.body,
+                                        "emoji": item.emoji,
+                                        "claims": [
+                                            {
+                                                "text": claim.text,
+                                                "covered_fact_ids": [],
+                                                "summary_unit_ids": list(claim.summary_unit_ids),
+                                            }
+                                            for claim in item.claims
+                                        ],
+                                    }
+                                )
+                    if items is None:
+                        items = [
+                            {
+                                "composition_unit_ids": list(
+                                    item.composition_unit_ids
+                                    or (
+                                        (item.composition_unit_id,)
+                                        if item.composition_unit_id
+                                        else ()
+                                    )
+                                ),
+                                "covered_fact_ids": list(item.covered_fact_ids),
+                                "headline": item.headline,
+                                "body": item.body,
+                                "emoji": item.emoji,
+                                "claims": [
+                                    {
+                                        "text": claim.text,
+                                        "covered_fact_ids": list(claim.covered_fact_ids),
+                                        "summary_unit_ids": list(claim.summary_unit_ids),
+                                    }
+                                    for claim in item.claims
+                                ],
+                            }
+                            for item in block.items
+                        ]
+                    parser_blocks.append({"block_id": block.block_id, "items": items})
+                checked = _parse_composition_writer_output({"blocks": parser_blocks}, plan=plan)
+                # Do not mix legacy patches with structural replacements in one batch.
+                if any(b.get("items") or b.get("merges") for b in raw_blocks):
+                    raise ValueError("recomposition batch cannot include text patches")
+                return replace(
+                    draft,
+                    blocks=tuple(
+                        new if old.block_id in recomposed else old
+                        for old, new in zip(draft.blocks, checked.blocks, strict=True)
+                    ),
+                )
 
             updates: dict[str, Mapping[str, Any]] = {}
             merges: dict[str, tuple[tuple[str, ...], Mapping[str, Any]]] = {}
@@ -530,6 +699,7 @@ class DigestEditor:
         violations: Sequence[str] | None = None,
         target_item_ids: Sequence[str] | None = None,
         allowed_merges: Mapping[str, Any] | None = None,
+        recompose_block_ids: Sequence[str] = (),
     ) -> DigestNarrativeDraft:
         """Apply targeted journalistic polish, contrast synthesis, and length compression."""
         if self._provider is None:
@@ -548,6 +718,7 @@ class DigestEditor:
                 violations=violations,
                 target_item_ids=target_item_ids,
                 allowed_merges=allowed_merges or {},
+                recompose_block_ids=recompose_block_ids,
             )
 
         # Build structured items payload for the editor model

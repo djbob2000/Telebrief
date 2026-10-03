@@ -10,7 +10,7 @@ from typing import Any, Mapping, Sequence
 from src.publication.digest_narrative import DigestNarrativeDraft
 from src.publication.evidence import PublicationEvidence
 
-DIGEST_DIAGNOSTICS_VERSION = "digest-diagnostics-v3"
+DIGEST_DIAGNOSTICS_VERSION = "digest-diagnostics-v4"
 
 _ATTRIBUTION_PATTERNS = [
     re.compile(
@@ -57,6 +57,10 @@ _CHAT_SLANG_OR_METADATA_RE = re.compile(
     r"\bв\s+(?:телеграм[- ]каналах|telegram[- ]каналах|каналах|паблике|пабликах|соцсетях|социальных\s+сетях)\b|"
     r"\b(?:публикаци\w*|сообщени\w*|пост\w*)\s+(?:местного|городского|районного)\s+канала\b|"
     r"\bв\s+пабликах\b|\bучастники?\s+чата\b|\bперекличк[а-я]*\b)",
+    re.IGNORECASE,
+)
+_POWER_REPORT_RE = re.compile(
+    r"\b(?:свет\w*|электрич\w*|электроснабж\w*|энергоснабж\w*|обесточ\w*|напряжен\w*)\b",
     re.IGNORECASE,
 )
 _CLASSIFIED_AD_RE = re.compile(
@@ -285,6 +289,25 @@ def audit_digest_prose_quality(
     covered_stories_detail = 0
 
     for block in draft.blocks:
+        power_item_indexes = [
+            idx
+            for idx, item in enumerate(block.items)
+            if _POWER_REPORT_RE.search(f"{item.headline} {item.body}")
+        ]
+        if len(power_item_indexes) >= 5:
+            warnings.append(
+                DigestQualityWarning(
+                    code="FRAGMENTED_SERVICE_REPORTS",
+                    message=(
+                        "Power observations are scattered across too many separate items. "
+                        "Weave related locations and timelines into a few readable passages "
+                        "while preserving every distinct report."
+                    ),
+                    block_id=block.block_id,
+                    item_index=power_item_indexes[0],
+                    headline=block.items[power_item_indexes[0]].headline,
+                )
+            )
         for idx, item in enumerate(block.items):
             detail_item_count += 1
             num_covered = len(item.covered_story_ids)
@@ -295,6 +318,20 @@ def audit_digest_prose_quality(
                 single_story_item_count += 1
 
             cited = [evidence[sid] for sid in item.cited_support_ids if sid in evidence]
+
+            if len(item.body) > 650 and len(item.covered_fact_ids) >= 4:
+                warnings.append(
+                    DigestQualityWarning(
+                        code="OVERLONG_SYNTHESIS",
+                        message=(
+                            "A dense multi-fact paragraph needs readable topic regrouping; "
+                            "retain every supported fact and synthesize overlapping reports once."
+                        ),
+                        block_id=block.block_id,
+                        item_index=idx,
+                        headline=item.headline,
+                    )
+                )
 
             if _check_duplicated_attribution(item.headline, item.body):
                 warnings.append(

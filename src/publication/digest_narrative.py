@@ -327,7 +327,15 @@ def _fix_chat_leaks(text: str) -> str:
     t = re.sub(
         r"\bв\s+(?:городских\s+|местных\s+|районных\s+)?чатах\s+([А-Яа-яA-Za-z-]+)\s+(обсужда\w*|сообща\w*|пиш\w*)\b",
         r"Жители \1 \2",
-        text,
+        t,
+        flags=re.IGNORECASE,
+    )
+    # A named-city chat is still channel metadata. Keep the reported status,
+    # but avoid claiming which person posted it.
+    t = re.sub(
+        r"\bв\s+[А-Яа-яЁё-]+\s+чате\s+(?:сообщают|сообщает|пишут|пишет),?\s*что",
+        "Сообщается, что",
+        t,
         flags=re.IGNORECASE,
     )
     # 2. "В городских чатах обсуждают" -> "Жители обсуждают"
@@ -341,6 +349,12 @@ def _fix_chat_leaks(text: str) -> str:
     t = re.sub(
         r"\bв\s+(?:городских\s+|местных\s+|районных\s+)?чатах(?:\s+[А-Яа-яA-Za-z-]+)?\b",
         "в городе",
+        t,
+        flags=re.IGNORECASE,
+    )
+    t = re.sub(
+        r"\bпо\s+сообщению\s+в\s+городе,?\s*",
+        "сообщается, что ",
         t,
         flags=re.IGNORECASE,
     )
@@ -3778,6 +3792,66 @@ def _publish_support_texts(
     return {ref: tuple(values) for ref, values in output.items()}
 
 
+def _reader_synthesis_groups(block: DigestNarrativeBlock) -> list[dict[str, Any]]:
+    """Give the existing writer a service roadmap, never new factual authority."""
+    from src.publication.digest_composition import _core_service_domains
+
+    fact_to_unit = {
+        str(fid): str(unit.unit_id) for unit in block.composition_units for fid in unit.fact_ids
+    }
+    grouped: dict[tuple[str, ...], dict[str, Any]] = {}
+    for record in block.composition_fact_records:
+        domains = tuple(sorted(_core_service_domains(record)))
+        # Unknown or secondary subjects must not become one invented common topic.
+        key = domains if domains else (f"fact:{record.fact_id}",)
+        group = grouped.setdefault(
+            key,
+            {
+                "navigation_only": True,
+                "service_topics": list(domains),
+                "composition_unit_ids": [],
+                "fact_ids": [],
+            },
+        )
+        group["fact_ids"].append(str(record.fact_id))
+        unit_id = fact_to_unit[str(record.fact_id)]
+        if unit_id not in group["composition_unit_ids"]:
+            group["composition_unit_ids"].append(unit_id)
+    for group in grouped.values():
+        count = len(group["fact_ids"])
+        group["preferred_max_reader_items"] = 3 if count >= 9 else 2 if count >= 5 else 1
+    return list(grouped.values())
+
+
+def _related_reporting_sets(block: DigestNarrativeBlock) -> list[dict[str, Any]]:
+    """Flag literal reporting overlap, without declaring facts/places equivalent."""
+    records = block.composition_fact_records
+    anchors: set[str] = set()
+    for record in records:
+        # Multiword location clauses and literal acronyms are useful pointers.
+        # Never infer a district, resolve a new alias or borrow reply context.
+        for clause in re.split(r"[,;]", record.original_location):
+            tokens = re.findall(r"\w+", clause.casefold())
+            if len(tokens) >= 2:
+                anchors.add(" ".join(tokens))
+        anchors.update(word.casefold() for word in re.findall(r"\b[А-ЯЁA-Z]{3,}\b", record.text))
+    normalized = {
+        record.fact_id: " ".join(re.findall(r"\w+", record.text.casefold())) for record in records
+    }
+    result = []
+    seen_sets: set[tuple[str, ...]] = set()
+    for anchor in sorted(anchors, key=lambda value: (-len(value), value)):
+        pattern = re.compile(rf"(?:^|\s){re.escape(anchor)}(?:\s|$)")
+        fact_ids = tuple(
+            record.fact_id for record in records if pattern.search(normalized[record.fact_id])
+        )
+        if len(fact_ids) < 2 or fact_ids in seen_sets:
+            continue
+        seen_sets.add(fact_ids)
+        result.append({"navigation_only": True, "text_anchor": anchor, "fact_ids": list(fact_ids)})
+    return result
+
+
 def _composition_writer_payload(
     *,
     plan: DigestNarrativePlan,
@@ -3890,6 +3964,8 @@ def _composition_writer_payload(
                 "block_id": block.block_id,
                 "rubric_id": block.rubric_id,
                 "rubric_title": block.rubric_title,
+                "reader_synthesis_groups": _reader_synthesis_groups(block),
+                "related_reporting_sets": _related_reporting_sets(block),
                 "composition_units": unit_rows,
             }
         )
@@ -4155,7 +4231,7 @@ class DigestNarrativeWriter:
             '"composition_unit_ids":["one or more exact unit IDs from this same-rubric block"],'
             '"covered_fact_ids":["exact facts this item covers; empty only when all named units are summary-only"],'
             '"emoji":"optional short semantic emoji",'
-            '"headline":"specific reader headline, or empty only for a compact single observation with its full attributed fact in the body",'
+            '"headline":"optional short scan label or concise headline; may be empty for a complete natural paragraph",'
             '"body":"cohesive concise prose",'
             '"claims":[{"text":"one grounded proposition",'
             '"covered_fact_ids":["exact fact IDs supporting this claim"],'
@@ -4165,6 +4241,9 @@ class DigestNarrativeWriter:
         system_prompt = (
             f"You are a careful local-news editor writing a scan-first digest in {language}.\n"
             "Write fluent, natural prose from the supplied frozen composition plan.\n"
+            "Use reader_synthesis_groups as your editorial roadmap before composing items. They group reporting about a service for readability; they are navigation, not evidence, fact equivalence, chronology, geography, or permission to omit material.\n"
+            "Normally synthesize each service group into its preferred_max_reader_items or fewer cohesive items. Keep every exact fact ID, use as many claims as needed inside each item, and split for readability only when the material requires it. Do not create a separate item for every street or source message.\n"
+            "Compare related_reporting_sets before writing: their text anchors flag potential overlap across units and service groups. They do not prove SAME_FACT, shared geography or chronology. Integrate overlapping observations into the same item where supported, state a shared detail once, and retain every distinct fact and its unique detail. Do not mention the same outage/location in multiple items merely because separate Stories repeat it.\n"
             "COMPOSITION CONTRACT:\n"
             "- Every item names one or more exact composition_unit_ids from this block; units in an item must belong to this same rubric. Do not invent, shorten, or infer IDs. The units define which material an item may represent; they do not require one visible item each.\n"
             "- Across the whole block, every allowed fact ID must occur in exactly one item's covered_fact_ids. Items may weave compatible same-rubric units together or split a unit when that makes its places or situations clearer. No fact may be omitted, duplicated, or moved outside its unit.\n"
@@ -4173,7 +4252,7 @@ class DigestNarrativeWriter:
             "- Do not output covered_story_ids or cited_support_ids. Python derives both from the frozen fact-to-evidence map.\n"
             "- Use only facts and PUBLISH supports provided for that unit. A single PUBLISH community report is publishable: preserve its reported/uncertain status with natural attribution; do not demand corroboration or official confirmation. Never upgrade it to an established or official fact.\n"
             "- Keep a concrete local location attached to its own fact. Do not infer proximity, a shared district, a cause, or a city-wide condition. When one item weaves units from different locations, mention each named place in its own clause or sentence; a shared rubric is not a shared neighborhood. Use only explicitly supported localized contrasts.\n"
-            "- Avoid chat/forum language, filler, generic status phrases, advice, and invented context. Use a specific headline for synthesized items. For a compact item with one supported observation, the headline may be empty and the body must contain the full fact with natural attribution. Do not repeat a nonempty headline verbatim.\n\n"
+            "- Avoid chat/forum language, filler, generic status phrases, advice, and invented context. Headline is optional: use a short scan label when useful, or start with a complete natural paragraph. Never add a headline just to paraphrase the first sentence.\n\n"
             f"{build_digest_narrative_contract(output_language=language)}\n\n"
             "Return only valid JSON matching this schema; include every input block in the same order:\n"
             f"{schema_desc}"

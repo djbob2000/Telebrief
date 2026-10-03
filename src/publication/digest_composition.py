@@ -16,7 +16,7 @@ from src.publication.digest_presentation import (
     validate_digest_fact_ids,
 )
 
-COMPOSITION_POLICY_VERSION = "digest_composition_v6"
+COMPOSITION_POLICY_VERSION = "digest_composition_v7"
 
 
 class DigestFactRelationKind(str, Enum):
@@ -958,7 +958,7 @@ def _core_service_domains(fact: DigestFactRecord) -> set[str]:
             ("connectivity_", "telecom_", "internet", "интернет", "вайфай"),
         ),
         "transport": (
-            ("transport", "mobility", "transit", "bus", "tram", "trolleybus"),
+            ("transport", "mobility", "transit", "bus", "tram", "trolleybus", "такси"),
             ("transport_", "urban_transport", "автобус", "трамва", "троллейбус", "маршрут"),
         ),
         "safety": (_CORE_SAFETY_FACT_TERMS, _CORE_SAFETY_FACT_PREFIXES),

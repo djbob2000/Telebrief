@@ -61,6 +61,24 @@ def test_current_dog_training_course_overrides_legacy_economy_category() -> None
     assert actual == "education_culture"
 
 
+def test_taxi_booking_is_transport_despite_connection_context() -> None:
+    card = _card(
+        topic="Заказ такси через приложение в Бердянске",
+        summary="Такси можно заказать через приложение, особенно когда нет связи.",
+        category="communications",
+    )
+    assert _classify(card, _rubrics("mobility", "communications")) == "mobility"
+
+
+def test_connection_outage_with_a_taxi_mention_remains_communications() -> None:
+    card = _card(
+        topic="В Бердянске пропала мобильная связь",
+        summary="Из-за отключения связи жители не могут вызвать такси.",
+        category="communications",
+    )
+    assert _classify(card, _rubrics("mobility", "communications")) == "communications"
+
+
 def test_safety_event_during_courses_keeps_safety_priority() -> None:
     card = _card(
         topic="Пожар во время курсов в учебном корпусе",

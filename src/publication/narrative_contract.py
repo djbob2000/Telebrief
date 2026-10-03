@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from src.publication.article_length import ArticleLengthProfile
 
 ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v13"
-DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v9-composition"
+DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v11-synthesis"
 
 
 def build_article_narrative_contract(
@@ -158,25 +158,24 @@ def build_digest_narrative_contract(*, output_language: str = "Russian") -> str:
 - Write thematic detail items for the assigned stories in each block.
 - For each item, choose an accurate semantic emoji matching the theme (`emoji`).
 - Clean Visual Presentation: Never output bullet points ('•') or dashes ('—') at item start. Items are formatted cleanly with their thematic emoji and separated by blank lines.
-- Storytelling Depth (3-Part Narrative):
-  * Major and multi-source items should be crafted as 2–3 sentence cohesive narratives:
-    1. What happened + concrete micro-locations/streets/districts (in parentheses if listing multiple).
-    2. Explanation, cause, or technical background from specialists/authorities (ONLY if grounded in evidence).
-    3. Practical consequences, resident adaptations, or status of hotlines/emergency services.
-- When useful, use a fact-first / answer-first headline: a bold mini-summary answering "what happened?".
+- Build each item around a reader-relevant subject, not around the fact that someone posted a message. Lead with the concrete situation, then integrate related places, durations, changes and practical consequences in connected prose.
+- Use a few cohesive service items rather than a row of isolated street observations. A busy electricity group normally needs 1–3 readable items, organized by supported places or chronology. These are editorial targets, never reasons to omit a selected fact or add filler.
+- A short scan label such as "Свет", "Вода" or "Автобусы" is often sufficient. A headline is optional even for synthesized items: a complete paragraph may carry the item. Avoid long thesis headlines followed by the same thesis in the body.
 - For developed or synthesized items, the body adds supported context, chronology, current status, practical impact, or resident adaptation. Do not repeat the headline with synonyms.
 - Compact observations: If one supported observation has no further details, use an empty headline and put the complete fact with natural attribution in one concise body sentence. Preserve its Story/fact coverage and claims. Do not add detail or extra sentences merely to fill a headline-and-body format.
 - When the body's first sentence already states the complete headline fact, omit the headline and retain the body with its attribution and details. Prefer one complete sentence to a thesis followed by its synonym paraphrase.
 - Substantive Clarity: State the known entity or service and include supplied dates, actions, access conditions, and destinations when they add practical value. Report the substantive update directly instead of "В сообщении говорится...". Never invent an institution type, month, bank, destination, or instructions to fill missing context. Useful partial information remains publishable with honest uncertainty; incompleteness alone is not a reason to suppress a community report.
 - An answer in a chat may supply a useful fact. Attribute it naturally as a resident report; do not narrate the question-and-answer mechanics ("согласно ответу на вопрос", "в ответ на вопрос о наличии света").
 - Attribution Discipline (Attribution Once): Do NOT repeat conversational attribution ("жители сообщают", "по сообщениям жителей", "горожане пишут") in both the headline and body of the same item. If the headline already states attribution, the body proceeds directly to facts and adaptation; if the body uses attribution, the headline should be a direct factual headline without conversational boilerplate.
+- Establish attribution naturally for a group of community observations and keep it in scope for the following clauses. Repeat it only when the source type or epistemic status changes, not before every street. Write about the city situation, not about the chat, author, message, or question-and-answer exchange.
 - Do not output one giant paragraph for an entire rubric.
 
 3. Microdetail Preservation & Event Synthesis:
 - Do not collapse concrete evidence into generic summaries when useful supported specifics exist.
 - Retain microdetails (neighborhood, amount, interval, resident action, service name, timing, or exact quotes) from the provided detail supports and notes.
 - Synthesize multiple messages into a single cohesive development rather than enumerating individual messages.
-- An aggregate report and its individual street facts may overlap. Express the shared factual detail once in one synthesized item and name every corresponding fact ID in that item's coverage metadata; do not follow a synthesis with separate bullets repeating its streets, durations, or measurements.
+- An aggregate report, related Stories, and individual street facts may overlap. Express shared detail once and name every corresponding fact ID in that item's coverage metadata; retain each report's unique detail and do not follow a synthesis with separate bullets repeating its streets, durations, or measurements.
+- Distinguish an observation's reporting time from an actual restoration/outage time. Where reports differ, preserve their supplied chronology or say that availability varies across the reports; do not present an earlier brief restoration as the current state or invent a later update when chronology is unknown.
 - No artificial length padding: On quiet days with few events, state supported facts concisely without filler. On rich days, synthesize thoroughly.
 
 4. Composition Membership & Grouping Rules:
@@ -189,7 +188,8 @@ def build_digest_narrative_contract(*, output_language: str = "Russian") -> str:
 - Trace IDs are provenance metadata, not a corroboration threshold. One eligible PUBLISH community report is enough when represented as a report; never require two sources or official confirmation.
 
 5. Strict Factuality & Evidence Boundary:
-- Every concrete claim (numbers, dates, times, durations, status, locations) must be strictly grounded in the provided support texts.
+- Every concrete claim (numbers, dates, times, durations, status, locations) must be strictly grounded in the provided support texts. The edition date, snapshot date, and observed_at timestamp describe the reporting window or when a message was seen; never convert them into an event date unless the citable fact/support text itself supplies that date.
+- Keep prices attached to the exact trip leg or service being priced. A passing bus's final destination is not necessarily the destination covered by the quoted fare; never transfer a short-leg fare to a longer route.
 - Causal Relation & Mechanism Strictness:
   * NEVER invent or assume causes, mechanisms, or explanations (e.g. NEVER write «из-за низкого напряжения...», «из-за аварии...», «вследствие...», «по причине...», «в результате чего...» unless the cited support text explicitly states that exact cause-and-effect relationship).
   * State facts and observations directly (e.g. «зафиксировано низкое напряжение около 80 В; отключения электроснабжения продолжаются...»), rather than inventing causal connectors between them.

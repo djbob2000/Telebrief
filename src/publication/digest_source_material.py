@@ -29,6 +29,8 @@ _PROMOTION_RE = re.compile(
     r"покупаем\s+коллекционные|честная\s+оценка)\b",
     re.IGNORECASE,
 )
+_TAXI_APP_OFFER_RE = re.compile(r"\bзаказать\s+такси\s+через\s+наше\s+приложение\b", re.IGNORECASE)
+_TAXI_PROMOTION_RE = re.compile(r"\bлучшее\s+такси\b", re.IGNORECASE)
 _SERVICE_UPDATE_RE = re.compile(
     r"\b(?:нет\s+(?:света|воды|газа)|не\s+работа\w*|не\s+принима\w*|"
     r"отключили|включили|перебои|прорыв|восстановили|отменили|перенесли|"
@@ -69,6 +71,12 @@ def _is_private_fragment(evidence: PublicationEvidence, context: str) -> bool:
     # Neither an inferred headline nor the surrounding ad can supply that change.
     if _SERVICE_UPDATE_RE.search(fragment):
         return False
+    if (
+        _TAXI_APP_OFFER_RE.search(fragment)
+        and _TAXI_PROMOTION_RE.search(plain_context)
+        and "play.google.com/store/apps" in plain_context.casefold()
+    ):
+        return True
     if _PROMOTION_RE.search(plain_context) and (
         (_WATCH_AD_RE.search(plain_context) and _WATCH_FRAGMENT_RE.search(fragment))
         or (_PENSION_AD_RE.search(plain_context) and _PENSION_FRAGMENT_RE.search(fragment))

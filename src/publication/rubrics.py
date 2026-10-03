@@ -16,7 +16,12 @@ from src.editorial_models import StoryCard
 
 logger = logging.getLogger(__name__)
 
-RUBRIC_CLASSIFIER_VERSION = "digest-rubric-embedding-v3"
+RUBRIC_CLASSIFIER_VERSION = "digest-rubric-embedding-v4"
+
+_TAXI_BOOKING_TOPIC_RE = re.compile(
+    r"\b(?:заказ\w*|вызов\w*)\s+такси\b|\bтакси\b[^.!?]{0,50}\bзаказ\w*\b",
+    re.IGNORECASE,
+)
 
 _EDUCATION_RUBRIC_IDS = ("education_culture", "education", "culture")
 _NON_EDUCATION_SERVICE_FAMILIES = frozenset(
@@ -101,7 +106,7 @@ class RubricAssignment:
     story_id: str
     rubric_id: str
     score: float | None
-    # "semantic" | "legacy_hint" | "education_priority" | "family_fallback" | "fallback"
+    # "semantic" | "legacy_hint" | "education_priority" | "transport_priority" | "family_fallback" | "fallback"
     method: str
 
 
@@ -234,6 +239,15 @@ class DigestRubricClassifier:
                 )
             ) and "safety" in known_rubrics_by_id:
                 matched_rid = "safety"
+            elif _TAXI_BOOKING_TOPIC_RE.search(card.topic) and (
+                transport_rid := next(
+                    (rid for rid in ("mobility", "transport") if rid in known_rubric_ids), None
+                )
+            ):
+                # Connectivity mentioned as a booking condition does not change
+                # the subject from taxi access to a communications update.
+                matched_rid = transport_rid
+                matched_method = "transport_priority"
             elif c_cat in ("economy", "business") and (
                 education_rid := _education_priority_rubric_id(c_text, known_rubric_ids)
             ):

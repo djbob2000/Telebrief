@@ -111,6 +111,31 @@ def test_repeated_watch_service_ad_is_context_but_a_real_service_change_survives
     assert projected.evidence[change.evidence_id].publication_use == "PUBLISH"
 
 
+def test_generic_taxi_app_ad_fragment_is_context_but_service_updates_survive() -> None:
+    raw = (
+        "Такси 24 Бердянск\nЛучшее такси твоего города\n"
+        "Можно заказать такси через Наше Приложение, особенно когда нет связи.\n"
+        "PlayMarket https://play.google.com/store/apps/details?id=example\n"
+    )
+    advert = _evidence(
+        1329,
+        "В Бердянске можно заказать такси через приложение, особенно когда нет связи.",
+        raw,
+    )
+    advert = replace(
+        advert,
+        source_text="Можно заказать такси через Наше Приложение, особенно когда нет связи.",
+    )
+    update = _evidence(1330, "Приём заказов такси восстановили после отключения связи.", raw)
+    fare = _evidence(1331, "Поездка на такси до автовокзала стоит 200 рублей.", raw)
+    projected = project_digest_source_material(_analysis(advert, update, fare))
+
+    assert [card.id for card in projected.cards] == ["story:1330", "story:1331"]
+    assert projected.evidence[advert.evidence_id].publication_use == "CONTEXT"
+    assert projected.evidence[update.evidence_id].publication_use == "PUBLISH"
+    assert projected.evidence[fare.evidence_id].publication_use == "PUBLISH"
+
+
 def test_course_ad_fragments_keep_one_substantive_story_and_exact_practical_details() -> None:
     teaser = _evidence(
         35681, "В Бердянске предлагается услуга по коррекции поведения собак.", _COURSE_AD
