@@ -63,6 +63,7 @@ _POWER_REPORT_RE = re.compile(
     r"\b(?:свет\w*|электрич\w*|электроснабж\w*|энергоснабж\w*|обесточ\w*|напряжен\w*)\b",
     re.IGNORECASE,
 )
+MAX_POWER_REPORT_ITEMS_PER_BLOCK = 3
 _SOURCE_META_NARRATION_RE = re.compile(
     r"\b(?:в\s+(?:отдельном|другом|следующем|одном|одной|другой|отдельной)\s+"
     r"(?:сообщени\w*|публикаци\w*|пост\w*)|"
@@ -285,6 +286,11 @@ def _check_redundant_headline_in_body(headline: str, body: str) -> bool:
     return False
 
 
+def power_report_item_count(items: Sequence[Any]) -> int:
+    """Count reader items containing a power report for the synthesis limit."""
+    return sum(1 for item in items if _POWER_REPORT_RE.search(f"{item.headline} {item.body}"))
+
+
 def audit_digest_prose_quality(
     draft: DigestNarrativeDraft,
     evidence: Mapping[str, PublicationEvidence],
@@ -304,7 +310,7 @@ def audit_digest_prose_quality(
             for idx, item in enumerate(block.items)
             if _POWER_REPORT_RE.search(f"{item.headline} {item.body}")
         ]
-        if len(power_item_indexes) >= 3:
+        if len(power_item_indexes) > MAX_POWER_REPORT_ITEMS_PER_BLOCK:
             for item_index in power_item_indexes:
                 warnings.append(
                     DigestQualityWarning(

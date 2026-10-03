@@ -408,7 +408,7 @@ def test_editor_recomposition_requires_all_block_items_authorized() -> None:
     assert result == draft
 
 
-def test_recomposition_preserves_summary_only_story_in_the_original_item() -> None:
+def test_recomposition_rejects_summary_membership_from_an_untargeted_item() -> None:
     import asyncio
     import json
     from dataclasses import replace
@@ -490,8 +490,7 @@ def test_recomposition_preserves_summary_only_story_in_the_original_item() -> No
     summary_item = source.blocks[0].items[1]
 
     replacement = {
-        # Even if the model tries to weave in this summary unit, the server removes
-        # that membership and restores its original item after parsing.
+        # The editor may not borrow the standalone summary unit when recomposing facts.
         "composition_unit_ids": [units[fid] for fid in facts] + [unit.unit_id],
         "covered_fact_ids": facts,
         "headline": "Электроснабжение",
@@ -523,6 +522,7 @@ def test_recomposition_preserves_summary_only_story_in_the_original_item() -> No
             recompose_block_ids=(block.block_id,),
         )
     )
+    assert result == source
     assert any(item.covered_story_ids == (summary_id,) for item in result.blocks[0].items)
     assert summary_item.body in {item.body for item in result.blocks[0].items}
     assert {sid for item in result.blocks[0].items for sid in item.covered_story_ids} == {
@@ -531,27 +531,182 @@ def test_recomposition_preserves_summary_only_story_in_the_original_item() -> No
     }
 
 
-def test_scattered_power_items_raise_nonblocking_synthesis_prompt() -> None:
-    from src.publication.digest_quality_diagnostics import audit_digest_prose_quality
+def test_recomposition_can_regroup_facts_from_an_item_with_a_summary_unit() -> None:
+    import asyncio
+    import json
+    from dataclasses import replace
 
-    reports = tuple(
-        ("electricity", location, f"На {location} несколько дней нет света.")
-        for location in ("РТС", "АКЗ", "Крылова")
-    )
-    _, evidence, _, plan = _fixture(*reports)
+    from src.publication.digest_composition import DigestCompositionUnit
+    from src.publication.digest_editor import DigestEditor
+
+    _, evidence, _, plan = _fixture()
     block = plan.blocks[0]
-    unit_groups = (
-        block.composition_units[:3],
-        block.composition_units[3:5],
-        block.composition_units[5:],
+    summary_id = "summary:power"
+    summary_support_id = f"{summary_id}:evidence:1"
+    summary_unit = DigestCompositionUnit(
+        unit_id="summary-unit:power",
+        rubric_id=block.rubric_id,
+        fact_ids=(),
+        story_ids=(summary_id,),
+        support_ids=(summary_support_id,),
+        canonical_area_key="",
+        priority=1,
     )
+    plan_block = replace(
+        block,
+        story_ids=(*block.story_ids, summary_id),
+        support_ids=(*block.support_ids, summary_support_id),
+        composition_units=(*block.composition_units, summary_unit),
+    )
+    plan = replace(plan, blocks=(plan_block,))
+    evidence[summary_support_id] = PublicationEvidence(
+        evidence_id=summary_support_id,
+        story_id=999,
+        text="При восстановлении электричества напряжение держится около 154 В.",
+        source_text="При восстановлении электричества напряжение держится около 154 В.",
+        kind="service_access",
+        publication_use="PUBLISH",
+        fragment_id=999,
+        source_ref="telegram:source:1:item:999:rev:1:frag:999",
+        source_id=1,
+        source_item_id=999,
+        source_role="community",
+        observed_at=_NOW,
+    )
+    facts = {fact.fact_id: fact for fact in plan_block.required_facts}
+    power_fact_ids = [
+        fact.fact_id for fact in plan_block.required_facts if fact.subject_key == "electricity"
+    ]
+    power_unit_ids = [
+        unit.unit_id
+        for unit in plan_block.composition_units
+        if set(unit.fact_ids).intersection(power_fact_ids)
+    ]
+    water_unit = next(
+        unit
+        for unit in plan_block.composition_units
+        if not set(unit.fact_ids).intersection(power_fact_ids)
+    )
+    water_fact_ids = list(water_unit.fact_ids)
+    source_item = _parse_composition_writer_output(
+        {
+            "blocks": [
+                {
+                    "block_id": block.block_id,
+                    "items": [
+                        {
+                            "composition_unit_ids": [*power_unit_ids, summary_unit.unit_id],
+                            "covered_fact_ids": power_fact_ids,
+                            "headline": "",
+                            "body": "Сводка по электроснабжению. При восстановлении электричества напряжение держится около 154 В.",
+                            "claims": [
+                                {"text": facts[fid].text, "covered_fact_ids": [fid]}
+                                for fid in power_fact_ids
+                            ]
+                            + [
+                                {
+                                    "text": "При восстановлении электричества напряжение держится около 154 В.",
+                                    "covered_fact_ids": [],
+                                    "summary_unit_ids": [summary_unit.unit_id],
+                                }
+                            ],
+                        },
+                        {
+                            "composition_unit_ids": [water_unit.unit_id],
+                            "covered_fact_ids": water_fact_ids,
+                            "headline": "",
+                            "body": " ".join(facts[fid].text for fid in water_fact_ids),
+                            "claims": [
+                                {"text": facts[fid].text, "covered_fact_ids": [fid]}
+                                for fid in water_fact_ids
+                            ],
+                        },
+                    ],
+                }
+            ]
+        },
+        plan=plan,
+    )
+    observed: dict[str, bool] = {}
+
+    class Provider:
+        async def chat_completion(self, **kwargs):
+            user_input = json.loads(kwargs["messages"][1]["content"])
+            observed["targeted"] = user_input["blocks"][0]["items"][0]["targeted_for_recomposition"]
+            return json.dumps(
+                {
+                    "blocks": [
+                        {
+                            "block_id": block.block_id,
+                            "items": [],
+                            "merges": [],
+                            "recomposed_items": [
+                                {
+                                    "composition_unit_ids": [
+                                        *power_unit_ids,
+                                        summary_unit.unit_id,
+                                    ],
+                                    "covered_fact_ids": power_fact_ids,
+                                    "headline": "",
+                                    "body": "По сообщениям жителей, на АКЗ свет включали на 15 минут после 62 дней без электричества; на Крылова света нет больше 10 дней, а в центре — вторые сутки. При восстановлении электричества напряжение держится около 154 В.",
+                                    "claims": [
+                                        {
+                                            "text": facts[fid].text,
+                                            "covered_fact_ids": [fid],
+                                        }
+                                        for fid in power_fact_ids
+                                    ]
+                                    + [
+                                        {
+                                            "text": "При восстановлении электричества напряжение держится около 154 В.",
+                                            "covered_fact_ids": [],
+                                            "summary_unit_ids": [summary_unit.unit_id],
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    ]
+                }
+            )
+
+    result = asyncio.run(
+        DigestEditor(provider=Provider()).polish_and_compress(
+            source_item,
+            plan=plan,
+            evidence=evidence,
+            target_item_ids=(source_item.blocks[0].items[0].item_id,),
+            recompose_block_ids=(block.block_id,),
+        )
+    )
+
+    assert observed.get("targeted") is True
+    assert len(result.blocks[0].items) == 2
+    assert set(result.blocks[0].items[0].covered_fact_ids) == set(power_fact_ids)
+    assert set(result.blocks[0].items[1].covered_fact_ids) == set(water_fact_ids)
+    assert summary_id in result.blocks[0].items[0].covered_story_ids
+
+
+def test_editor_rejects_power_recomposition_that_keeps_four_separate_items() -> None:
+    import asyncio
+    import json
+
+    from src.publication.digest_editor import DigestEditor
+
+    _, evidence, _, plan = _fixture(("electricity", "РТС", "На РТС света нет неделю."))
+    block = plan.blocks[0]
+    power_fact_ids = {
+        fact.fact_id for fact in block.required_facts if fact.subject_key == "electricity"
+    }
     raw_items = []
-    for group in unit_groups:
-        fact_ids = [fact_id for unit in group for fact_id in unit.fact_ids]
+    for unit in block.composition_units:
+        fact_ids = [fact_id for fact_id in unit.fact_ids if fact_id in power_fact_ids]
+        if not fact_ids:
+            continue
         facts = [fact for fact in block.required_facts if fact.fact_id in fact_ids]
         raw_items.append(
             {
-                "composition_unit_ids": [unit.unit_id for unit in group],
+                "composition_unit_ids": [unit.unit_id],
                 "covered_fact_ids": fact_ids,
                 "headline": "",
                 "body": " ".join(fact.text for fact in facts),
@@ -560,15 +715,118 @@ def test_scattered_power_items_raise_nonblocking_synthesis_prompt() -> None:
                 ],
             }
         )
-    assert len(raw_items) == 3
-    raw_items[0]["body"] = "В отдельной публикации жители уточнили: " + str(raw_items[0]["body"])
+    water_unit = next(
+        unit
+        for unit in block.composition_units
+        if not set(unit.fact_ids).intersection(power_fact_ids)
+    )
+    water_facts = [fact for fact in block.required_facts if fact.fact_id in water_unit.fact_ids]
+    raw_items.append(
+        {
+            "composition_unit_ids": [water_unit.unit_id],
+            "covered_fact_ids": [fact.fact_id for fact in water_facts],
+            "headline": "",
+            "body": " ".join(fact.text for fact in water_facts),
+            "claims": [
+                {"text": fact.text, "covered_fact_ids": [fact.fact_id]} for fact in water_facts
+            ],
+        }
+    )
+    draft = _parse_composition_writer_output(
+        {"blocks": [{"block_id": block.block_id, "items": raw_items}]}, plan=plan
+    )
+
+    class Provider:
+        async def chat_completion(self, **kwargs):
+            over_fragmented = [
+                {**item, "body": "Пересобранный пункт. " + item["body"]} for item in raw_items[:-1]
+            ]
+            return json.dumps(
+                {
+                    "blocks": [
+                        {
+                            "block_id": block.block_id,
+                            "items": [],
+                            "merges": [],
+                            "recomposed_items": over_fragmented,
+                        }
+                    ]
+                }
+            )
+
+    result = asyncio.run(
+        DigestEditor(provider=Provider()).polish_and_compress(
+            draft,
+            plan=plan,
+            evidence=evidence,
+            target_item_ids=tuple(
+                item.item_id
+                for item in draft.blocks[0].items
+                if set(item.covered_fact_ids).intersection(power_fact_ids)
+            ),
+            recompose_block_ids=(block.block_id,),
+        )
+    )
+
+    assert result == draft
+
+
+@pytest.mark.parametrize("power_count", [3, 4])
+def test_power_fragmentation_threshold_matches_three_item_editor_limit(power_count: int) -> None:
+    from src.publication.digest_quality_diagnostics import audit_digest_prose_quality
+
+    reports = () if power_count == 3 else (("electricity", "РТС", "На РТС света нет неделю."),)
+    _, evidence, _, plan = _fixture(*reports)
+    block = plan.blocks[0]
+    power_fact_ids = {
+        fact.fact_id for fact in block.required_facts if fact.subject_key == "electricity"
+    }
+    power_units = [
+        unit for unit in block.composition_units if set(unit.fact_ids).intersection(power_fact_ids)
+    ]
+    raw_items = []
+    for unit in power_units:
+        fact_ids = [fact_id for fact_id in unit.fact_ids if fact_id in power_fact_ids]
+        facts = [fact for fact in block.required_facts if fact.fact_id in fact_ids]
+        raw_items.append(
+            {
+                "composition_unit_ids": [unit.unit_id],
+                "covered_fact_ids": fact_ids,
+                "headline": "",
+                "body": " ".join(fact.text for fact in facts),
+                "claims": [
+                    {"text": fact.text, "covered_fact_ids": [fact.fact_id]} for fact in facts
+                ],
+            }
+        )
+    water_units = [
+        unit
+        for unit in block.composition_units
+        if not set(unit.fact_ids).intersection(power_fact_ids)
+    ]
+    for unit in water_units:
+        facts = [fact for fact in block.required_facts if fact.fact_id in unit.fact_ids]
+        raw_items.append(
+            {
+                "composition_unit_ids": [unit.unit_id],
+                "covered_fact_ids": [fact.fact_id for fact in facts],
+                "headline": "",
+                "body": " ".join(fact.text for fact in facts),
+                "claims": [
+                    {"text": fact.text, "covered_fact_ids": [fact.fact_id]} for fact in facts
+                ],
+            }
+        )
     draft = _parse_composition_writer_output(
         {"blocks": [{"block_id": block.block_id, "items": raw_items}]}, plan=plan
     )
     audit = audit_digest_prose_quality(draft, evidence)
-    warning = next(w for w in audit.warnings if w.code == "FRAGMENTED_SERVICE_REPORTS")
-    assert warning.block_id == block.block_id
-    assert "SOURCE_META_NARRATION" in {w.code for w in audit.warnings}
+    fragment_warnings = [w for w in audit.warnings if w.code == "FRAGMENTED_SERVICE_REPORTS"]
+    if power_count == 3:
+        assert fragment_warnings == []
+    else:
+        assert len(fragment_warnings) == 4
+        assert {warning.block_id for warning in fragment_warnings} == {block.block_id}
     assert audit.is_publishable
 
 

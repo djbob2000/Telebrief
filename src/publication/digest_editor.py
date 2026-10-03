@@ -20,6 +20,10 @@ from src.publication.digest_narrative import (
     _same_fact_merge_id,
     sanitize_digest_narrative_draft,
 )
+from src.publication.digest_quality_diagnostics import (
+    MAX_POWER_REPORT_ITEMS_PER_BLOCK,
+    power_report_item_count,
+)
 from src.publication.evidence import PublicationEvidence
 
 logger = logging.getLogger(__name__)
@@ -238,18 +242,7 @@ class DigestEditor:
                 str(unit.unit_id): unit for unit in plan_blocks[block.block_id].composition_units
             }
             for item in block.items:
-                item_unit_ids = item.composition_unit_ids or (
-                    (item.composition_unit_id,) if item.composition_unit_id else ()
-                )
-                has_summary_membership = any(
-                    unit_id in unit_by_id and not unit_by_id[unit_id].fact_ids
-                    for unit_id in item_unit_ids
-                )
-                if (
-                    item.item_id in target_ids
-                    and item.covered_fact_ids
-                    and not has_summary_membership
-                ):
+                if item.item_id in target_ids and item.covered_fact_ids:
                     recompose_target_ids.add(item.item_id)
         if recompose_ids and not recompose_target_ids:
             return draft
@@ -311,6 +304,7 @@ class DigestEditor:
                     {
                         "composition_unit_id": unit_id,
                         "summary_only_story_ids": list(unit_by_id[unit_id].story_ids),
+                        "targeted_for_recomposition": item.item_id in recompose_target_ids,
                     }
                     for unit_id in (
                         item.composition_unit_ids
@@ -362,12 +356,15 @@ class DigestEditor:
         )
         if recompose_ids:
             system_prompt += (
-                "\nFor blocks explicitly marked allow_recomposition, you may instead return "
+                "\nFor every block explicitly marked allow_recomposition, you MUST return "
                 "recomposed_items and leave items/merges empty. This is presentation regrouping, "
                 "not fact deletion: represent every fact from items marked "
                 "targeted_for_recomposition exactly once. Do not include facts from other items; "
-                "the program restores those items byte-for-byte. It also retains summary-only items "
-                "unchanged, so do not put their unit IDs in replacement items. "
+                "the program restores non-target fact items byte-for-byte. Keep standalone "
+                "summary-only items unchanged. If a targeted fact item also carries summary-only "
+                "units, preserve each such unit exactly once: include its unit ID in one replacement "
+                "item's composition_unit_ids and include a matching summary-only claim with that "
+                "unit ID. Do not add summary units from non-target items. "
                 "Combine related reports into readable paragraphs of roughly "
                 "250–500 characters; never exceed 600 characters in one item. If a connected "
                 "service story is longer, split it into two or three narrative groups by place or "
@@ -384,7 +381,7 @@ class DigestEditor:
                 "In reports of bus prices distinguish the destination paid for from the final "
                 "destination of a passing bus; never turn the latter into the fare destination. "
                 "Use natural attribution such as 'по сообщениям жителей', not descriptions of chats. "
-                "During a recomposition batch, include each authorized block in recomposed_items and leave its items/merges empty. You may omit untouched blocks; the program preserves them byte-for-byte. Group the targeted power reports into no more than three cohesive reader items, with a clear subject and an evidence-supported relation; do not turn each street or Story into its own paragraph. Non-target services such as water and heating are restored by the program. Do not repeat the same polyclinic or district observation in different items."
+                f"During a recomposition batch, include each authorized block in recomposed_items and leave its items/merges empty. You may omit untouched blocks; the program preserves them byte-for-byte. Group all targeted power reports into no more than {MAX_POWER_REPORT_ITEMS_PER_BLOCK} cohesive reader items, with a clear subject and an evidence-supported relation; do not turn each street or Story into its own paragraph. Non-target services such as water and heating are restored by the program. Do not repeat the same polyclinic or district observation in different items."
             )
         user_prompt = json.dumps(
             {
@@ -470,6 +467,9 @@ class DigestEditor:
                     items = recomposed.get(block.block_id)
                     if items is not None:
                         plan_block = plan_blocks[block.block_id]
+                        unit_by_id = {
+                            str(unit.unit_id): unit for unit in plan_block.composition_units
+                        }
                         target_fact_ids = {
                             str(fact_id)
                             for item in block.items
@@ -489,6 +489,38 @@ class DigestEditor:
                         ):
                             raise ValueError(
                                 "recomposition must partition only its targeted facts exactly once"
+                            )
+                        target_summary_unit_ids = {
+                            str(unit_id)
+                            for item in block.items
+                            if item.item_id in recompose_target_ids
+                            for unit_id in (
+                                item.composition_unit_ids
+                                or ((item.composition_unit_id,) if item.composition_unit_id else ())
+                            )
+                            if unit_id in unit_by_id and not unit_by_id[unit_id].fact_ids
+                        }
+                        returned_summary_unit_ids = [
+                            str(unit_id)
+                            for raw_item in items
+                            if isinstance(raw_item, Mapping)
+                            for unit_id in raw_item.get("composition_unit_ids", [])
+                            if str(unit_id) in target_summary_unit_ids
+                        ]
+                        all_returned_summary_unit_ids = [
+                            str(unit_id)
+                            for raw_item in items
+                            if isinstance(raw_item, Mapping)
+                            for unit_id in raw_item.get("composition_unit_ids", [])
+                            if str(unit_id) in unit_by_id and not unit_by_id[str(unit_id)].fact_ids
+                        ]
+                        if (
+                            len(returned_summary_unit_ids) != len(set(returned_summary_unit_ids))
+                            or set(returned_summary_unit_ids) != target_summary_unit_ids
+                            or set(all_returned_summary_unit_ids) != target_summary_unit_ids
+                        ):
+                            raise ValueError(
+                                "recomposition must preserve only its targeted summary units exactly once"
                             )
                         fact_text_by_id = {
                             str(fact.fact_id): str(fact.text) for fact in plan_block.required_facts
@@ -512,17 +544,25 @@ class DigestEditor:
                             normalized = dict(raw_item)
                             # Unit membership is determined from exact fact IDs, never from
                             # model-authored provenance. The parser still verifies this map.
+                            replacement_summary_unit_ids = [
+                                str(unit_id)
+                                for unit_id in raw_item.get("composition_unit_ids", [])
+                                if str(unit_id) in target_summary_unit_ids
+                            ]
                             normalized["composition_unit_ids"] = list(
                                 dict.fromkeys(
-                                    fact_unit_by_id[str(fact_id)]
-                                    for fact_id in fact_ids
-                                    if str(fact_id) in fact_unit_by_id
+                                    [
+                                        fact_unit_by_id[str(fact_id)]
+                                        for fact_id in fact_ids
+                                        if str(fact_id) in fact_unit_by_id
+                                    ]
+                                    + replacement_summary_unit_ids
                                 )
                             )
                             # Claim Atoms are fixed-evidence metadata, not model-authored
                             # paraphrases. Visible prose is separately checked against these
                             # exact facts by the normal Evidence Boundary validator.
-                            normalized["claims"] = [
+                            fact_claims = [
                                 {
                                     "text": fact_text_by_id[str(fact_id)],
                                     "covered_fact_ids": [str(fact_id)],
@@ -531,8 +571,37 @@ class DigestEditor:
                                 for fact_id in fact_ids
                                 if str(fact_id) in fact_text_by_id
                             ]
-                            if len(normalized["claims"]) != len(fact_ids):
+                            if len(fact_claims) != len(fact_ids):
                                 raise ValueError("recomposed item references an unknown fact")
+                            summary_claims = []
+                            for raw_claim in raw_item.get("claims", []):
+                                if not isinstance(raw_claim, Mapping):
+                                    raise ValueError("recomposed claim must be an object")
+                                summary_ids = raw_claim.get("summary_unit_ids", [])
+                                if not summary_ids:
+                                    continue
+                                claim_fact_ids = raw_claim.get("covered_fact_ids", [])
+                                if claim_fact_ids:
+                                    raise ValueError(
+                                        "a recomposed claim cannot mix facts and summary units"
+                                    )
+                                if any(
+                                    str(summary_id) not in target_summary_unit_ids
+                                    for summary_id in summary_ids
+                                ):
+                                    raise ValueError(
+                                        "recomposed claim references a non-target summary unit"
+                                    )
+                                summary_claims.append(
+                                    {
+                                        "text": str(raw_claim.get("text", "")),
+                                        "covered_fact_ids": [],
+                                        "summary_unit_ids": [
+                                            str(summary_id) for summary_id in summary_ids
+                                        ],
+                                    }
+                                )
+                            normalized["claims"] = fact_claims + summary_claims
                             normalized_items.append(normalized)
                         items = normalized_items
                         for item in block.items:
@@ -588,6 +657,15 @@ class DigestEditor:
                         ]
                     parser_blocks.append({"block_id": block.block_id, "items": items})
                 checked = _parse_composition_writer_output({"blocks": parser_blocks}, plan=plan)
+                for checked_block in checked.blocks:
+                    if (
+                        checked_block.block_id in recompose_ids
+                        and power_report_item_count(checked_block.items)
+                        > MAX_POWER_REPORT_ITEMS_PER_BLOCK
+                    ):
+                        raise ValueError(
+                            "power recomposition exceeds the cohesive reader-item limit"
+                        )
                 # Do not mix legacy patches with structural replacements in one batch.
                 if any(b.get("items") or b.get("merges") for b in raw_blocks):
                     raise ValueError("recomposition batch cannot include text patches")
