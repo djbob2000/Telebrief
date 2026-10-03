@@ -263,7 +263,29 @@ def test_editor_recomposition_preserves_all_facts_or_rolls_back(invalid: bool) -
     from src.publication.digest_quality_diagnostics import audit_digest_prose_quality
 
     _, evidence, _, plan = _fixture()
+    original_plan = plan
     block = plan.blocks[0]
+    untouched_block = replace(
+        block,
+        block_id="block:untouched",
+        rubric_id="untouched",
+        story_ids=(),
+        support_ids=(),
+        canonical_notes=(),
+        required_facts=(),
+        detail_support_ids_by_story=(),
+        merge_group_by_story=(),
+        detail_roles_by_story=(),
+        presentation_modes_by_story=(),
+        dashboard_support_ids_by_story=(),
+        required_story_groups=(),
+        support_ids_by_story=(),
+        topic_bundles=(),
+        composition_units=(),
+        composition_fact_records=(),
+        composition_relations=(),
+    )
+    plan = replace(plan, blocks=(*plan.blocks, untouched_block))
     units = {fid: unit.unit_id for unit in block.composition_units for fid in unit.fact_ids}
     texts = {fact.fact_id: fact.text for fact in block.required_facts}
 
@@ -285,7 +307,7 @@ def test_editor_recomposition_preserves_all_facts_or_rolls_back(invalid: bool) -
                 }
             ]
         },
-        plan=plan,
+        plan=original_plan,
     )
     long_item = replace(original.blocks[0].items[0], body="Подробное сообщение. " * 40)
     original = DigestNarrativeDraft(
@@ -294,6 +316,7 @@ def test_editor_recomposition_preserves_all_facts_or_rolls_back(invalid: bool) -
                 block_id=block.block_id,
                 items=(long_item,),
             ),
+            DigestNarrativeBlockDraft(block_id=untouched_block.block_id, items=()),
         )
     )
     audit = audit_digest_prose_quality(original, evidence)
@@ -333,6 +356,8 @@ def test_editor_recomposition_preserves_all_facts_or_rolls_back(invalid: bool) -
             sid for i in original.blocks[0].items for sid in i.cited_support_ids
         }
         assert all("3 октября" not in claim.text for claim in result.blocks[0].items[0].claims)
+        assert result.blocks[1].block_id == untouched_block.block_id
+        assert result.blocks[1].items == ()
 
 
 def test_editor_recomposition_requires_all_block_items_authorized() -> None:
@@ -529,7 +554,7 @@ def test_scattered_power_items_raise_nonblocking_synthesis_prompt() -> None:
             }
         )
     assert len(raw_items) == 3
-    raw_items[0]["body"] = "В отдельном сообщении жители уточнили: " + str(raw_items[0]["body"])
+    raw_items[0]["body"] = "В отдельной публикации жители уточнили: " + str(raw_items[0]["body"])
     draft = _parse_composition_writer_output(
         {"blocks": [{"block_id": block.block_id, "items": raw_items}]}, plan=plan
     )

@@ -363,7 +363,7 @@ class DigestEditor:
                 "In reports of bus prices distinguish the destination paid for from the final "
                 "destination of a passing bus; never turn the latter into the fare destination. "
                 "Use natural attribution such as 'по сообщениям жителей', not descriptions of chats. "
-                "During a recomposition batch leave other blocks present with empty items and merges; do not patch them. If there are several power reports, group them into no more than three cohesive reader items, with a clear subject and an evidence-supported relation; do not turn each street or Story into its own paragraph. Other services such as water and heating can remain separate items. Do not repeat the same polyclinic or district observation in different items."
+                "During a recomposition batch, include each authorized block in recomposed_items and leave its items/merges empty. You may omit untouched blocks; the program preserves them byte-for-byte. If there are several power reports, group them into no more than three cohesive reader items, with a clear subject and an evidence-supported relation; do not turn each street or Story into its own paragraph. Other services such as water and heating can remain separate items. Do not repeat the same polyclinic or district observation in different items."
             )
         user_prompt = json.dumps(
             {
@@ -404,7 +404,27 @@ class DigestEditor:
                 str(block.get("block_id", "")) if isinstance(block, Mapping) else ""
                 for block in raw_blocks
             ]
-            if received_ids != expected_block_ids:
+            if recompose_ids:
+                raw_by_block_id: dict[str, Mapping[str, Any]] = {}
+                for raw_block in raw_blocks:
+                    if not isinstance(raw_block, Mapping):
+                        raise ValueError("editor block must be an object")
+                    block_id = str(raw_block.get("block_id", ""))
+                    if block_id not in expected_block_ids:
+                        raise ValueError("editor added an unknown block")
+                    if block_id in raw_by_block_id:
+                        raise ValueError("editor returned a block more than once")
+                    raw_by_block_id[block_id] = raw_block
+                if not recompose_ids.issubset(raw_by_block_id):
+                    raise ValueError("editor omitted an authorized recomposition block")
+                # Recomposition changes only explicitly authorized blocks. Reorder
+                # returned blocks deterministically and restore omitted untouched
+                # blocks from the frozen input without applying model-authored edits.
+                raw_blocks = [
+                    raw_by_block_id.get(block_id, {"block_id": block_id, "items": [], "merges": []})
+                    for block_id in expected_block_ids
+                ]
+            elif received_ids != expected_block_ids:
                 raise ValueError("editor changed, omitted, or reordered blocks")
 
             recomposed: dict[str, list[Any]] = {}
