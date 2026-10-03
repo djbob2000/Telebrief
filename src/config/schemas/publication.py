@@ -205,7 +205,7 @@ class PublicationEditorialConfig:
     article_allow_deterministic_fallback: bool = False
     digest_allow_deterministic_fallback: bool = False
     article_editor_enabled: bool = False
-    article_editor_max_attempts: int = 2
+    article_editor_max_attempts: int = 3
     article_editor_reasoning_effort: str | None = "none"
 
     def __post_init__(self) -> None:

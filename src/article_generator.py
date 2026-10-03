@@ -1702,7 +1702,7 @@ class ArticleGenerator:
             writer_meta["writer_invocation_count"] = 1
             writer_meta["editor_invocation_count"] = 0
             writer_meta["editor_invocation_limit"] = min(
-                getattr(editorial_config, "article_editor_max_attempts", 2), 2
+                getattr(editorial_config, "article_editor_max_attempts", 3), 3
             )
             writer_meta["generation_timeout_seconds"] = (
                 self.config.settings.article.article_generation_timeout_seconds
@@ -1765,7 +1765,7 @@ class ArticleGenerator:
                             reasoning_effort=editor_reasoning_effort,
                         )
                         editor_attempts = min(
-                            getattr(editorial_config, "article_editor_max_attempts", 2), 2
+                            getattr(editorial_config, "article_editor_max_attempts", 3), 3
                         )
                         try:
                             edited_draft, edited_val = await editor.edit_draft(

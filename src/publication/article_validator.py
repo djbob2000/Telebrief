@@ -9,7 +9,12 @@ from typing import Any, Literal
 
 from src.config_loader import PublicationEditorialConfig
 from src.publication.article_claim_support import assess_claim_against_supports
-from src.publication.article_claims import ConcreteClaim, _stem, find_unsupported_claims
+from src.publication.article_claims import (
+    ConcreteClaim,
+    _stem,
+    extract_concrete_claims,
+    find_unsupported_claims,
+)
 from src.publication.article_context import ArticleEditorialContext, ArticleSupport
 from src.publication.article_geography import (
     resolve_article_place_resolver,
@@ -1159,6 +1164,9 @@ def validate_article_draft(
             claim_sids = {sid for c in claim_atoms for sid in c.cited_support_ids}
             for claim in claim_atoms:
                 if not claim.cited_support_ids:
+                    concrete = extract_concrete_claims(claim.text)
+                    blocking = bool(concrete)
+                    claim_severity: Literal["error", "warning"] = "error" if blocking else "warning"
                     issues.append(
                         ArticleValidationIssue(
                             code="MISSING_CLAIM_SUPPORT",
@@ -1168,8 +1176,8 @@ def validate_article_draft(
                                 "support citation"
                             ),
                             support_ids=cited_ids,
-                            severity="error",
-                            blocking=True,
+                            severity=claim_severity,
+                            blocking=blocking,
                             claim_text=claim.text,
                         )
                     )

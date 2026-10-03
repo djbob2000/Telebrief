@@ -2019,11 +2019,34 @@ class ArticleEditor:
             for paragraph_index, p in enumerate(sec.paragraphs):
                 p_id = f"P{p_idx:03d}"
                 if p_id in issues_by_unit:
-                    p_sups = unit_supports(
+                    raw_sups = unit_supports(
                         list(p.cited_support_ids),
                         [sid for claim in p.claims for sid in claim.cited_support_ids],
                         issues_by_unit[p_id],
                     )
+                    p_sups = [sid for sid in raw_sups if support_text(sid)]
+                    if not p_sups:
+                        sec_sups: list[str] = []
+                        for other_p in sec.paragraphs:
+                            sec_sups.extend(other_p.cited_support_ids)
+                            sec_sups.extend(
+                                cl_sid for cl in other_p.claims for cl_sid in cl.cited_support_ids
+                            )
+                        sec_sups.extend(sec.heading_support_ids)
+                        sec_sups.extend(
+                            cl_sid for cl in sec.heading_claims for cl_sid in cl.cited_support_ids
+                        )
+                        sec_visible_sups = [
+                            sid for sid in dict.fromkeys(sec_sups) if support_text(sid)
+                        ]
+                        p_sups = (
+                            sec_visible_sups[:_MAX_EDITOR_SUPPORTS]
+                            if sec_visible_sups
+                            else current_body_repair_supports()
+                        )
+                    p_packets = support_packets(p_sups)
+                    valid_packet_ids = {pkt["support_id"] for pkt in p_packets}
+                    p_sups = [sid for sid in p_sups if sid in valid_packet_ids]
                     reader_context = {
                         "section_heading": sanitize_writer_source_text(sec.heading),
                         "previous_paragraph": (
@@ -2043,7 +2066,7 @@ class ArticleEditor:
                             "unit_type": "paragraph",
                             "text": p.text,
                             "support_ids": p_sups,
-                            "support_packets": support_packets(p_sups),
+                            "support_packets": p_packets,
                             "issues": issues_by_unit[p_id],
                             "reader_context": reader_context,
                         }
@@ -2096,7 +2119,11 @@ class ArticleEditor:
                 if packet.get("support_id") and packet.get("text")
             }
             missing_ids = tuple(sid for sid in required_ids if sid not in packets_by_id)
-            if not required_ids or missing_ids:
+            if missing_ids or (
+                not required_ids
+                and not packets_by_id
+                and any(getattr(iss, "blocking", False) for iss in unit.get("issues", ()))
+            ):
                 omitted_units.append(
                     {
                         **unit,
@@ -2108,19 +2135,12 @@ class ArticleEditor:
                 )
                 continue
 
-            ordered_ids = required_ids or tuple(packets_by_id)
+            ordered_ids = tuple(sid for sid in required_ids if sid in packets_by_id) or tuple(
+                packets_by_id
+            )
             if len(ordered_ids) > _MAX_EDITOR_SUPPORTS:
-                omitted_units.append(
-                    {
-                        **unit,
-                        "selection_status": "deferred_budget",
-                        "selection_reason": "support_budget_exceeded",
-                        "required_support_count": len(required_ids),
-                        "shown_support_count": 0,
-                    }
-                )
-                continue
-            selected = [packets_by_id[sid] for sid in ordered_ids]
+                ordered_ids = ordered_ids[:_MAX_EDITOR_SUPPORTS]
+            selected = [packets_by_id[sid] for sid in ordered_ids if sid in packets_by_id]
             rendered = [f"[{packet['support_id']}] {packet['text']}" for packet in selected]
             if any(len(text) > _MAX_EDITOR_SUPPORT_PACKET_CHARS for text in rendered):
                 omitted_units.append(
@@ -2134,16 +2154,24 @@ class ArticleEditor:
                 )
                 continue
             if sum(map(len, rendered)) > _MAX_EDITOR_SUPPORT_CONTEXT_CHARS:
-                omitted_units.append(
-                    {
-                        **unit,
-                        "selection_status": "deferred_budget",
-                        "selection_reason": "support_budget_exceeded",
-                        "required_support_count": len(required_ids),
-                        "shown_support_count": 0,
-                    }
-                )
-                continue
+                while (
+                    selected
+                    and sum(len(f"[{p['support_id']}] {p['text']}") for p in selected)
+                    > _MAX_EDITOR_SUPPORT_CONTEXT_CHARS
+                ):
+                    selected.pop()
+                rendered = [f"[{packet['support_id']}] {packet['text']}" for packet in selected]
+                if not selected:
+                    omitted_units.append(
+                        {
+                            **unit,
+                            "selection_status": "deferred_budget",
+                            "selection_reason": "support_budget_exceeded",
+                            "required_support_count": len(required_ids),
+                            "shown_support_count": 0,
+                        }
+                    )
+                    continue
 
             shown_ids = tuple(packet["support_id"] for packet in selected)
             copied = dict(unit)
