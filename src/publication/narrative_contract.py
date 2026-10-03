@@ -25,8 +25,9 @@ def build_article_narrative_contract(
     if length_profile is not None:
         target_str = (
             f"\n- Target Editorial Profile ({length_profile.richness.upper()}): "
-            f"{length_profile.target_min_words}–{length_profile.target_max_words} words when the material supports it. "
-            f"Let the number and shape of thematic sections follow the reporting; do not pad."
+            f"about {length_profile.target_min_words}–{length_profile.target_max_words} words and "
+            f"{length_profile.target_min_sections}–{length_profile.target_max_sections} sections when the material supports them. "
+            f"Treat both as soft editorial targets: let length and section count follow the reporting; never pad or invent detail to reach them."
         )
 
     return f"""### Journalistic Synthesis & Narrative Standards (Output Language: {output_language})
@@ -40,14 +41,27 @@ Output ordinary Markdown only: one title, a lead, and thematic chapters with nor
 
 2. Presentation vs. Validation Structure:
 - Evidence records and Claim Atoms are reporting and validation metadata, not sentence templates. Never print their IDs or metadata in the article.
-- Ground the title and lead in active PUBLISH evidence with CURRENT_WINDOW temporal role from the main current storylines. Keep the title about the reporting window; do not present HISTORICAL_CONTEXT as current news. Historical context may appear in the lead only when current-window evidence supports it and it is explicitly framed as continuing or changed.
+- Ground the title and lead in active PUBLISH evidence with CURRENT_WINDOW temporal role from the main current storylines. Keep the title about the reporting window; do not present HISTORICAL_CONTEXT as current news. Historical context may appear in the title or lead only when current-window evidence supports it and the prose accurately frames a supported continuation or change.
 - A single natural paragraph may combine several independently supported claims when they form one coherent narrative thought.
 - Give each paragraph one central subject. When claims belong to unrelated storylines or independent editorial groups, place them in separate compact paragraphs, even inside a broad or catch-all section. Combine them only when the source material supports a real shared relation; never invent a transition, cause, or chronology to make unrelated items appear connected. This is a paragraph-composition rule, not a quota to give every Story its own paragraph.
-- Keep each paragraph on one service domain: electricity supply / power-grid operations and fiber / home internet are distinct topics. Start a new paragraph and place it in the matching section when the domain changes; a transition such as “при этом” does not make unrelated services one subject.
+- Keep each paragraph focused on one coherent subject. Distinguish service domains such as electricity supply and home internet, while allowing one paragraph or section to connect domains when the reporting directly supports their relationship; otherwise separate them. A transition alone does not establish a relationship.
 - Keep geographic scope explicit: “private sector” is a housing type, not a district. If the cited report does not identify a neighborhood or street, say that its district was not specified; never borrow a location from a nearby report.
 - Keep profile-mapped places attached to their own areas. Do not place an observation about one landmark or street inside another district's description unless the profile maps them to the same area. When several streets belong to one named neighborhood, introduce that neighborhood first, then explain the street-level differences and chronology.
 - Group related supports into a cohesive narrative section under an intuitive thematic heading.
-- Section headings are thematic titles and do not require claim atoms unless they contain concrete numbers, dates, or prices.
+- Section headings: Use active, concise, and informative thematic headings (e.g. `## Перебои со светом и нагрузка на водоснабжение`). Avoid passive filler labels (e.g. "Связь тоже зависит от условий", "Обстановка в городе"). Do NOT use colons with enumerated lists of subtopics in headings to avoid phantom heading topic mismatches. Section headings are thematic titles and do not require claim atoms unless they contain concrete numbers, dates, or prices.
+- Title (#): A city name followed by a colon is an optional editorial style. Ground the title and lead in current-window evidence. If either uses HISTORICAL_CONTEXT, it also needs CURRENT_WINDOW evidence and wording that accurately frames a supported continuation or change; a continuation verb alone does not establish that relationship.
+- Lead-body distinction: The lead synthesizes the overarching 24-hour horizon. The first paragraph of the body must NOT repeat the lead verbatim or restate the same summary sentences; Chapter 1 must dive immediately into the concrete specifics, street names, and timeline of the central development.
+- Context and uncertainty:
+  * Avoid repetitive methodological commentary about the reporting process. Use natural attribution and concise scope or uncertainty framing when needed to represent what a source does and does not establish.
+  * Keep factual assertions grounded. MISSING_CLAIM_SUPPORT concerns a claim atom with no cited support; it does not automatically apply to every framing sentence. Do not suppress accurate attribution or uncertainty merely to avoid a generic disclaimer.
+- Geographic order & area consistency (prevention of ARTICLE_PLACE_AREA_MISMATCH):
+  * Keep each paragraph focused on one neighborhood or topographical zone when possible. A concise localized contrast may name two areas in the same sentence or paragraph when the evidence supports conditions in both; one eligible source is sufficient, and no independent corroboration is required. Do not transfer details from one area to another or imply a citywide state from local observations.
+  * There is no fixed district-count limit. Name places only as broadly as the evidence supports, keep each location attached to its own observation, and use a clear transition when contrasting areas. ARTICLE_PLACE_AREA_MISMATCH concerns assigning a place to the wrong area; mentioning several correctly grounded areas is not itself a mismatch.
+  * When an area and a street are mentioned in the same paragraph, ALWAYS introduce the named area first, then the street (e.g. «В районе Азмола на улице Хмельницкого...»). Never place an unrelated district name between an area and its street.
+- Prevention of address rosters (MULTI_SENTENCE_ADDRESS_STATUS_ROSTER):
+  * Avoid repetitive address-by-address sentences; synthesize related reports into a clear account of their shared state, chronology, or differences. The structural roster finding applies when three or more grounded place/status sentences in one paragraph describe the same service without a narrative relation. The number of streets or sentences alone is not a blocker; preserve supported detail and make relevant contrasts clear.
+- Thematic consistency: Keep placement clear and use a section heading that fits its main subject. Related domains may share a passage when their connection is directly supported. THEME_MISMATCHED_SECTION is a repair recommendation, not a publication blocker by itself.
+- Quotes & Name styling: Treat the quote allowlist as the source for exact direct speech, not a quota. Use direct quotes sparingly and only when they add a useful human voice; never change, translate, or assemble their wording. Supported organization, shop, and place names may take Russian typographic quotation marks as styling; preserve the name's spelling and do not treat it as spoken dialogue.
 - Do not mechanically generate one sentence per support. Synthesize related observations into natural, flowing prose.
 
 
@@ -82,18 +96,21 @@ Output ordinary Markdown only: one title, a lead, and thematic chapters with nor
 
 7. Narrative Composition Principles:
 - Chronology: Build clear chronological narrative sequences when the supports establish temporal order.
-- Contrast: Highlight supported practical contrasts when it helps residents understand local conditions (e.g. service availability differences, operational contrasts).
+- Contrast & Systemic Cascade: Highlight a causal or practical link only when the dossier directly supports that relationship. One eligible source may support it; do not require official confirmation or corroboration. Contrast lower and elevated areas, including the lower city and Gora, only when the dossier supports observations from both; describe differing local conditions as a localized contrast.
 - Lived reality: Use concrete supported resident actions, practical adaptations, and coping strategies to show real community impact.
 - Micro-locations: Weave street names and neighborhood references naturally into sentences instead of prefixing clauses with database-like labels such as "Location (Category): fact".
+- Syntactic variety & anti-monotony:
+  * Strictly avoid monotonous, formulaic sentence openings. Do NOT start consecutive sentences or paragraphs with repetitive phrases like «Жители сообщали...», «Один житель сообщил...», «Жительница рассказала...», «Горожане отмечают...».
+  * Make the topic/subject the center of the sentence: open with the specific street, the municipal service, the infrastructure element, the time, or the concrete action (e.g. «На улице Димитрова авария насоса оставила без напора верхние этажи...», «В нагорной части города напряжение упало до критических значений...»).
+  * Place natural attribution in the middle or at the end of the sentence (e.g. «..., по свидетельствам местных жителей, ...», «..., жалуются горожане»).
 - Attribution discipline: Group repeated observations sharing the same epistemic status under a single natural attribution. Vary sentence openings and avoid mechanically repeating identical attribution phrases at the start of every sentence.
 - Transitions: Neutral connective phrases (e.g. "meanwhile", "at the same time", "against this background") are permitted only when they connect verified observations without asserting unsupported causal links.
 - Direct quotes & resident voice integration:
-  * Quotation marks around spoken words mark an exact primary-source quote and may be used only for a complete phrase in the provided exact quote allowlist. The allowlist encodes exact source phrases; preserve their words and order. Typographic quotation marks around a supported commercial or organization name are name styling, not direct speech, and are allowed when the evidence identifies that name.
-  * NEVER translate or grammar-correct text inside quotation marks, normalize grammar, shorten, or merge words inside a direct quotation.
-  * If you need Russian translation, correction, or compression, remove quotation marks and write indirect speech.
-  * No quotation dumps or chat rolls: NEVER string together consecutive direct quotes separated by commas or dashes (e.g. «Quote 1», «Quote 2», «Quote 3» — such reports...). Consecutive quotation dumps destroy narrative flow and read like uncurated chat logs.
+  * Quotation marks around spoken words mark an exact primary-source quote. Use only a complete phrase from ARTICLE_QUOTE_ALLOWLIST; never alter, translate, or assemble direct quotes. Quotes are optional, including when a chapter has a suitable allowlisted phrase.
+  * Avoid quote inventories and chat rolls. QUOTE_ROLL_PARAGRAPH is a nonblocking review heuristic when a paragraph has more than two direct-speech spans; supported organization, shop, and place-name styling is excluded from that count. CONSECUTIVE_DIRECT_SPEECH_ROLL is a separate structural blocker for two or more direct-speech spans joined only by list punctuation with no prose between them.
+  * When no quote adds value or no exact allowlisted phrase fits, use indirect speech. Ordinary terms should not be put in quotes for emphasis; evidence-supported proper names may use typographic quotes while retaining their spelling.
+  * Smooth narrative attribution lead-ins: When using an allowlisted quote, smoothly introduce it (e.g. `«...», — делятся горожане`, or `Один из жителей на улице Димитрова отметил: «...»`).
   * Synthesis over enumeration: When multiple residents report the same condition across different locations or times (e.g. utility outages, pervasive odors, connectivity checks), synthesize the shared facts into coherent prose using indirect speech and geographical progression instead of quoting each resident.
-  * Selective, organic quotation: Use direct quotes sparingly (1–2 per thematic block) for vivid human observations, sharp ironies, or distinctive lived experiences. Every direct quote must be smoothly introduced or anchored by narrative attribution (e.g. `..., noting that "..."`, or `"...", describes a resident`).
   * Indirect speech as default: Use natural indirect speech to summarize repetitive complaints, status checks, or similar observations without quotation marks.
 
 - Proper names & Places:

@@ -7,10 +7,11 @@ import logging
 import os
 import uuid
 
-from src.ai_providers import classify_provider_failure, create_provider
+from src.ai_providers import classify_provider_failure
 from src.config_loader import load_config
 from src.jobs.app import procrastinate_app
 from src.processing.event_analysis import EventAnalysisService
+from src.processing.providers import resolve_processing_provider
 from src.processing.retry_policy import decide_retry
 from src.repositories.event_analysis_runs import EventAnalysisRunRepository
 from src.repositories.event_authority import EventAuthorityRepository
@@ -93,17 +94,7 @@ async def process_event_enrichment_task(story_id: int, assignment_id: int) -> No
     if claim is None:
         return
 
-    provider = getattr(runtime, "provider_cascade", None) or create_provider(
-        config.settings.ai_provider,
-        logger,
-        openai_api_key=config.openai_api_key,
-        anthropic_api_key=config.anthropic_api_key,
-        google_api_key=config.gemini_api_key,
-        openrouter_api_key=config.openrouter_api_key,
-        openrouter_model=config.openrouter_model,
-        openrouter_model_2=getattr(config, "openrouter_model_2", ""),
-        openrouter_models=getattr(config, "openrouter_models", None),
-    )
+    provider = resolve_processing_provider(runtime, config, logger)
     analysis_service = EventAnalysisService(
         ai_cascade=provider,
         cluster_repo=cluster_repo,

@@ -99,6 +99,7 @@ def _load_and_validate_env_vars(
         openrouter_models.append(openrouter_model_2)
 
     openrouter_model = openrouter_models[0] if openrouter_models else "openrouter/free"
+    openrouter_processing_model = (os.getenv("OPENROUTER_PROCESSING_MODEL") or "").strip()
     openrouter_image_model = (
         os.getenv("OPENROUTER_IMAGE_MODEL") or "google/gemini-3.1-flash-lite-image"
     )
@@ -159,6 +160,7 @@ def _load_and_validate_env_vars(
         "openrouter_model": openrouter_model,
         "openrouter_model_2": openrouter_model_2,
         "openrouter_models": openrouter_models,
+        "openrouter_processing_model": openrouter_processing_model,
         "openrouter_image_model": openrouter_image_model,
         "log_level": log_level,
     }

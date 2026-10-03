@@ -114,6 +114,7 @@ class Config:
     openrouter_model: str = "openrouter/free"
     openrouter_model_2: str = ""
     openrouter_models: list[str] = field(default_factory=list)
+    openrouter_processing_model: str = ""
     openrouter_image_model: str = "google/gemini-3.1-flash-lite-image"
     openai_base_url: str = ""
     anthropic_api_key: str = ""

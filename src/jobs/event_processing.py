@@ -12,7 +12,6 @@ from typing import Any
 import procrastinate
 import psycopg
 
-from src.ai_providers import create_provider
 from src.config_loader import load_config
 from src.embedding_providers import create_embedding_provider
 from src.jobs.app import procrastinate_app
@@ -24,6 +23,7 @@ from src.processing.event_brief import EventBriefService
 from src.processing.event_clustering import EventClusteringService
 from src.processing.event_triage import StoryTriageService
 from src.processing.fragments import split_into_fragments
+from src.processing.providers import resolve_processing_provider
 from src.processing.retry_policy import decide_retry
 from src.repositories.event_analysis_runs import EventAnalysisRunRepository
 from src.repositories.event_clusters import EventClusterRepository, StoryClusterState
@@ -398,17 +398,7 @@ async def run_legacy_coalesce_dirty_stories(
     analysis_runs_repo = EventAnalysisRunRepository()
     claim_repo = EventProcessingClaimRepository()
 
-    ai_provider = getattr(runtime, "provider_cascade", None) or create_provider(
-        config.settings.ai_provider,
-        logger,
-        openai_api_key=config.openai_api_key,
-        anthropic_api_key=config.anthropic_api_key,
-        google_api_key=config.gemini_api_key,
-        openrouter_api_key=config.openrouter_api_key,
-        openrouter_model=config.openrouter_model,
-        openrouter_model_2=getattr(config, "openrouter_model_2", ""),
-        openrouter_models=getattr(config, "openrouter_models", None),
-    )
+    ai_provider = resolve_processing_provider(runtime, config, logger)
 
     triage_service = StoryTriageService(
         ai_cascade=ai_provider,

@@ -15,7 +15,6 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Literal, Sequence
 
-from src.ai_providers import create_provider
 from src.config_loader import load_config
 from src.domain.event_authority import AuthorityTarget
 from src.domain.event_clusters import StoryClusterState
@@ -27,6 +26,7 @@ from src.processing.authority_batching import (
 from src.processing.edition_scope import resolve_edition_scope
 from src.processing.event_brief import EventBriefService
 from src.processing.event_triage import StoryGateBatchResult, StoryTriageService
+from src.processing.providers import resolve_processing_provider
 from src.processing.retry_policy import decide_retry
 from src.repositories.event_authority import EventAuthorityRepository
 from src.repositories.event_clusters import EventClusterRepository
@@ -98,17 +98,7 @@ class EventAuthorityService:
     def from_runtime(cls, runtime: Any, config: Any | None = None) -> "EventAuthorityService":
         config = config or getattr(runtime, "config", None) or load_config()
         cfg = config.settings.event_pipeline
-        provider = getattr(runtime, "provider_cascade", None) or create_provider(
-            config.settings.ai_provider,
-            logger,
-            openai_api_key=config.openai_api_key,
-            anthropic_api_key=config.anthropic_api_key,
-            google_api_key=config.gemini_api_key,
-            openrouter_api_key=config.openrouter_api_key,
-            openrouter_model=config.openrouter_model,
-            openrouter_model_2=getattr(config, "openrouter_model_2", ""),
-            openrouter_models=getattr(config, "openrouter_models", None),
-        )
+        provider = resolve_processing_provider(runtime, config, logger)
         cluster_repo = EventClusterRepository()
         return cls(
             runtime,
