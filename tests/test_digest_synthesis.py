@@ -351,6 +351,8 @@ def test_editor_recomposition_preserves_all_facts_or_rolls_back(invalid: bool) -
         evidence=evidence,
         target_item_ids=(original.blocks[0].items[0].item_id,),
         recompose_block_ids=(block.block_id,),
+        violations=[f"STYLE_OBSERVATION:fragment_{index}" for index in range(10)]
+        + ["EDITORIAL_CONSTRAINT: Previous response omitted fact:1 and fact:5."],
     )
     if invalid:
         with pytest.raises(ValueError, match="missing facts"):
@@ -359,6 +361,7 @@ def test_editor_recomposition_preserves_all_facts_or_rolls_back(invalid: bool) -
         result = asyncio.run(edit)
     assert "600 characters" in captured_system_prompt
     assert "source messages" in captured_system_prompt
+    assert "Previous response omitted fact:1 and fact:5." in captured_system_prompt
     if not invalid:
         assert json.loads(captured_user_prompt)["target_recomposition_fact_ids"] == sorted(
             original.blocks[0].items[0].covered_fact_ids

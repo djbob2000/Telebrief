@@ -346,7 +346,15 @@ class DigestEditor:
                 }
             )
 
-        repair_lines = [f"- {violation}" for violation in (violations or ())[:10]]
+        requested_findings = list(dict.fromkeys(violations or ()))
+        # Retry feedback and evidence-preservation constraints are appended by
+        # the caller. They must survive the limit on ordinary audit findings.
+        prompt_findings = requested_findings[:10] + [
+            finding
+            for finding in requested_findings[10:]
+            if finding.startswith("EDITORIAL_CONSTRAINT:")
+        ]
+        repair_lines = [f"- {finding}" for finding in prompt_findings]
         system_prompt = (
             "You are a careful local-news copy editor. Polish only the requested digest item text.\n"
             "Use the exact PUBLISH evidence and fact mapping supplied beside each item. One legitimate single-source community report may be included as a report; preserve natural attribution and uncertainty. Do not require a second source or official confirmation. Correct invented details, unsupported specifics, causal upgrades, and epistemic upgrades, but do not remove an eligible report merely because it is unconfirmed.\n"
