@@ -697,13 +697,25 @@ def test_recomposition_can_regroup_facts_from_an_item_with_a_summary_unit() -> N
     assert summary_id in result.blocks[0].items[0].covered_story_ids
 
 
-def test_editor_rejects_power_recomposition_that_keeps_four_separate_items() -> None:
+@pytest.mark.parametrize("synthesized", [False, True])
+def test_editor_distinguishes_four_fragments_from_four_synthesized_items(synthesized: bool) -> None:
     import asyncio
     import json
 
     from src.publication.digest_editor import DigestEditor
 
-    _, evidence, _, plan = _fixture(("electricity", "РТС", "На РТС света нет неделю."))
+    extra_reports = [("electricity", "РТС", "На РТС света нет неделю.")]
+    if synthesized:
+        extra_reports.extend(
+            ("electricity", place, text)
+            for place, text in (
+                ("АКЗ", "На АКЗ электричество появилось в 10:35."),
+                ("Крылова", "На Крылова свет включали вчера на час."),
+                ("Центр", "В центре напряжение составляло 154 В."),
+                ("Вроцлавская", "На Вроцлавской света нет с воскресенья."),
+            )
+        )
+    _, evidence, _, plan = _fixture(*extra_reports)
     block = plan.blocks[0]
     power_fact_ids = {
         fact.fact_id for fact in block.required_facts if fact.subject_key == "electricity"
@@ -751,6 +763,24 @@ def test_editor_rejects_power_recomposition_that_keeps_four_separate_items() -> 
             over_fragmented = [
                 {**item, "body": "Пересобранный пункт. " + item["body"]} for item in raw_items[:-1]
             ]
+            if synthesized:
+                grouped = []
+                for index in range(0, len(over_fragmented), 2):
+                    pair = over_fragmented[index : index + 2]
+                    grouped.append(
+                        {
+                            "composition_unit_ids": [
+                                uid for item in pair for uid in item["composition_unit_ids"]
+                            ],
+                            "covered_fact_ids": [
+                                fid for item in pair for fid in item["covered_fact_ids"]
+                            ],
+                            "headline": "",
+                            "body": " ".join(item["body"] for item in pair),
+                            "claims": [claim for item in pair for claim in item["claims"]],
+                        }
+                    )
+                over_fragmented = grouped
             return json.dumps(
                 {
                     "blocks": [
@@ -764,20 +794,32 @@ def test_editor_rejects_power_recomposition_that_keeps_four_separate_items() -> 
                 }
             )
 
-    with pytest.raises(ValueError, match="exceeds the cohesive reader-item limit"):
-        asyncio.run(
-            DigestEditor(provider=Provider()).polish_and_compress(
-                draft,
-                plan=plan,
-                evidence=evidence,
-                target_item_ids=tuple(
-                    item.item_id
-                    for item in draft.blocks[0].items
-                    if set(item.covered_fact_ids).intersection(power_fact_ids)
-                ),
-                recompose_block_ids=(block.block_id,),
-            )
+    edit = DigestEditor(provider=Provider()).polish_and_compress(
+        draft,
+        plan=plan,
+        evidence=evidence,
+        target_item_ids=tuple(
+            item.item_id
+            for item in draft.blocks[0].items
+            if set(item.covered_fact_ids).intersection(power_fact_ids)
+        ),
+        recompose_block_ids=(block.block_id,),
+    )
+    if not synthesized:
+        with pytest.raises(ValueError, match="disconnected short"):
+            asyncio.run(edit)
+    else:
+        result = asyncio.run(edit)
+        assert len(result.blocks[0].items) == 5
+        from src.publication.digest_quality_diagnostics import audit_digest_prose_quality
+
+        assert not any(
+            warning.code == "FRAGMENTED_SERVICE_REPORTS"
+            for warning in audit_digest_prose_quality(result, evidence).warnings
         )
+        assert {fid for item in result.blocks[0].items for fid in item.covered_fact_ids} == {
+            fact.fact_id for fact in block.required_facts
+        }
 
 
 @pytest.mark.parametrize("power_count", [3, 4])

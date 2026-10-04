@@ -22,7 +22,7 @@ from src.publication.digest_narrative import (
 )
 from src.publication.digest_quality_diagnostics import (
     MAX_POWER_REPORT_ITEMS_PER_BLOCK,
-    power_report_item_count,
+    fragmented_power_report_item_indexes,
 )
 from src.publication.evidence import PublicationEvidence
 
@@ -397,7 +397,7 @@ class DigestEditor:
                 "In reports of bus prices distinguish the destination paid for from the final "
                 "destination of a passing bus; never turn the latter into the fare destination. "
                 "Use natural attribution such as 'по сообщениям жителей', not descriptions of chats. "
-                f"During a recomposition batch, include each authorized block in recomposed_items and leave its items/merges empty. You may omit untouched blocks; the program preserves them byte-for-byte. Group all targeted power reports into no more than {MAX_POWER_REPORT_ITEMS_PER_BLOCK} cohesive reader items, with a clear subject and an evidence-supported relation; do not turn each street or Story into its own paragraph. Non-target services such as water and heating are restored by the program. Do not repeat the same polyclinic or district observation in different items."
+                f"During a recomposition batch, include each authorized block in recomposed_items and leave its items/merges empty. You may omit untouched blocks; the program preserves them byte-for-byte. Aim for {MAX_POWER_REPORT_ITEMS_PER_BLOCK} cohesive power-report items with a clear subject and an evidence-supported relation. More developed or synthesized passages are allowed when needed to preserve the facts; do not leave multiple short isolated single-observation items or turn each street or Story into its own paragraph. Non-target services such as water and heating are restored by the program. Do not repeat the same polyclinic or district observation in different items."
             )
         target_recomposition_fact_ids = sorted(
             {
@@ -725,11 +725,10 @@ class DigestEditor:
                 for checked_block in checked.blocks:
                     if (
                         checked_block.block_id in recompose_ids
-                        and power_report_item_count(checked_block.items)
-                        > MAX_POWER_REPORT_ITEMS_PER_BLOCK
+                        and fragmented_power_report_item_indexes(checked_block.items)
                     ):
                         raise DigestRecompositionError(
-                            "power recomposition exceeds the cohesive reader-item limit"
+                            "power recomposition still contains disconnected short report items"
                         )
                 # Do not mix legacy patches with structural replacements in one batch.
                 if any(b.get("items") or b.get("merges") for b in raw_blocks):

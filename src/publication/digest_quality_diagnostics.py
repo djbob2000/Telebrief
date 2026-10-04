@@ -10,7 +10,7 @@ from typing import Any, Mapping, Sequence
 from src.publication.digest_narrative import DigestNarrativeDraft
 from src.publication.evidence import PublicationEvidence
 
-DIGEST_DIAGNOSTICS_VERSION = "digest-diagnostics-v8"
+DIGEST_DIAGNOSTICS_VERSION = "digest-diagnostics-v9"
 
 _ATTRIBUTION_PATTERNS = [
     re.compile(
@@ -289,9 +289,26 @@ def _check_redundant_headline_in_body(headline: str, body: str) -> bool:
     return False
 
 
-def power_report_item_count(items: Sequence[Any]) -> int:
-    """Count reader items containing a power report for the synthesis limit."""
-    return sum(1 for item in items if _POWER_REPORT_RE.search(f"{item.headline} {item.body}"))
+def fragmented_power_report_item_indexes(items: Sequence[Any]) -> tuple[int, ...]:
+    """Find a scattered set of short isolated reports, not a paragraph quota.
+
+    Several developed or synthesized passages can be necessary for faithful
+    coverage. Count alone does not demonstrate fragmented reader prose.
+    """
+    power_indexes = tuple(
+        index
+        for index, item in enumerate(items)
+        if _POWER_REPORT_RE.search(f"{item.headline} {item.body}")
+    )
+    if len(power_indexes) <= MAX_POWER_REPORT_ITEMS_PER_BLOCK:
+        return ()
+    isolated_count = sum(
+        len(items[index].body.strip()) < 200
+        and len(items[index].covered_fact_ids) <= 1
+        and len(items[index].covered_story_ids) <= 1
+        for index in power_indexes
+    )
+    return power_indexes if isolated_count >= 2 else ()
 
 
 def audit_digest_prose_quality(
@@ -308,18 +325,14 @@ def audit_digest_prose_quality(
     covered_stories_detail = 0
 
     for block in draft.blocks:
-        power_item_indexes = [
-            idx
-            for idx, item in enumerate(block.items)
-            if _POWER_REPORT_RE.search(f"{item.headline} {item.body}")
-        ]
-        if len(power_item_indexes) > MAX_POWER_REPORT_ITEMS_PER_BLOCK:
+        power_item_indexes = fragmented_power_report_item_indexes(block.items)
+        if power_item_indexes:
             for item_index in power_item_indexes:
                 warnings.append(
                     DigestQualityWarning(
                         code="FRAGMENTED_SERVICE_REPORTS",
                         message=(
-                            "Power observations are scattered across too many separate items. "
+                            "Power observations include multiple short isolated items. "
                             "Weave related locations and timelines into a few readable passages "
                             "while preserving every distinct report."
                         ),
