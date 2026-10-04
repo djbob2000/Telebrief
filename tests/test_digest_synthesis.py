@@ -885,6 +885,7 @@ def test_power_fragmentation_threshold_matches_three_item_editor_limit(power_cou
         "В Бердянске заполняют систему отопления, сообщается в городе.",
         "Сообщения об электроснабжении в АКЗ расходятся: одно описывает отсутствие света.",
         "Опубликовано объявление о маршрутах из Бердянска в Ростов.",
+        "Другие сообщения об отключениях: на Кирова света нет 64 дня.",
     ],
 )
 def test_source_meta_narration_variants_trigger_editorial_repair(body: str) -> None:

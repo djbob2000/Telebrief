@@ -175,3 +175,24 @@ def test_chat_normalization_retains_exact_quote_and_repairs_surrounding_prose() 
     quote = "«В бердянском чате сообщили, что ранее также света не было»"
     text = f"{quote}. В сообщении в бердянском чате сообщили, что заполняют отопление."
     assert _fix_chat_leaks(text) == f"{quote}. Сообщается, что заполняют отопление."
+
+
+def test_repeated_singular_attribution_requests_prose_edit_without_veto() -> None:
+    from src.publication.digest_quality_diagnostics import audit_digest_prose_quality
+
+    body = (
+        "Один житель сообщает, что света нет со 2 августа. "
+        "На Кирова, по сообщению жителя, электричества нет 64 дня. "
+        "Жительница также говорит, что у её сына света нет неделями; место не указано."
+    )
+    draft = DigestNarrativeDraft(
+        blocks=(
+            DigestNarrativeBlockDraft(
+                block_id="utilities",
+                items=(DigestEditorialItemDraft(body=body),),
+            ),
+        ),
+    )
+    audit = audit_digest_prose_quality(draft, {})
+    assert "REPETITIVE_BODY_ATTRIBUTION" in {warning.code for warning in audit.warnings}
+    assert audit.is_publishable

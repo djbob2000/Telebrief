@@ -10,7 +10,7 @@ from typing import Any, Mapping, Sequence
 from src.publication.digest_narrative import DigestNarrativeDraft
 from src.publication.evidence import PublicationEvidence
 
-DIGEST_DIAGNOSTICS_VERSION = "digest-diagnostics-v10"
+DIGEST_DIAGNOSTICS_VERSION = "digest-diagnostics-v11"
 
 _ATTRIBUTION_PATTERNS = [
     re.compile(
@@ -46,7 +46,10 @@ _TEMPORAL_CHAIN_RE = re.compile(
     re.IGNORECASE,
 )
 _REPETITIVE_BODY_ATTRIBUTION_RE = re.compile(
-    r"(?:\bпо\s+(?:сообщениям|словам|информации|данным)\s+(?:жителей|горожан|очевидцев)\b|\b(?:жители|горожане|очевидцы)\s+(?:сообщают|пишут|делятся)\b)",
+    r"(?:\bпо\s+(?:сообщениям|сообщению|словам|информации|данным)\s+"
+    r"(?:жителей|жителя|жительницы|горожан|горожанина|очевидцев|очевидца)\b|"
+    r"\b(?:жители|житель|жительница|горожане|горожанин|очевидцы|очевидец)\s+"
+    r"(?:также\s+)?(?:сообща(?:ют|ет)|пиш(?:ут|ет)|говор(?:ят|ит)|делятся)\b)",
     re.IGNORECASE,
 )
 _CHAT_SLANG_OR_METADATA_RE = re.compile(
@@ -68,6 +71,7 @@ _SOURCE_META_NARRATION_RE = re.compile(
     r"\b(?:в\s+(?:(?:отдельном|другом|следующем|одном|одной|другой|отдельной)\s+"
     r"(?:сообщени\w*|публикаци\w*|пост\w*)|(?:одном|одной)\s+из\s+"
     r"(?:сообщени\w*|публикаци\w*|пост\w*))|"
+    r"(?:другие|прочие)\s+сообщени\w*\s+об?\b|"
     r"(?:ещ[её]\s+одно|другое|отдельное)\s+(?:сообщени\w*|публикаци\w*|пост\w*)|"
     r"(?:сообщени\w*|публикаци\w*|пост\w*)\s+(?:описыва\w*|уточня\w*|говор\w*|"
     r"сообща\w*|отмеча\w*)|"
