@@ -354,16 +354,37 @@ class DigestEditor:
             if finding.startswith("EDITORIAL_CONSTRAINT:")
         ]
         repair_lines = [f"- {finding}" for finding in prompt_findings]
+        if recompose_ids:
+            response_schema = (
+                '{"blocks":[{"block_id":"exact authorized block_id",'
+                '"recomposed_items":[{"covered_fact_ids":["exact targeted fact IDs"],'
+                '"headline":"short label or empty","body":"connected prose",'
+                '"emoji":"optional"}]}]}'
+            )
+            response_scope = (
+                "Return only authorized recomposition blocks using recomposed_items. "
+                "Do not include text patches or merges in this batch; untouched items and "
+                "blocks are restored by the program."
+            )
+        else:
+            response_schema = (
+                '{"blocks":[{"block_id":"...","items":[{"item_id":"...",'
+                '"headline":"...","body":"...","emoji":"..."}],'
+                '"merges":[{"merge_id":"...","source_item_ids":["exact grant IDs"],'
+                '"headline":"...","body":"...","emoji":"..."}]}]}'
+            )
+            response_scope = "Omit unchanged items. Keep every block in its original order."
         system_prompt = (
             "You are a careful local-news copy editor. Polish only the requested digest item text.\n"
             "Use the exact PUBLISH evidence and fact mapping supplied beside each item. One legitimate single-source community report may be included as a report; preserve natural attribution and uncertainty. Do not require a second source or official confirmation. Correct invented details, unsupported specifics, causal upgrades, and epistemic upgrades, but do not remove an eligible report merely because it is unconfirmed.\n"
             "In text-only patches, each item's unit/fact/story/support/claim mapping is immutable: change only headline/body/emoji for existing item IDs. Explicitly authorized recomposition below may regroup its exact fact IDs within the same block. Do not add, remove, or move facts, change claim atoms, rewrite provenance, or introduce paraphrase-distance/lexical-overlap rejection rules. A fluent faithful paraphrase is allowed; factual novelty or a high-risk unsupported detail should be fixed.\n"
             "Outside explicitly authorized recomposition, you may combine items only through an exact entry in that block's allowed_merges list. Return the exact merge_id and exact source_item_ids in the supplied order. A grant may contain two items/one edge or 3+ items connected by the listed SAME_FACT relation graph. Do not invent, remove, or change edges or items. The merged text must preserve the union of the source items' already-supported material and add no facts.\n"
             "Write connected, subject-first local-news prose. Establish attribution for each connected community-report cluster, then keep it in scope instead of repeating 'житель сообщает' before every clause. State the development directly; avoid message-by-message narration ('в одном из сообщений', 'другое сообщение описывает', 'опубликовано объявление о'). Preserve disagreement and unknown location/time honestly. Do not invent a chronology or street-level contrast to explain differing reports. An advertised route is a stated offer: phrase it as advertised/announced destinations without claiming actual operation or appending a generic disclaimer about verification. A short label or empty headline is preferable to a thesis repeated in the body. Keep every distinct supported microdetail.\n"
+            "Use one natural attribution frame for a connected passage, preserving any genuine source/uncertainty changes. Style example: 'Жители сообщают, что на улице А ...; жители сообщают, что на улице Б ...' becomes 'По сообщениям жителей, на улице А ..., на улице Б ...'. The letters and ellipses illustrate sentence structure only; use the actual supplied facts and places. Retain attribution to a dispatcher/official when it is an indirect resident account, and retain an unspecified household/location limitation.\n"
             "A rubric does not imply geographic proximity. Keep each named place attached to its own observation; never infer a shared district, relative distance, cause, city-wide condition, or routine state.\n"
             f"The final digest text should fit within {max_chars} characters where possible without dropping material facts.\n"
-            'Return only JSON: {"blocks":[{"block_id":"...","items":[{"item_id":"...","headline":"...","body":"...","emoji":"..."}],"merges":[{"merge_id":"...","source_item_ids":["exact IDs from grant"],"headline":"...","body":"...","emoji":"..."}]}]}.\n'
-            "Omit unchanged items. Keep every block present and in its original order.\n"
+            f"Return only JSON matching this schema: {response_schema}.\n"
+            f"{response_scope}\n"
             + ("Requested validation issues:\n" + "\n".join(repair_lines) if repair_lines else "")
         )
         if recompose_ids:
@@ -877,12 +898,17 @@ class DigestEditor:
             )
         except Exception as exc:
             logger.warning(
-                "DigestEditor composition repair rejected (%s: %s); returning original draft",
+                "DigestEditor composition repair rejected (%s: %s)",
                 type(exc).__name__,
                 exc,
             )
-            if recompose_ids and isinstance(exc, DigestRecompositionError):
-                raise
+            if recompose_ids:
+                if isinstance(exc, DigestRecompositionError):
+                    raise
+                reason = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
+                raise DigestRecompositionError(
+                    "recomposition response rejected: " + reason
+                ) from exc
             return draft
 
     async def polish_and_compress(

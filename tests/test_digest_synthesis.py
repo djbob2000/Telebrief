@@ -377,8 +377,9 @@ def test_editor_recomposition_preserves_all_facts_or_rolls_back(invalid: bool) -
         assert result.blocks[1].items == ()
 
 
-def test_editor_recomposition_requires_all_block_items_authorized() -> None:
+def test_editor_recomposition_changes_only_authorized_items() -> None:
     import asyncio
+    import json
 
     from src.publication.digest_editor import DigestEditor
 
@@ -404,7 +405,20 @@ def test_editor_recomposition_requires_all_block_items_authorized() -> None:
 
     class Provider:
         async def chat_completion(self, **kwargs):
-            raise AssertionError("Unapproved recomposition must not call provider")
+            request = json.loads(kwargs["messages"][1]["content"])
+            assert request["target_item_ids"] == [draft.blocks[0].items[0].item_id]
+            return json.dumps(
+                {
+                    "blocks": [
+                        {
+                            "block_id": block.block_id,
+                            "recomposed_items": [
+                                {**raw_items[0], "body": "Пересобранное наблюдение."}
+                            ],
+                        }
+                    ]
+                }
+            )
 
     result = asyncio.run(
         DigestEditor(provider=Provider()).polish_and_compress(
@@ -415,7 +429,8 @@ def test_editor_recomposition_requires_all_block_items_authorized() -> None:
             target_item_ids=(draft.blocks[0].items[0].item_id,),
         )
     )
-    assert result == draft
+    assert result.blocks[0].items[0].body == "Пересобранное наблюдение."
+    assert result.blocks[0].items[1:] == draft.blocks[0].items[1:]
 
 
 def test_recomposition_rejects_summary_membership_from_an_untargeted_item() -> None:
@@ -424,7 +439,7 @@ def test_recomposition_rejects_summary_membership_from_an_untargeted_item() -> N
     from dataclasses import replace
 
     from src.publication.digest_composition import DigestCompositionUnit
-    from src.publication.digest_editor import DigestEditor
+    from src.publication.digest_editor import DigestEditor, DigestRecompositionError
 
     _, evidence, _, plan = _fixture()
     block = plan.blocks[0]
@@ -523,19 +538,19 @@ def test_recomposition_rejects_summary_membership_from_an_untargeted_item() -> N
                 }
             )
 
-    result = asyncio.run(
-        DigestEditor(provider=Provider()).polish_and_compress(
-            source,
-            plan=plan,
-            evidence=evidence,
-            target_item_ids=tuple(item.item_id for item in source.blocks[0].items),
-            recompose_block_ids=(block.block_id,),
+    with pytest.raises(DigestRecompositionError, match="targeted summary units"):
+        asyncio.run(
+            DigestEditor(provider=Provider()).polish_and_compress(
+                source,
+                plan=plan,
+                evidence=evidence,
+                target_item_ids=tuple(item.item_id for item in source.blocks[0].items),
+                recompose_block_ids=(block.block_id,),
+            )
         )
-    )
-    assert result == source
-    assert any(item.covered_story_ids == (summary_id,) for item in result.blocks[0].items)
-    assert summary_item.body in {item.body for item in result.blocks[0].items}
-    assert {sid for item in result.blocks[0].items for sid in item.covered_story_ids} == {
+    assert any(item.covered_story_ids == (summary_id,) for item in source.blocks[0].items)
+    assert summary_item.body in {item.body for item in source.blocks[0].items}
+    assert {sid for item in source.blocks[0].items for sid in item.covered_story_ids} == {
         *block.story_ids,
         summary_id,
     }
@@ -1068,3 +1083,61 @@ def test_bounded_repair_polishes_new_items_and_keeps_last_safe_checkpoint(unsafe
         assert final.blocks[0].items[0].body == revised_body
         assert observer.finished == [(1, "succeeded"), (2, "succeeded")]
         assert not any(w.code == "SOURCE_META_NARRATION" for w in audit.prose_audit.warnings)
+
+
+def test_mixed_recomposition_returns_actionable_failure_without_partial_changes() -> None:
+    import asyncio
+    import json
+    from dataclasses import asdict
+
+    from src.publication.digest_editor import DigestEditor, DigestRecompositionError
+
+    _, evidence, _, plan = _fixture()
+    block = plan.blocks[0]
+    raw_items = [
+        {
+            "composition_unit_ids": [unit.unit_id],
+            "covered_fact_ids": list(unit.fact_ids),
+            "headline": "",
+            "body": " ".join(
+                fact.text for fact in block.required_facts if fact.fact_id in unit.fact_ids
+            ),
+            "claims": [],
+        }
+        for unit in block.composition_units
+    ]
+    draft = _parse_composition_writer_output(
+        {"blocks": [{"block_id": block.block_id, "items": raw_items}]}, plan=plan
+    )
+    before = asdict(draft)
+
+    class Provider:
+        async def chat_completion(self, **kwargs):
+            return json.dumps(
+                {
+                    "blocks": [
+                        {
+                            "block_id": block.block_id,
+                            "recomposed_items": raw_items,
+                            "items": [
+                                {
+                                    "item_id": draft.blocks[0].items[0].item_id,
+                                    "body": "This patch must never be applied.",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            )
+
+    with pytest.raises(DigestRecompositionError, match="mixed recomposition"):
+        asyncio.run(
+            DigestEditor(provider=Provider()).polish_and_compress(
+                draft,
+                plan=plan,
+                evidence=evidence,
+                target_item_ids=tuple(item.item_id for item in draft.blocks[0].items),
+                recompose_block_ids=(block.block_id,),
+            )
+        )
+    assert asdict(draft) == before
