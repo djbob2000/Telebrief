@@ -610,7 +610,6 @@ class PublicationGenerationService:
                         DigestNarrativeWriter,
                         build_digest_support_text_index,
                         plan_digest_narrative_blocks,
-                        validate_digest_narrative,
                     )
 
                     detail_cards = [
@@ -676,11 +675,7 @@ class PublicationGenerationService:
                             all_draft_support_texts, getattr(run, "snapshot_at", None)
                         )
 
-                        from src.publication.digest_coverage import build_digest_coverage_trace
                         from src.publication.digest_narrative import sanitize_digest_narrative_draft
-                        from src.publication.digest_quality_diagnostics import (
-                            audit_rendered_digest,
-                        )
                         from src.publication.errors import DigestCoverageInvariantError
 
                         support_text_index = build_digest_support_text_index(
@@ -693,37 +688,27 @@ class PublicationGenerationService:
                             all_draft_support_texts, getattr(run, "snapshot_at", None)
                         )
 
+                        from src.publication.digest_assessment import (
+                            DigestAssessmentContext,
+                            assess_digest_candidate,
+                        )
+
+                        assessment_context = DigestAssessmentContext(
+                            frozen=frozen,
+                            plan=plan,
+                            presentation_plan=presentation_plan,
+                            evidence=evidence_dict,
+                            support_text_by_id=support_text_index,
+                            allowed_context_terms=allowed_digest_terms,
+                            snapshot_at=run.snapshot_at,
+                            timezone_name=getattr(self.config.settings, "timezone", "UTC"),
+                            renderer=renderer,
+                        )
+
                         def _evaluate_candidate(candidate: Any) -> tuple[Any, Any, Any, Any]:
-                            candidate = sanitize_digest_narrative_draft(candidate)
-                            validation = validate_digest_narrative(
-                                candidate,
-                                plan,
-                                support_text_by_id=support_text_index,
-                                situation_plan=presentation_plan.city_situation,
-                                allowed_context_terms=allowed_digest_terms,
-                                all_known_draft_supports=all_draft_support_texts,
-                            )
-                            coverage = build_digest_coverage_trace(
-                                presentation_plan,
-                                candidate,
-                                plan,
-                            )
-                            artifact = renderer.render_grouped_digest_artifact(
-                                frozen,
-                                snapshot_at=run.snapshot_at,
-                                timezone_name=getattr(self.config.settings, "timezone", "UTC"),
-                                narrative_draft=candidate,
-                                presentation_plan=presentation_plan,
-                            )
-                            audit = audit_rendered_digest(
-                                artifact,
-                                candidate,
-                                evidence_dict,
-                                presentation_plan,
-                                coverage,
-                                narrative_validation=validation,
-                            )
-                            return validation, coverage, artifact, audit
+                            return assess_digest_candidate(
+                                candidate, context=assessment_context
+                            ).checks()
 
                         draft_cand = sanitize_digest_narrative_draft(draft_cand)
                         val_res, coverage_trace, rendered_artifact, rendered_audit = (
