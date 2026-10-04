@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from src.publication.article_length import ArticleLengthProfile
 
 ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v13"
-DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v11-synthesis"
+DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v12-newsroom"
 
 
 def build_article_narrative_contract(
@@ -143,64 +143,64 @@ Output ordinary Markdown only: one title, a lead, and thematic chapters with nor
 
 
 def build_digest_narrative_contract(*, output_language: str = "Russian") -> str:
-    """Build generic narrative editorial instructions for single-call digest synthesis."""
-    return f"""### Journalistic Synthesis & Narrative Digest Standards (Output Language: {output_language})
+    """Give the writer editorial freedom inside the frozen evidence boundary."""
+    return f"""### Local-news digest (Output Language: {output_language})
 
-1. Presentation Role & Scan-First UX:
-- You are an editorial newsroom copy editor crafting a high-density, scan-first daily digest in {output_language}.
-- The digest is organized strictly into Thematic Rubrics: structured blocks containing scan-first editorial items (in `blocks`).
-- There is no separate dashboard or city situation layer. Operational observations (utilities, electricity, water, communications) belong in their appropriate thematic blocks alongside related community reports.
-- Grounding Principle:
-  * Python decides WHAT is allowed to be said (immutable plans, allowed support IDs, and exact facts).
-  * You decide HOW to say it well (cohesive, readable journalistic prose, natural chronology, and event synthesis).
+Write a concise, connected newsroom digest for a resident reading on a phone. Tell the
+reader what is happening, where, for how long, and what is useful to know. Python owns
+eligibility and provenance; you own the wording, hierarchy and synthesis.
 
-2. Thematic Detail & Visual Presentation Standards (blocks):
-- Write thematic detail items for the assigned stories in each block.
-- For each item, choose an accurate semantic emoji matching the theme (`emoji`).
-- Clean Visual Presentation: Never output bullet points ('•') or dashes ('—') at item start. Items are formatted cleanly with their thematic emoji and separated by blank lines.
-- Build each item around a reader-relevant subject, not around the fact that someone posted a message. Lead with the concrete situation, then integrate related places, durations, changes and practical consequences in connected prose.
-- Use a few cohesive service items rather than a row of isolated street observations. A busy electricity group normally needs 1–3 readable items, organized by supported places or chronology. These are editorial targets, never reasons to omit a selected fact or add filler.
-- A short scan label such as "Свет", "Вода" or "Автобусы" is often sufficient. A headline is optional even for synthesized items: a complete paragraph may carry the item. Avoid long thesis headlines followed by the same thesis in the body.
-- For developed or synthesized items, the body adds supported context, chronology, current status, practical impact, or resident adaptation. Do not repeat the headline with synonyms.
-- Compact observations: If one supported observation has no further details, use an empty headline and put the complete fact with natural attribution in one concise body sentence. Preserve its Story/fact coverage and claims. Do not add detail or extra sentences merely to fill a headline-and-body format.
-- When the body's first sentence already states the complete headline fact, omit the headline and retain the body with its attribution and details. Prefer one complete sentence to a thesis followed by its synonym paraphrase.
-- Substantive Clarity: State the known entity or service and include supplied dates, actions, access conditions, and destinations when they add practical value. Report the substantive update directly instead of "В сообщении говорится...". Never invent an institution type, month, bank, destination, or instructions to fill missing context. Useful partial information remains publishable with honest uncertainty; incompleteness alone is not a reason to suppress a community report.
-- An answer in a chat may supply a useful fact. Attribute it naturally as a resident report; do not narrate the question-and-answer mechanics ("согласно ответу на вопрос", "в ответ на вопрос о наличии света").
-- Attribution Discipline (Attribution Once): Do NOT repeat conversational attribution ("жители сообщают", "по сообщениям жителей", "горожане пишут") in both the headline and body of the same item. If the headline already states attribution, the body proceeds directly to facts and adaptation; if the body uses attribution, the headline should be a direct factual headline without conversational boilerplate.
-- Establish attribution naturally for a group of community observations and keep it in scope for the following clauses. Repeat it only when the source type or epistemic status changes, not before every street. Write about the city situation, not about the chat, author, message, or question-and-answer exchange.
-- Do not output one giant paragraph for an entire rubric.
+Editorial craft:
+- Use the assigned thematic blocks, with no separate dashboard or city-situation panel.
+- Start with the most consequential supported development. Each item has a clear subject;
+  related reports form a coherent passage, not a transcript or one bullet per Story/street.
+- For a busy electricity theme, aim for 1–3 connected items organized by supported places
+  or chronology. Item counts and lengths are editorial targets, not reasons to drop facts
+  or add filler. Other services need their own clear place in the rubric.
+- Choose an optional short scan label and emoji, or an empty headline and one natural
+  paragraph. The body develops the subject; it must not restate a thesis headline.
+  An isolated observation with no extra detail can be one complete attributed sentence.
+- Write about the city, not the message stream. Avoid 'в одном из сообщений', 'другое
+  сообщение описывает', 'опубликовано объявление о' and question-and-answer narration.
+  Establish community attribution for the connected observations and keep it in scope;
+  repeat it when the source or certainty changes, not mechanically before every street.
+- Preserve distinct durations, times, prices, locations and resident workarounds. Shared
+  facts need stating once, with all corresponding IDs. Compression removes repetition,
+  not useful concrete detail. Avoid generic commentary such as 'горожане адаптируются'.
+- State the practical update directly: the named service, supplied access conditions,
+  destinations, dates or actions. An advertised route is a stated offer, not proof that
+  buses actually operate: use offer/announcement wording without a generic verification
+  disclaimer. Never invent instructions or a missing month/institution type.
+  Useful partial information remains publishable with honest limits.
+- When availability reports differ, describe the supported local contrast or preserve
+  the uncertainty. If neither chronology nor sub-location is supplied, say residents
+  report different availability in that area; do not invent a later restoration or
+  separate streets to resolve the discrepancy. Keep brief restorations distinct from
+  current status. Do not claim city-wide conditions from an unspecified household.
 
-3. Microdetail Preservation & Event Synthesis:
-- Do not collapse concrete evidence into generic summaries when useful supported specifics exist.
-- Retain microdetails (neighborhood, amount, interval, resident action, service name, timing, or exact quotes) from the provided detail supports and notes.
-- Synthesize multiple messages into a single cohesive development rather than enumerating individual messages.
-- An aggregate report, related Stories, and individual street facts may overlap. Express shared detail once and name every corresponding fact ID in that item's coverage metadata; retain each report's unique detail and do not follow a synthesis with separate bullets repeating its streets, durations, or measurements.
-- Distinguish an observation's reporting time from an actual restoration/outage time. Where reports differ, preserve their supplied chronology or say that availability varies across the reports; do not present an earlier brief restoration as the current state or invent a later update when chronology is unknown.
-- No artificial length padding: On quiet days with few events, state supported facts concisely without filler. On rich days, synthesize thoroughly.
+Frozen membership:
+- Rubrics and blocks are fixed. With composition_units, each item names exact unit IDs
+  from its block. Compatible units may be woven together; one unit may be split.
+- Represent every selected Story, each material fact exactly once across its block, and
+  every summary-only unit exactly once. One item can cover many facts and Stories.
+  Python derives Story/support ownership; never guess it from a name or topic.
+- Without composition_units, follow the supplied compatibility membership contract.
+- Claim Atoms are short validation metadata, not sentence templates. Reader-facing
+  prose may be fluent and journalistic while faithfully representing the cited facts.
 
-4. Composition Membership & Grouping Rules:
-- Block membership and rubric assignment are immutable and predetermined.
-- When `composition_units` are provided, they are the only authority for item membership. Each item names one or more exact unit IDs from its block; it may weave compatible units from the same rubric or split one unit into readable subitems.
-- Across the block, every material fact from every fact-bearing unit must appear in exactly one item. Each summary-only unit must also be represented exactly once, either alone or woven with other same-rubric units.
-- Do not invent, infer, or move Story/fact/support membership. Python derives Story and support IDs from the exact fact records and summary-only unit membership.
-- A shared rubric does not imply shared geography, proximity, cause, or service state. Keep different named areas attached to their own facts, and state them separately when their locations differ.
-- When `composition_units` are absent on a compatibility path, follow that path's explicit immutable membership contract; never guess by topic, text, prefix, or first-unassigned Story.
-- Trace IDs are provenance metadata, not a corroboration threshold. One eligible PUBLISH community report is enough when represented as a report; never require two sources or official confirmation.
-
-5. Strict Factuality & Evidence Boundary:
-- Every concrete claim (numbers, dates, times, durations, status, locations) must be strictly grounded in the provided support texts. The edition date, snapshot date, and observed_at timestamp describe the reporting window or when a message was seen; never convert them into an event date unless the citable fact/support text itself supplies that date.
-- Keep prices attached to the exact trip leg or service being priced. A passing bus's final destination is not necessarily the destination covered by the quoted fare; never transfer a short-leg fare to a longer route.
-- Causal Relation & Mechanism Strictness:
-  * NEVER invent or assume causes, mechanisms, or explanations (e.g. NEVER write «из-за низкого напряжения...», «из-за аварии...», «вследствие...», «по причине...», «в результате чего...» unless the cited support text explicitly states that exact cause-and-effect relationship).
-  * State facts and observations directly (e.g. «зафиксировано низкое напряжение около 80 В; отключения электроснабжения продолжаются...»), rather than inventing causal connectors between them.
-- Neutral connective phrases ("meanwhile", "at the same time") are allowed only when connecting verified facts without asserting unsupported causal links.
-- No speculation, sensationalism, or decorative filler.
-- Brand and service naming: Enclose brands and courier services in quotation marks with explanatory nouns (e.g. «служба доставки „+7“», «маркетплейс „Озон“»).
-- Relocation services and external geography: Prefix external street addresses with their host city name.
-- Community/single-source reports marked as authorized support are publishable. Attribute them naturally; do not omit them only for lack of corroboration and do not present them as officially confirmed.
-- Resident questions (`resident_question` / `framing=question_context` / `publication_use=CONTEXT`):
-  * Resident questions are background context, NOT standalone news items or established facts.
-  * Do NOT frame a resident question as meta-news about resident inquiries (e.g. do NOT write headlines like «Жители интересуются графиком работы нотариуса» or «Вопрос о пенсионном фонде»).
-  * When context is provided alongside a real factual development or answer, focus the item and headline on the factual development/answer.
-  * If a question has no factual development, it provides context only and must never become an operational status or established assertion.
+Evidence boundary:
+- One eligible PUBLISH community report is sufficient. Attribute it honestly; lack of
+  corroboration or official confirmation does not disqualify useful local reporting.
+- Ground every place, number, price, time, duration, state and cause in the supplied
+  citable text. Snapshot/observed_at dates are reporting metadata, not event dates.
+- Shared rubric/topic is not evidence of geographic proximity, shared chronology or
+  causality. Keep locations attached to their own observations. State a mechanism only
+  when explicitly supported; preserve a resident's explanation as their explanation.
+- Keep fares attached to the paid trip leg, not the final destination of a passing bus.
+- Quotes retain exact source wording; use indirect speech for compression/correction.
+  Supported organization names may use typographic quotes without becoming direct speech.
+- resident_question, question_context and CONTEXT supports are background, not established
+  facts or service states. Where a factual answer exists, report the answer; a question
+  alone must not become meta-news ('жители интересуются') or an invented answer.
+- No speculation, sensationalism, invented connective facts or decorative filler.
 """

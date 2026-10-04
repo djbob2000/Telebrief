@@ -6,7 +6,7 @@ import asyncio
 import datetime as dt
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from typing import Any
 
@@ -89,6 +89,158 @@ def compute_digest_allowed_terms(
             window_terms.add(m_name)
             window_terms.add(f"{cur_d.day} {m_name}")
     return tuple(edition_tokens | window_terms)
+
+
+def _digest_repair_request(
+    checkpoint: tuple[Any, ...],
+) -> tuple[list[str], tuple[str, ...], tuple[str, ...]]:
+    draft, validation, _, _, audit = checkpoint
+    findings = list(validation.violations)
+    findings.extend(
+        f"DIGEST_QUALITY:{check.code}: {check.message} {check.text}".strip()
+        for check in audit.checks
+        if str(check.status) == "FAIL"
+    )
+    findings.extend(
+        f"STYLE_OBSERVATION:{warning.code}: {warning.message}"
+        for warning in audit.prose_audit.warnings
+    )
+    findings = list(dict.fromkeys(findings))
+    if not findings:
+        return [], (), ()
+    findings.append(
+        "EDITORIAL_CONSTRAINT: Preserve every useful PUBLISH community_report as a faithfully "
+        "attributed local report. One source is sufficient; do not require official confirmation."
+    )
+    structural_codes = {"OVERLONG_SYNTHESIS", "FRAGMENTED_SERVICE_REPORTS"}
+    recompose_ids = tuple(
+        dict.fromkeys(
+            warning.block_id
+            for warning in audit.prose_audit.warnings
+            if warning.code in structural_codes and warning.block_id
+        )
+    )
+    targets = tuple(
+        dict.fromkeys(
+            item.item_id
+            for warning in audit.prose_audit.warnings
+            if not recompose_ids or warning.code in structural_codes
+            for block in draft.blocks
+            if block.block_id == warning.block_id
+            for index, item in enumerate(block.items)
+            if index == warning.item_index and item.item_id
+        )
+    )
+    if not targets:
+        targets = tuple(
+            item.item_id for block in draft.blocks for item in block.items if item.item_id
+        )
+    return findings, targets, recompose_ids
+
+
+async def _repair_digest_candidate(
+    *,
+    checkpoint: tuple[Any, ...],
+    plan: Any,
+    evidence: Any,
+    editor: Any,
+    observer: Any,
+    evaluate_candidate: Callable[[Any], tuple[Any, ...]],
+    model: str | None,
+    timeout_seconds: float,
+    implementation_versions: Any,
+) -> tuple[tuple[Any, ...], bool, int]:
+    """Use the existing editor at most twice, retaining each exact safe assessment.
+
+    Style diagnostics request an edit; they do not establish factual unsafety
+    or unreadability. A rejected later edit cannot erase a safe earlier result.
+    """
+    from src.publication.digest_editor import DigestRecompositionError
+    from src.publication.digest_narrative import sanitize_digest_narrative_draft
+
+    if not _digest_repair_request(checkpoint)[0]:
+        return checkpoint, False, 0
+    used = False
+    feedback = ""
+    max_calls = 2
+    for call in range(max_calls):
+        findings, targets, recompose_ids = _digest_repair_request(checkpoint)
+        if not findings:
+            break
+        if feedback:
+            findings.append(
+                "EDITORIAL_CONSTRAINT: The previous edit was rejected: "
+                + feedback
+                + " Preserve every targeted fact and summary unit exactly once."
+            )
+        attempt_id = await observer.attempt_started(
+            "repair",
+            metadata={
+                "digest_implementation_versions": implementation_versions,
+                "subkind": "digest_editor_combined_repair",
+                "repair_call": call + 1,
+                "finding_count": len(findings),
+                "finding_codes": [
+                    value.split(":", 2)[1]
+                    if value.startswith(("STYLE_OBSERVATION:", "DIGEST_QUALITY:"))
+                    else value.split(":", 1)[0]
+                    for value in findings
+                ][:20],
+            },
+        )
+        try:
+            async with asyncio.timeout(timeout_seconds):
+                edited = await editor.polish_and_compress(
+                    checkpoint[0],
+                    plan=plan,
+                    evidence=evidence,
+                    max_chars=3600,
+                    model=model,
+                    violations=findings,
+                    target_item_ids=targets,
+                    recompose_block_ids=recompose_ids,
+                )
+            candidate = sanitize_digest_narrative_draft(edited)
+            validation, coverage, artifact, audit = evaluate_candidate(candidate)
+            safe = (
+                validation.is_valid
+                and audit.is_publishable
+                and coverage.story_coverage >= 1.0
+                and coverage.material_fact_coverage >= 1.0
+            )
+            accepted = safe and candidate != checkpoint[0]
+            await observer.attempt_finished(
+                attempt_id,
+                "succeeded" if accepted else "failed",
+                error_kind=None if accepted else "digest_editor_combined_repair_unresolved",
+                metadata={
+                    "repair_used": accepted,
+                    "validation": {
+                        "is_valid": validation.is_valid,
+                        "scope": "implemented_hard_checks_only",
+                        "not_evaluated": list(validation.not_evaluated),
+                    },
+                    "quality_audit": audit.as_metadata(),
+                },
+            )
+            if accepted:
+                checkpoint = (candidate, validation, coverage, artifact, audit)
+                used = True
+                feedback = ""
+            elif not safe:
+                feedback = "the candidate failed factual, coverage, or rendered-post safety checks"
+            else:
+                feedback = "the targeted wording did not change"
+        except Exception as exc:
+            feedback = str(exc) if isinstance(exc, DigestRecompositionError) else type(exc).__name__
+            await observer.attempt_finished(
+                attempt_id,
+                "failed",
+                error_kind="digest_editor_combined_repair_exception",
+                metadata={"error_message": feedback},
+            )
+            logger.warning("DigestEditor repair rejected: %s", feedback)
+    return checkpoint, used, max_calls
 
 
 class PublicationGenerationService:
@@ -527,7 +679,6 @@ class PublicationGenerationService:
                         from src.publication.digest_coverage import build_digest_coverage_trace
                         from src.publication.digest_narrative import sanitize_digest_narrative_draft
                         from src.publication.digest_quality_diagnostics import (
-                            DigestCheckStatus,
                             audit_rendered_digest,
                         )
                         from src.publication.errors import DigestCoverageInvariantError
@@ -584,222 +735,39 @@ class PublicationGenerationService:
                                 list(val_res.not_evaluated)[:10],
                             )
 
-                        repair_findings = list(val_res.violations)
-                        for check in rendered_audit.checks:
-                            if check.status == DigestCheckStatus.FAIL:
-                                repair_findings.append(
-                                    f"DIGEST_QUALITY:{check.code}: {check.message} {check.text}".strip()
-                                )
-                        for warning in rendered_audit.prose_audit.warnings:
-                            repair_findings.append(
-                                f"STYLE_OBSERVATION:{warning.code}: {warning.message}"
-                            )
-                        repair_findings = list(dict.fromkeys(repair_findings))
-                        repair_used = False
-                        digest_repair_max_calls = 1
-                        recompose_block_ids: tuple[str, ...] = ()
-                        if repair_findings:
-                            repair_findings.append(
-                                "EDITORIAL_CONSTRAINT: Preserve every useful PUBLISH community_report as a faithfully attributed local report. Do not remove it or weaken its wording merely because it has one source or lacks official confirmation."
-                            )
-                            affected_item_ids = tuple(
-                                dict.fromkeys(
-                                    item.item_id
-                                    for warning in rendered_audit.prose_audit.warnings
-                                    for block in draft_cand.blocks
-                                    if block.block_id == warning.block_id
-                                    for index, item in enumerate(block.items)
-                                    if index == warning.item_index and item.item_id
-                                )
-                            )
-                            if not affected_item_ids:
-                                affected_item_ids = tuple(
-                                    item.item_id
-                                    for block in draft_cand.blocks
-                                    for item in block.items
-                                    if item.item_id
-                                )
-                            recompose_block_ids = tuple(
-                                dict.fromkeys(
-                                    w.block_id
-                                    for w in rendered_audit.prose_audit.warnings
-                                    if w.code
-                                    in {"OVERLONG_SYNTHESIS", "FRAGMENTED_SERVICE_REPORTS"}
-                                )
-                            )
-                            if recompose_block_ids:
-                                affected_item_ids = tuple(
-                                    dict.fromkeys(
-                                        item.item_id
-                                        for warning in rendered_audit.prose_audit.warnings
-                                        if warning.code
-                                        in {"OVERLONG_SYNTHESIS", "FRAGMENTED_SERVICE_REPORTS"}
-                                        and warning.block_id in recompose_block_ids
-                                        and warning.item_index is not None
-                                        for block in draft_cand.blocks
-                                        if block.block_id == warning.block_id
-                                        and warning.item_index < len(block.items)
-                                        for item in (block.items[warning.item_index],)
-                                        if item.item_id
-                                    )
-                                )
-                            repair_checkpoint = (
+                        from src.publication.digest_editor import DigestEditor
+
+                        (
+                            checkpoint,
+                            repair_used,
+                            digest_repair_max_calls,
+                        ) = await _repair_digest_candidate(
+                            checkpoint=(
                                 draft_cand,
                                 val_res,
                                 coverage_trace,
                                 rendered_artifact,
                                 rendered_audit,
-                            )
-                            from src.publication.digest_editor import (
-                                DigestEditor,
-                                DigestRecompositionError,
-                            )
-
-                            editor = DigestEditor(provider=writer_provider)
-                            structural_warning_codes = {
-                                "OVERLONG_SYNTHESIS",
-                                "FRAGMENTED_SERVICE_REPORTS",
-                            }
-                            repair_call_limit = 2 if recompose_block_ids else 1
-                            digest_repair_max_calls = repair_call_limit
-                            recomposition_feedback = ""
-                            for repair_call in range(repair_call_limit):
-                                attempt_findings = list(repair_findings)
-                                if repair_call:
-                                    retry_feedback = (
-                                        "The previous response was rejected: "
-                                        + recomposition_feedback
-                                        if recomposition_feedback
-                                        else "The previous recomposition did not resolve the "
-                                        "flagged structural finding."
-                                    )
-                                    attempt_findings.append(
-                                        "EDITORIAL_CONSTRAINT: "
-                                        + retry_feedback
-                                        + " Regroup the targeted facts into fewer reader items "
-                                        "and preserve every fact and summary unit exactly once."
-                                    )
-                                edit_att_id = await observer.attempt_started(
-                                    "repair",
-                                    metadata={
-                                        "digest_implementation_versions": digest_implementation_versions,
-                                        "subkind": "digest_editor_combined_repair",
-                                        "repair_call": repair_call + 1,
-                                        "finding_count": len(attempt_findings),
-                                        "finding_codes": [
-                                            str(value).split(":", 2)[1]
-                                            for value in attempt_findings
-                                            if ":" in str(value)
-                                        ][:20],
-                                    },
-                                )
-                                try:
-                                    async with asyncio.timeout(narrative_timeout):
-                                        repaired_draft = await editor.polish_and_compress(
-                                            repair_checkpoint[0],
-                                            plan=plan,
-                                            evidence=evidence_dict,
-                                            max_chars=3600,
-                                            model=getattr(
-                                                self.config.settings, "openai_model", None
-                                            )
-                                            or getattr(self.config.settings, "ai_model", None),
-                                            violations=attempt_findings,
-                                            target_item_ids=affected_item_ids,
-                                            recompose_block_ids=recompose_block_ids,
-                                        )
-                                    candidate = sanitize_digest_narrative_draft(repaired_draft)
-                                    (
-                                        candidate_validation,
-                                        candidate_coverage,
-                                        candidate_artifact,
-                                        candidate_audit,
-                                    ) = _evaluate_candidate(candidate)
-                                    unresolved_recomposition = tuple(
-                                        dict.fromkeys(
-                                            warning.code
-                                            for warning in candidate_audit.prose_audit.warnings
-                                            if warning.code in structural_warning_codes
-                                            and warning.block_id in recompose_block_ids
-                                        )
-                                    )
-                                    repair_accepted = (
-                                        candidate_validation.is_valid
-                                        and candidate_audit.is_publishable
-                                        and candidate_coverage.story_coverage >= 1.0
-                                        and candidate_coverage.material_fact_coverage >= 1.0
-                                        and (
-                                            not recompose_block_ids
-                                            or (
-                                                candidate != repair_checkpoint[0]
-                                                and not unresolved_recomposition
-                                            )
-                                        )
-                                    )
-                                    await observer.attempt_finished(
-                                        edit_att_id,
-                                        "succeeded" if repair_accepted else "failed",
-                                        error_kind=(
-                                            None
-                                            if repair_accepted
-                                            else "digest_editor_combined_repair_unresolved"
-                                        ),
-                                        metadata={
-                                            "repair_used": repair_accepted,
-                                            "unresolved_recomposition_codes": list(
-                                                unresolved_recomposition
-                                            ),
-                                            "validation": {
-                                                "is_valid": candidate_validation.is_valid,
-                                                "scope": "implemented_hard_checks_only",
-                                                "not_evaluated": list(
-                                                    candidate_validation.not_evaluated
-                                                ),
-                                            },
-                                            "quality_audit": candidate_audit.as_metadata(),
-                                        },
-                                    )
-                                    if repair_accepted:
-                                        draft_cand = candidate
-                                        val_res = candidate_validation
-                                        coverage_trace = candidate_coverage
-                                        rendered_artifact = candidate_artifact
-                                        rendered_audit = candidate_audit
-                                        repair_used = True
-                                        break
-                                except Exception as edit_exc:
-                                    if isinstance(edit_exc, DigestRecompositionError):
-                                        recomposition_feedback = str(edit_exc)
-                                    await observer.attempt_finished(
-                                        edit_att_id,
-                                        "failed",
-                                        error_kind="digest_editor_combined_repair_exception",
-                                        metadata={"error_message": str(edit_exc)},
-                                    )
-                                    logger.warning(
-                                        "DigestEditor combined repair failed: %s", edit_exc
-                                    )
-
-                            if recompose_block_ids and not repair_used:
-                                (
-                                    draft_cand,
-                                    val_res,
-                                    coverage_trace,
-                                    rendered_artifact,
-                                    rendered_audit,
-                                ) = repair_checkpoint
+                            ),
+                            plan=plan,
+                            evidence=evidence_dict,
+                            editor=DigestEditor(provider=writer_provider),
+                            observer=observer,
+                            evaluate_candidate=_evaluate_candidate,
+                            model=getattr(self.config.settings, "openai_model", None)
+                            or getattr(self.config.settings, "ai_model", None),
+                            timeout_seconds=narrative_timeout,
+                            implementation_versions=digest_implementation_versions,
+                        )
+                        draft_cand, val_res, coverage_trace, rendered_artifact, rendered_audit = (
+                            checkpoint
+                        )
 
                         blocking_findings = [
                             check.code for check in rendered_audit.blocking_failures
                         ]
                         if not val_res.is_valid:
                             blocking_findings.extend(val_res.violations)
-                        if any(
-                            warning.code in {"OVERLONG_SYNTHESIS", "FRAGMENTED_SERVICE_REPORTS"}
-                            and warning.block_id in recompose_block_ids
-                            for warning in rendered_audit.prose_audit.warnings
-                        ):
-                            blocking_findings.append("DIGEST_RECOMPOSITION_UNRESOLVED")
                         if blocking_findings:
                             raise PublicationGenerationError(
                                 "DIGEST_RENDERED_AUDIT_FAILED: "

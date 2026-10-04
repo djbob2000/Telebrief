@@ -276,7 +276,7 @@ def _fix_duplicated_attribution(headline: str, body: str) -> tuple[str, str]:
     return headline, body
 
 
-def _fix_chat_leaks(text: str) -> str:
+def _fix_chat_leaks_unquoted(text: str) -> str:
     """Normalize internal chat/channel references to natural journalistic attribution."""
     if not text:
         return text
@@ -333,7 +333,7 @@ def _fix_chat_leaks(text: str) -> str:
     # A named-city chat is still channel metadata. Keep the reported status,
     # but avoid claiming which person posted it.
     t = re.sub(
-        r"\bв\s+[А-Яа-яЁё-]+\s+чате\s+(?:сообщают|сообщает|пишут|пишет),?\s*что",
+        r"\b(?:в\s+сообщении\s+)?в\s+[А-Яа-яЁё-]+\s+чате\s+(?:сообща(?:ют|ет)|сообщил(?:и|а)?|пиш(?:ут|ет)),?\s*что",
         "Сообщается, что",
         t,
         flags=re.IGNORECASE,
@@ -392,20 +392,37 @@ def _fix_chat_leaks(text: str) -> str:
     return t
 
 
-def sanitize_digest_narrative_draft(draft: DigestNarrativeDraft) -> DigestNarrativeDraft:
-    """Sanitize all items in a narrative digest draft before quality audit and rendering."""
+def _fix_chat_leaks(text: str) -> str:
+    """Normalize prose outside quotes while retaining every quoted word."""
     from src.publication.digest_quality_diagnostics import _TEMPORAL_CHAIN_RE
 
+    marker = "\ue000"
+    while marker in text:
+        marker += "\ue000"
+    quoted: dict[str, str] = {}
+
+    def protect(match: re.Match[str]) -> str:
+        token = f"{marker}{len(quoted)}\ue001"
+        quoted[token] = match.group()
+        return token
+
+    protected = _HEADLINE_QUOTED_SPAN_RE.sub(protect, text)
+    normalized = _fix_chat_leaks_unquoted(_TEMPORAL_CHAIN_RE.sub(" ", protected))
+    for token, original in quoted.items():
+        normalized = normalized.replace(token, original)
+    return normalized
+
+
+def sanitize_digest_narrative_draft(draft: DigestNarrativeDraft) -> DigestNarrativeDraft:
+    """Sanitize all items in a narrative digest draft before quality audit and rendering."""
     new_blocks = []
     for b in draft.blocks:
         new_items = []
         for it in b.items:
-            clean_hl = _TEMPORAL_CHAIN_RE.sub(" ", it.headline)
-            clean_hl = _fix_chat_leaks(clean_hl)
+            clean_hl = _fix_chat_leaks(it.headline)
             clean_hl = re.sub(r"\s{2,}", " ", clean_hl).strip()
 
-            clean_body = _TEMPORAL_CHAIN_RE.sub(" ", it.body)
-            clean_body = _fix_chat_leaks(clean_body)
+            clean_body = _fix_chat_leaks(it.body)
             clean_body = re.sub(r"\s{2,}", " ", clean_body).strip()
 
             clean_hl, clean_body = _fix_redundant_headline_and_body(clean_hl, clean_body)
@@ -887,82 +904,18 @@ class DigestEditorialItemDraft:
                 if s and s not in support_ids:
                     support_ids = (*support_ids, s)
 
-        # Sanitize headline to replace causal connectors with neutral phrasing
-        clean_headline = (
-            re.sub(r"\bиз-за\b", "при", headline, flags=re.IGNORECASE) if headline else ""
-        )
-        if clean_headline:
-            clean_headline = re.sub(r'[«»"“„]', "", clean_headline)
-            clean_headline = re.sub(
-                r"^(?:по\s+сообщениям\s+жителей|жители\s+сообщают|по\s+словам\s+горожан)[\s,:]*",
-                "",
-                clean_headline,
-                flags=re.IGNORECASE,
-            ).strip()
-            if clean_headline:
-                clean_headline = clean_headline[:1].upper() + clean_headline[1:]
-
-        # Sanitize body: remove conversational assumption markers
+        # Preserve complete candidate wording for validation and targeted editing.
+        # Regex deletion of repeated attribution can remove sentence predicates;
+        # truncation and causal/quote rewrites can hide factual novelty or coverage loss.
+        clean_headline = headline
         clean_body = body
-        if clean_body:
-            clean_body = re.sub(r"[«\"]по свету ноль[»\"]", "по свету ноль", clean_body)
-            clean_body = re.sub(r"\s+вместо\s+220(?:\s*[вВвольт]+)?", "", clean_body)
-            clean_body = re.sub(
-                r"\bиз-за\s+(?:этого|чего|которых)\b", "при этом", clean_body, flags=re.IGNORECASE
-            )
-            clean_body = re.sub(r"\bиз-за\b", "при", clean_body, flags=re.IGNORECASE)
-            clean_body = re.sub(r"«([^»]+)»", r"\1", clean_body)
-            clean_body = re.sub(r'"([^"]+)"', r"\1", clean_body)
-            if len(clean_body) > 1150:
-                clean_body = clean_body[:1150].rsplit(" ", 1)[0].rstrip(".,;: ") + "."
-
-            # Strip redundant headline repetition at start of body
-            if clean_headline:
-                clean_body = _strip_redundant_headline_from_body(clean_headline, clean_body)
-
-            # Remove duplicate attribution in body if present multiple times
-            att_matches = list(
-                re.finditer(
-                    r"\b(?:по\s+сообщениям\s+жителей|жители\s+сообщают|по\s+словам\s+горожан)[\s,:]*",
-                    clean_body,
-                    flags=re.IGNORECASE,
-                )
-            )
-            if len(att_matches) > 1:
-                for m in reversed(att_matches[1:]):
-                    clean_body = clean_body[: m.start()] + clean_body[m.end() :]
-                clean_body = re.sub(
-                    r"\.\s+([a-zа-я])", lambda x: ". " + x.group(1).upper(), clean_body
-                )
-
-            # Remove chat metadata and emoji spam
-            clean_body = re.sub(
-                r"(?:публикуют\s+)?сообщения\s+с\s+эмодзи[\w\s,]*[.]?",
-                "",
-                clean_body,
-                flags=re.IGNORECASE,
-            ).strip()
-            clean_body = re.sub(
-                r"\bсмайлик(?:ами|и)?\b", "", clean_body, flags=re.IGNORECASE
-            ).strip()
-            clean_body = re.sub(
-                r"\b(?:в\s+местных\s+чатах|в\s+чате(?:\s+[А-Яа-я]+)?|в\s+местном\s+чате|в\s+городском\s+чате)\b",
-                "в городе",
-                clean_body,
-                flags=re.IGNORECASE,
-            )
-            clean_body = re.sub(r"\s{2,}", " ", clean_body).strip()
 
         if clean_headline and clean_body:
             clean_headline, clean_body = _fix_redundant_headline_and_body(
                 clean_headline, clean_body
             )
 
-        clean_claims: list[DigestClaimAtom] = []
-        for c in claims:
-            c_text = re.sub(r"[«\"]по свету ноль[»\"]", "по свету ноль", c.text)
-            c_text = re.sub(r"\s+вместо\s+220(?:\s*[вВвольт]+)?", "", c_text)
-            clean_claims.append(replace(c, text=c_text))
+        clean_claims = claims
 
         raw_item_facts = raw.get("covered_fact_ids", [])
         if isinstance(raw_item_facts, (str, int)):
@@ -4240,8 +4193,8 @@ class DigestNarrativeWriter:
             '"emoji":"optional short semantic emoji",'
             '"headline":"optional short scan label or concise headline; may be empty for a complete natural paragraph",'
             '"body":"cohesive concise prose",'
-            '"claims":[{"text":"one grounded proposition",'
-            '"covered_fact_ids":["exact fact IDs supporting this claim"],'
+            '"claims":[{"text":"summary-only proposition; use an empty claims list for fact-only items",'
+            '"covered_fact_ids":[],'
             '"summary_unit_ids":["for a summary-only claim, exact summary-only unit IDs it represents"]}]'
             "}]}]}"
         )
@@ -4249,13 +4202,13 @@ class DigestNarrativeWriter:
             f"You are a careful local-news editor writing a scan-first digest in {language}.\n"
             "Write fluent, natural prose from the supplied frozen composition plan.\n"
             "Use reader_synthesis_groups as your editorial roadmap before composing items. They group reporting about a service for readability; they are navigation, not evidence, fact equivalence, chronology, geography, or permission to omit material.\n"
-            "Normally synthesize each service group into its preferred_max_reader_items or fewer cohesive items. Keep every exact fact ID, use as many claims as needed inside each item, and split for readability only when the material requires it. Do not create a separate item for every street or source message.\n"
+            "Normally synthesize each service group into its preferred_max_reader_items or fewer cohesive items. Keep every exact fact ID and split for readability only when the material requires it. Do not create a separate item for every street or source message.\n"
             "Compare related_reporting_sets before writing: their text anchors flag potential overlap across units and service groups. They do not prove SAME_FACT, shared geography or chronology. Integrate overlapping observations into the same item where supported, state a shared detail once, and retain every distinct fact and its unique detail. Do not mention the same outage/location in multiple items merely because separate Stories repeat it.\n"
             "COMPOSITION CONTRACT:\n"
             "- Every item names one or more exact composition_unit_ids from this block; units in an item must belong to this same rubric. Do not invent, shorten, or infer IDs. The units define which material an item may represent; they do not require one visible item each.\n"
             "- Across the whole block, every allowed fact ID must occur in exactly one item's covered_fact_ids. Items may weave compatible same-rubric units together or split a unit when that makes its places or situations clearer. No fact may be omitted, duplicated, or moved outside its unit.\n"
             "- Every summary-only unit must appear in exactly one item's composition_unit_ids and exactly one claim's summary_unit_ids. Summary-only units may be woven together when that reads naturally; keep each distinct report recognizable.\n"
-            "- Every factual claim must list the exact fact ID or IDs it expresses. Claims must partition each item's facts exactly once. A summary-only claim lists no covered_fact_ids and names its exact summary_unit_ids. Do not write factual claims outside listed facts.\n"
+            "- Fact-bearing Claim Atoms are derived by Python from the exact covered_fact_ids; return claims: [] for a fact-only item instead of paraphrasing facts again as metadata. Supply a claim only for a summary-only unit, with covered_fact_ids: [] and its exact summary_unit_ids. All visible prose must faithfully represent the listed facts and authorized summary supports.\n"
             "- Do not output covered_story_ids or cited_support_ids. Python derives both from the frozen fact-to-evidence map.\n"
             "- Use only facts and PUBLISH supports provided for that unit. A single PUBLISH community report is publishable: preserve its reported/uncertain status with natural attribution; do not demand corroboration or official confirmation. Never upgrade it to an established or official fact.\n"
             "- Keep a concrete local location attached to its own fact. Do not infer proximity, a shared district, a cause, or a city-wide condition. When one item weaves units from different locations, mention each named place in its own clause or sentence; a shared rubric is not a shared neighborhood. Use only explicitly supported localized contrasts.\n"

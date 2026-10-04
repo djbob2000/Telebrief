@@ -22,7 +22,6 @@ from src.publication.digest_narrative import (
 )
 from src.publication.digest_quality_diagnostics import (
     MAX_POWER_REPORT_ITEMS_PER_BLOCK,
-    fragmented_power_report_item_indexes,
 )
 from src.publication.evidence import PublicationEvidence
 
@@ -358,8 +357,9 @@ class DigestEditor:
         system_prompt = (
             "You are a careful local-news copy editor. Polish only the requested digest item text.\n"
             "Use the exact PUBLISH evidence and fact mapping supplied beside each item. One legitimate single-source community report may be included as a report; preserve natural attribution and uncertainty. Do not require a second source or official confirmation. Correct invented details, unsupported specifics, causal upgrades, and epistemic upgrades, but do not remove an eligible report merely because it is unconfirmed.\n"
-            "An item's unit/fact/story/support/claim mapping is immutable. Your response may change only headline/body/emoji for existing item IDs. Do not add, remove, or move facts, change claim atoms, rewrite provenance, or introduce paraphrase-distance/lexical-overlap rejection rules. A fluent faithful paraphrase is allowed; factual novelty or a high-risk unsupported detail should be fixed.\n"
-            "You may combine items only through an exact entry in that block's allowed_merges list. Return the exact merge_id and exact source_item_ids in the supplied order. A grant may contain two items/one edge or 3+ items connected by the listed SAME_FACT relation graph. Do not invent, remove, or change edges or items. The merged text must preserve the union of the source items' already-supported material and add no facts.\n"
+            "In text-only patches, each item's unit/fact/story/support/claim mapping is immutable: change only headline/body/emoji for existing item IDs. Explicitly authorized recomposition below may regroup its exact fact IDs within the same block. Do not add, remove, or move facts, change claim atoms, rewrite provenance, or introduce paraphrase-distance/lexical-overlap rejection rules. A fluent faithful paraphrase is allowed; factual novelty or a high-risk unsupported detail should be fixed.\n"
+            "Outside explicitly authorized recomposition, you may combine items only through an exact entry in that block's allowed_merges list. Return the exact merge_id and exact source_item_ids in the supplied order. A grant may contain two items/one edge or 3+ items connected by the listed SAME_FACT relation graph. Do not invent, remove, or change edges or items. The merged text must preserve the union of the source items' already-supported material and add no facts.\n"
+            "Write connected, subject-first local-news prose. Establish attribution for each connected community-report cluster, then keep it in scope instead of repeating 'житель сообщает' before every clause. State the development directly; avoid message-by-message narration ('в одном из сообщений', 'другое сообщение описывает', 'опубликовано объявление о'). Preserve disagreement and unknown location/time honestly. Do not invent a chronology or street-level contrast to explain differing reports. An advertised route is a stated offer: phrase it as advertised/announced destinations without claiming actual operation or appending a generic disclaimer about verification. A short label or empty headline is preferable to a thesis repeated in the body. Keep every distinct supported microdetail.\n"
             "A rubric does not imply geographic proximity. Keep each named place attached to its own observation; never infer a shared district, relative distance, cause, city-wide condition, or routine state.\n"
             f"The final digest text should fit within {max_chars} characters where possible without dropping material facts.\n"
             'Return only JSON: {"blocks":[{"block_id":"...","items":[{"item_id":"...","headline":"...","body":"...","emoji":"..."}],"merges":[{"merge_id":"...","source_item_ids":["exact IDs from grant"],"headline":"...","body":"...","emoji":"..."}]}]}.\n'
@@ -380,7 +380,7 @@ class DigestEditor:
                 "item's composition_unit_ids and include a matching summary-only claim with that "
                 "unit ID. Do not add summary units from non-target items. "
                 "Combine related reports into readable paragraphs of roughly "
-                "250–500 characters; never exceed 600 characters in one item. If a connected "
+                "250–500 characters where the evidence permits. These are readability targets, not quotas. If a connected "
                 "service story is longer, split it into two or three narrative groups by place or "
                 "time period, not one item per street. Avoid a giant street-by-street paragraph. "
                 "Do not narrate source messages: avoid phrases such as 'в одном из сообщений', "
@@ -390,14 +390,16 @@ class DigestEditor:
                 "сообщениям жителей'. Keep common details "
                 "once while retaining each distinct duration, location, observation time and uncertainty. "
                 "Do not invent geography or connective causes. Each replacement item has "
-                "composition_unit_ids, covered_fact_ids, headline (short label or empty), body, emoji, "
-                "claims [{text, covered_fact_ids, summary_unit_ids}]. Do not supply Story/support IDs: "
-                "the program derives those from frozen facts. Each claim must describe its actual "
-                "supported observation, with its exact fact IDs. Preserve all unique detail. "
+                "covered_fact_ids, headline (short label or empty), body and optional emoji. "
+                "The program derives fact-bearing unit membership and Claim Atoms from exact frozen "
+                "facts; omit fact claims and Story/support IDs. Only when preserving a targeted "
+                "summary-only unit, supply its composition_unit_ids and claims "
+                "[{text, covered_fact_ids: [], summary_unit_ids}] grounded in that unit. "
+                "Do not mimic Claim Atoms as prose. Preserve all unique detail. "
                 "In reports of bus prices distinguish the destination paid for from the final "
                 "destination of a passing bus; never turn the latter into the fare destination. "
                 "Use natural attribution such as 'по сообщениям жителей', not descriptions of chats. "
-                f"During a recomposition batch, include each authorized block in recomposed_items and leave its items/merges empty. You may omit untouched blocks; the program preserves them byte-for-byte. Aim for {MAX_POWER_REPORT_ITEMS_PER_BLOCK} cohesive power-report items with a clear subject and an evidence-supported relation. More developed or synthesized passages are allowed when needed to preserve the facts; do not leave multiple short isolated single-observation items or turn each street or Story into its own paragraph. Non-target services such as water and heating are restored by the program. Do not repeat the same polyclinic or district observation in different items."
+                f"During a recomposition batch, include each authorized block in recomposed_items and leave its items/merges empty. You may omit untouched blocks; the program preserves them byte-for-byte. Aim for {MAX_POWER_REPORT_ITEMS_PER_BLOCK} cohesive power-report items with a clear subject and an evidence-supported relation. More developed or synthesized passages are allowed when needed to preserve the facts; do not leave multiple short isolated single-observation items or turn each street or Story into its own paragraph. The program restores only non-target items. If a targeted item also contains water, heating or another service fact, that exact fact remains required in your replacement; it may receive its own service paragraph. Do not repeat the same polyclinic or district observation in different items."
             )
         target_recomposition_fact_ids = sorted(
             {
@@ -601,10 +603,10 @@ class DigestEditor:
                                 raise ValueError("recomposed item must be an object")
                             fact_ids = raw_item.get("covered_fact_ids")
                             if not isinstance(fact_ids, list) or not isinstance(
-                                raw_item.get("claims"), list
+                                raw_item.get("claims", []), list
                             ):
                                 raise ValueError(
-                                    "recomposed facts and claims must be explicit lists"
+                                    "recomposed facts and supplied summary claims must be lists"
                                 )
                             normalized = dict(raw_item)
                             # Unit membership is determined from exact fact IDs, never from
@@ -722,14 +724,6 @@ class DigestEditor:
                         ]
                     parser_blocks.append({"block_id": block.block_id, "items": items})
                 checked = _parse_composition_writer_output({"blocks": parser_blocks}, plan=plan)
-                for checked_block in checked.blocks:
-                    if (
-                        checked_block.block_id in recompose_ids
-                        and fragmented_power_report_item_indexes(checked_block.items)
-                    ):
-                        raise DigestRecompositionError(
-                            "power recomposition still contains disconnected short report items"
-                        )
                 # Do not mix legacy patches with structural replacements in one batch.
                 if any(b.get("items") or b.get("merges") for b in raw_blocks):
                     raise ValueError("recomposition batch cannot include text patches")

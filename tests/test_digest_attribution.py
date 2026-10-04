@@ -167,3 +167,11 @@ def test_duplicate_cleanup_still_removes_simple_infix_attribution() -> None:
     )
     assert "по словам жителя" not in clean_headline
     assert "Житель сообщает" in clean_body
+
+
+def test_chat_normalization_retains_exact_quote_and_repairs_surrounding_prose() -> None:
+    from src.publication.digest_narrative import _fix_chat_leaks
+
+    quote = "«В бердянском чате сообщили, что ранее также света не было»"
+    text = f"{quote}. В сообщении в бердянском чате сообщили, что заполняют отопление."
+    assert _fix_chat_leaks(text) == f"{quote}. Сообщается, что заполняют отопление."

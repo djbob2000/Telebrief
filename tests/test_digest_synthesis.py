@@ -805,21 +805,17 @@ def test_editor_distinguishes_four_fragments_from_four_synthesized_items(synthes
         ),
         recompose_block_ids=(block.block_id,),
     )
-    if not synthesized:
-        with pytest.raises(ValueError, match="disconnected short"):
-            asyncio.run(edit)
-    else:
-        result = asyncio.run(edit)
-        assert len(result.blocks[0].items) == 5
-        from src.publication.digest_quality_diagnostics import audit_digest_prose_quality
+    result = asyncio.run(edit)
+    from src.publication.digest_quality_diagnostics import audit_digest_prose_quality
 
-        assert not any(
-            warning.code == "FRAGMENTED_SERVICE_REPORTS"
-            for warning in audit_digest_prose_quality(result, evidence).warnings
-        )
-        assert {fid for item in result.blocks[0].items for fid in item.covered_fact_ids} == {
-            fact.fact_id for fact in block.required_facts
-        }
+    fragmented = any(
+        warning.code == "FRAGMENTED_SERVICE_REPORTS"
+        for warning in audit_digest_prose_quality(result, evidence).warnings
+    )
+    assert fragmented is (not synthesized)
+    assert {fid for item in result.blocks[0].items for fid in item.covered_fact_ids} == {
+        fact.fact_id for fact in block.required_facts
+    }
 
 
 @pytest.mark.parametrize("power_count", [3, 4])
@@ -887,6 +883,8 @@ def test_power_fragmentation_threshold_matches_three_item_editor_limit(power_cou
         "По их подсчётам, в одном из сообщений отсутствие электричества длилось 64 дня.",
         "Также сообщалось об отсутствии света в районе РТС.",
         "В Бердянске заполняют систему отопления, сообщается в городе.",
+        "Сообщения об электроснабжении в АКЗ расходятся: одно описывает отсутствие света.",
+        "Опубликовано объявление о маршрутах из Бердянска в Ростов.",
     ],
 )
 def test_source_meta_narration_variants_trigger_editorial_repair(body: str) -> None:
@@ -934,3 +932,138 @@ def test_named_city_chat_reference_is_removed_without_inventing_a_poster() -> No
     )
     assert repaired == "Сообщается, что в городе заполняют систему отопления."
     assert "чате" not in repaired.casefold()
+
+
+@pytest.mark.parametrize("unsafe_second_edit", [False, True])
+def test_bounded_repair_polishes_new_items_and_keeps_last_safe_checkpoint(unsafe_second_edit):
+    import asyncio
+    import json
+    from types import SimpleNamespace
+
+    from src.publication.digest_editor import DigestEditor
+    from src.publication.digest_narrative import build_digest_support_text_index
+    from src.publication.digest_quality_diagnostics import (
+        DigestQualityAudit,
+        audit_digest_prose_quality,
+    )
+    from src.publication.generation import _repair_digest_candidate
+
+    cards, evidence, presentation, plan = _fixture(
+        ("electricity", "РТС", "На РТС света нет неделю.")
+    )
+    block = plan.blocks[0]
+    unit_for_fact = {fid: u.unit_id for u in block.composition_units for fid in u.fact_ids}
+    texts = {fact.fact_id: fact.text for fact in block.required_facts}
+    power_ids = [fact.fact_id for fact in block.required_facts if fact.subject_key == "electricity"]
+
+    def raw_item(fids, prefix=""):
+        return {
+            "composition_unit_ids": list(dict.fromkeys(unit_for_fact[fid] for fid in fids)),
+            "covered_fact_ids": fids,
+            "headline": "",
+            "body": prefix + " ".join(texts[fid] for fid in fids),
+            "claims": [],
+        }
+
+    initial = _parse_composition_writer_output(
+        {"blocks": [{"block_id": block.block_id, "items": [raw_item([fid]) for fid in texts]}]},
+        plan=plan,
+    )
+    source_meta_prefix = "В одном из сообщений говорится: "
+    revised_body = "По сообщениям жителей, " + " ".join(texts[fid] for fid in power_ids[:2])
+    observed_targets = []
+
+    class Provider:
+        calls = 0
+
+        async def chat_completion(self, **kwargs):
+            self.calls += 1
+            request = json.loads(kwargs["messages"][1]["content"])
+            observed_targets.append(request["target_item_ids"])
+            if self.calls == 1:
+                items = [raw_item(power_ids[:2], source_meta_prefix), raw_item(power_ids[2:])]
+                for item in items:
+                    item.pop("claims")
+                return json.dumps(
+                    {
+                        "blocks": [
+                            {
+                                "block_id": block.block_id,
+                                "recomposed_items": items,
+                            }
+                        ]
+                    }
+                )
+            assert self.calls == 2
+            body = (
+                revised_body.replace("15 минут", "99 минут") if unsafe_second_edit else revised_body
+            )
+            return json.dumps(
+                {
+                    "blocks": [
+                        {
+                            "block_id": block.block_id,
+                            "items": [
+                                {
+                                    "item_id": request["target_item_ids"][0],
+                                    "headline": "",
+                                    "body": body,
+                                }
+                            ],
+                        }
+                    ]
+                }
+            )
+
+    class Observer:
+        finished = []
+
+        async def attempt_started(self, kind, metadata):
+            assert kind == "repair"
+            return metadata["repair_call"]
+
+        async def attempt_finished(self, attempt_id, status, **kwargs):
+            self.finished.append((attempt_id, status))
+
+    def assess(draft):
+        validation = validate_digest_narrative(
+            draft,
+            plan,
+            support_text_by_id=build_digest_support_text_index(evidence=evidence, cards=cards),
+        )
+        coverage = build_digest_coverage_trace(presentation, draft, plan)
+        audit = DigestQualityAudit(
+            checks=(), prose_audit=audit_digest_prose_quality(draft, evidence)
+        )
+        return validation, coverage, SimpleNamespace(), audit
+
+    provider = Provider()
+    observer = Observer()
+    checkpoint, used, max_calls = asyncio.run(
+        _repair_digest_candidate(
+            checkpoint=(initial, *assess(initial)),
+            plan=plan,
+            evidence=evidence,
+            editor=DigestEditor(provider=provider),
+            observer=observer,
+            evaluate_candidate=assess,
+            model=None,
+            timeout_seconds=10,
+            implementation_versions={},
+        )
+    )
+    final, validation, coverage, _, audit = checkpoint
+    assert provider.calls == max_calls == 2
+    assert used and validation.is_valid
+    assert coverage.story_coverage == coverage.material_fact_coverage == 1.0
+    assert len(observed_targets[0]) == 4
+    assert len(observed_targets[1]) == 1
+    assert observed_targets[1][0] == final.blocks[0].items[0].item_id
+    if unsafe_second_edit:
+        assert final.blocks[0].items[0].body.startswith(source_meta_prefix)
+        assert observer.finished == [(1, "succeeded"), (2, "failed")]
+        assert any(w.code == "SOURCE_META_NARRATION" for w in audit.prose_audit.warnings)
+    else:
+        assert final.blocks[0].items[0].body == revised_body
+        assert observer.finished == [(1, "succeeded"), (2, "succeeded")]
+        assert not any(w.code == "SOURCE_META_NARRATION" for w in audit.prose_audit.warnings)
