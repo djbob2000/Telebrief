@@ -6,7 +6,7 @@ import json
 import logging
 import re
 from dataclasses import replace
-from typing import Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from src.ai_providers import AIProvider
 from src.publication.digest_narrative import (
@@ -25,6 +25,9 @@ from src.publication.digest_quality_diagnostics import (
 )
 from src.publication.evidence import PublicationEvidence
 
+if TYPE_CHECKING:
+    from src.publication.digest_edit_scope import DigestBlockEditScope
+
 logger = logging.getLogger(__name__)
 
 _JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
@@ -32,6 +35,10 @@ _JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 
 class DigestRecompositionError(ValueError):
     """Safe-to-retry structural rejection with no source prose attached."""
+
+
+class DigestEditorContextBudgetError(DigestRecompositionError):
+    """Complete editor context does not fit; no truncated request was sent."""
 
 
 def _resolve_approved_merges(
@@ -196,6 +203,9 @@ class DigestEditor:
         target_item_ids: Sequence[str] | None,
         allowed_merges: Mapping[str, Any],
         recompose_block_ids: Sequence[str] = (),
+        edit_scope: DigestBlockEditScope | None = None,
+        max_context_chars: int | None = None,
+        support_text_by_id: Mapping[str, str] | None = None,
     ) -> DigestNarrativeDraft:
         """Target text-only repair while keeping frozen provenance immutable."""
         provider = self._provider
@@ -203,6 +213,19 @@ class DigestEditor:
             logger.warning("No AI provider available for DigestEditor; returning original draft")
             return draft
         publish_texts = _publish_support_texts(evidence)
+        if edit_scope is not None:
+            from src.publication.digest_edit_scope import validate_digest_block_replacement
+
+            validate_digest_block_replacement(draft, draft, scope=edit_scope, plan=plan)
+            target_item_ids = edit_scope.item_ids
+            recompose_block_ids = edit_scope.block_ids
+            if support_text_by_id:
+                for block in plan.blocks:
+                    for unit in block.composition_units:
+                        if not unit.fact_ids:
+                            for sid in unit.support_ids:
+                                if sid not in publish_texts and support_text_by_id.get(sid):
+                                    publish_texts[sid] = (support_text_by_id[sid],)
         plan_blocks = {block.block_id: block for block in plan.blocks}
         item_locations: dict[str, tuple[DigestNarrativeBlockDraft, DigestEditorialItemDraft]] = {}
         for block in draft.blocks:
@@ -245,7 +268,7 @@ class DigestEditor:
                 str(unit.unit_id): unit for unit in plan_blocks[block.block_id].composition_units
             }
             for item in block.items:
-                if item.item_id in target_ids and item.covered_fact_ids:
+                if item.item_id in target_ids and (item.covered_fact_ids or edit_scope is not None):
                     recompose_target_ids.add(item.item_id)
         if recompose_ids and not recompose_target_ids:
             return draft
@@ -477,6 +500,11 @@ class DigestEditor:
         }
         if model:
             chat_kwargs["model"] = model
+        if (
+            max_context_chars is not None
+            and len(system_prompt) + len(user_prompt) > max_context_chars
+        ):
+            raise DigestEditorContextBudgetError("DIGEST_EDITOR_CONTEXT_BUDGET")
         try:
             raw_response = (await provider.chat_completion(**chat_kwargs) or "").strip()
             json_match = _JSON_BLOCK_RE.search(raw_response)
@@ -702,9 +730,8 @@ class DigestEditor:
                             item_unit_ids = item.composition_unit_ids or (
                                 (item.composition_unit_id,) if item.composition_unit_id else ()
                             )
-                            if (
-                                item.item_id not in recompose_target_ids
-                                or not item.covered_fact_ids
+                            if item.item_id not in recompose_target_ids or (
+                                not item.covered_fact_ids and edit_scope is None
                             ):
                                 items.append(
                                     {
@@ -754,13 +781,16 @@ class DigestEditor:
                 # Do not mix legacy patches with structural replacements in one batch.
                 if any(b.get("items") or b.get("merges") for b in raw_blocks):
                     raise ValueError("recomposition batch cannot include text patches")
-                return replace(
+                result = replace(
                     draft,
                     blocks=tuple(
                         new if old.block_id in recomposed else old
                         for old, new in zip(draft.blocks, checked.blocks, strict=True)
                     ),
                 )
+                if edit_scope is not None:
+                    validate_digest_block_replacement(draft, result, scope=edit_scope, plan=plan)
+                return result
 
             updates: dict[str, Mapping[str, Any]] = {}
             merges: dict[str, tuple[tuple[str, ...], Mapping[str, Any]]] = {}
@@ -929,6 +959,9 @@ class DigestEditor:
         target_item_ids: Sequence[str] | None = None,
         allowed_merges: Mapping[str, Any] | None = None,
         recompose_block_ids: Sequence[str] = (),
+        edit_scope: DigestBlockEditScope | None = None,
+        max_context_chars: int | None = None,
+        support_text_by_id: Mapping[str, str] | None = None,
     ) -> DigestNarrativeDraft:
         """Apply targeted journalistic polish, contrast synthesis, and length compression."""
         if self._provider is None:
@@ -948,6 +981,9 @@ class DigestEditor:
                 target_item_ids=target_item_ids,
                 allowed_merges=allowed_merges or {},
                 recompose_block_ids=recompose_block_ids,
+                edit_scope=edit_scope,
+                max_context_chars=max_context_chars,
+                support_text_by_id=support_text_by_id,
             )
 
         # Build structured items payload for the editor model
