@@ -119,7 +119,9 @@ async def replay_digest(case: FrozenDigestCase, *, provider: Any) -> DigestRepla
                 max_output_tokens=cfg["max_output_tokens"],
                 model=cfg["model"],
             )
-            assessment = assess_digest_candidate(draft, context=case.context)
+            assessment = assess_digest_candidate(
+                draft, context=case.context, allow_incomplete_coverage=True
+            )
             checkpoint, _, calls = await _repair_digest_candidate(
                 checkpoint=assessment.checkpoint(),
                 plan=case.context.plan,

@@ -119,7 +119,8 @@ def test_writer_receives_service_synthesis_navigation_without_merging_geography(
     assert fact_rows["fact:1"]["original_location"] == "АКЗ"
     assert fact_rows["fact:2"]["original_location"] == "Крылова"
     assert fact_rows["fact:4"]["original_location"] == ""
-    assert all(f["observed_time"] == _NOW.isoformat() for f in fact_rows.values())
+    assert all("observed_time" not in f for f in fact_rows.values())
+    assert all(r.observed_time == _NOW for b in plan.blocks for r in b.composition_fact_records)
 
 
 def test_overlapping_place_wording_is_navigation_and_preserves_different_facts() -> None:
@@ -250,6 +251,254 @@ def test_incomplete_model_claim_atoms_are_derived_from_fixed_facts() -> None:
     assert {story_id for item in result.blocks[0].items for story_id in item.covered_story_ids} == {
         card.id for card in cards
     }
+
+
+def test_incomplete_writer_coverage_can_be_assessed_only_before_editor_repair() -> None:
+    from src.publication.errors import DigestCoverageInvariantError
+
+    _, _, presentation, plan = _fixture()
+    block = plan.blocks[0]
+    unit_for_fact = {
+        str(fact_id): str(unit.unit_id)
+        for unit in block.composition_units
+        for fact_id in unit.fact_ids
+    }
+    omitted = str(block.required_facts[0].fact_id)
+    raw = {
+        "blocks": [
+            {
+                "block_id": block.block_id,
+                "items": [
+                    {
+                        "composition_unit_ids": [unit_for_fact[str(fact.fact_id)]],
+                        "covered_fact_ids": [str(fact.fact_id)],
+                        "headline": "",
+                        "body": str(fact.text),
+                        "claims": [],
+                    }
+                    for fact in block.required_facts
+                    if str(fact.fact_id) != omitted
+                ],
+            }
+        ]
+    }
+    draft = _parse_composition_writer_output(
+        raw,
+        plan=plan,
+        allow_incomplete_fact_coverage=True,
+    )
+
+    with pytest.raises(DigestCoverageInvariantError):
+        build_digest_coverage_trace(presentation, draft, plan)
+    provisional = build_digest_coverage_trace(
+        presentation, draft, plan, allow_incomplete_coverage=True
+    )
+    assert provisional.story_coverage < 1.0
+    assert provisional.material_fact_coverage < 1.0
+
+
+def test_incomplete_writer_fact_coverage_can_be_parsed_only_for_editor_repair() -> None:
+    _, _, _, plan = _fixture()
+    block = plan.blocks[0]
+    omitted_fact_id = str(block.required_facts[-1].fact_id)
+    item_units = {
+        str(fact_id): str(unit.unit_id)
+        for unit in block.composition_units
+        for fact_id in unit.fact_ids
+    }
+    raw = {
+        "blocks": [
+            {
+                "block_id": block.block_id,
+                "items": [
+                    {
+                        "composition_unit_ids": [item_units[str(fact.fact_id)]],
+                        "covered_fact_ids": [str(fact.fact_id)],
+                        "headline": "",
+                        "body": str(fact.text),
+                        "claims": [],
+                    }
+                    for fact in block.required_facts
+                    if str(fact.fact_id) != omitted_fact_id
+                ],
+            }
+        ]
+    }
+
+    with pytest.raises(ValueError, match="fact partition mismatch"):
+        _parse_composition_writer_output(raw, plan=plan)
+
+    draft = _parse_composition_writer_output(
+        raw, plan=plan, allow_incomplete_fact_coverage=True
+    )
+    assert omitted_fact_id not in {
+        fact_id for item in draft.blocks[0].items for fact_id in item.covered_fact_ids
+    }
+
+
+def test_writer_accepts_a_repairable_omission_after_one_provider_call() -> None:
+    import asyncio
+    import json
+
+    from src.publication.digest_narrative import DigestNarrativeWriter
+
+    cards, evidence, _, plan = _fixture()
+    block = plan.blocks[0]
+    omitted_fact_id = str(block.required_facts[-1].fact_id)
+    unit_for_fact = {
+        str(fact_id): str(unit.unit_id)
+        for unit in block.composition_units
+        for fact_id in unit.fact_ids
+    }
+    response = {
+        "blocks": [
+            {
+                "block_id": block.block_id,
+                "items": [
+                    {
+                        "composition_unit_ids": [unit_for_fact[str(fact.fact_id)]],
+                        "covered_fact_ids": [str(fact.fact_id)],
+                        "headline": "",
+                        "body": str(fact.text),
+                        "claims": [],
+                    }
+                    for fact in block.required_facts
+                    if str(fact.fact_id) != omitted_fact_id
+                ],
+            }
+        ]
+    }
+
+    class Provider:
+        calls = 0
+
+        async def chat_completion(self, **kwargs):
+            self.calls += 1
+            return json.dumps(response)
+
+    provider = Provider()
+    draft = asyncio.run(
+        DigestNarrativeWriter(provider)._generate_composition_draft(
+            plan=plan,
+            cards=cards,
+            evidence=evidence,
+            language="Russian",
+            max_output_tokens=4096,
+            model=None,
+        )
+    )
+    assert provider.calls == 1
+    assert omitted_fact_id not in {
+        fact_id for item in draft.blocks[0].items for fact_id in item.covered_fact_ids
+    }
+
+
+def test_writer_fact_ids_recover_an_unknown_composition_unit_label() -> None:
+    _, _, _, plan = _fixture()
+    block = plan.blocks[0]
+    fact = block.required_facts[0]
+    raw = {
+        "blocks": [
+            {
+                "block_id": block.block_id,
+                "items": [
+                    {
+                        "composition_unit_ids": ["composition:318"],
+                        "covered_fact_ids": [str(fact.fact_id)],
+                        "headline": "",
+                        "body": str(fact.text),
+                        "claims": [],
+                    }
+                ],
+            }
+        ]
+    }
+
+    with pytest.raises(ValueError, match="unknown composition_unit_id"):
+        _parse_composition_writer_output(raw, plan=plan)
+
+    draft = _parse_composition_writer_output(
+        raw,
+        plan=plan,
+        allow_incomplete_fact_coverage=True,
+        allow_unmapped_writer_unit_ids=True,
+    )
+    assert draft.blocks[0].items[0].composition_unit_ids == (
+        next(unit.unit_id for unit in block.composition_units if fact.fact_id in unit.fact_ids),
+    )
+
+
+def test_writer_duplicate_fact_membership_can_reach_editor_but_is_not_finally_valid() -> None:
+    from src.publication.digest_edit_scope import (
+        build_digest_block_edit_scope,
+        validate_digest_block_replacement,
+    )
+    from src.publication.digest_editor import DigestRecompositionError
+
+    _, _, _, plan = _fixture()
+    block = plan.blocks[0]
+    facts = list(block.required_facts)
+    unit_for_fact = {
+        str(fact_id): str(unit.unit_id)
+        for unit in block.composition_units
+        for fact_id in unit.fact_ids
+    }
+    raw = {
+        "blocks": [
+            {
+                "block_id": block.block_id,
+                "items": [
+                    {
+                        "composition_unit_ids": [unit_for_fact[str(facts[0].fact_id)]],
+                        "covered_fact_ids": [str(facts[0].fact_id), str(facts[1].fact_id)],
+                        "headline": "",
+                        "body": f"{facts[0].text} {facts[1].text}",
+                        "claims": [],
+                    },
+                    {
+                        "composition_unit_ids": [unit_for_fact[str(facts[2].fact_id)]],
+                        "covered_fact_ids": [str(facts[0].fact_id), str(facts[2].fact_id)],
+                        "headline": "",
+                        "body": f"{facts[0].text} {facts[2].text}",
+                        "claims": [],
+                    },
+                    {
+                        "composition_unit_ids": [unit_for_fact[str(facts[3].fact_id)]],
+                        "covered_fact_ids": [str(facts[3].fact_id)],
+                        "headline": "",
+                        "body": str(facts[3].text),
+                        "claims": [],
+                    },
+                ],
+            }
+        ]
+    }
+
+    with pytest.raises(ValueError, match="partition mismatch"):
+        _parse_composition_writer_output(raw, plan=plan)
+
+    writer_draft = _parse_composition_writer_output(
+        raw,
+        plan=plan,
+        allow_incomplete_fact_coverage=True,
+        allow_unmapped_writer_unit_ids=True,
+        allow_duplicate_writer_fact_ids=True,
+    )
+    scope = build_digest_block_edit_scope(
+        writer_draft, plan=plan, block_ids=[block.block_id]
+    )
+    validate_digest_block_replacement(
+        writer_draft,
+        writer_draft,
+        scope=scope,
+        plan=plan,
+        allow_incomplete_fact_coverage=True,
+        allow_duplicate_fact_coverage=True,
+    )
+    with pytest.raises(DigestRecompositionError, match="MEMBERSHIP"):
+        validate_digest_block_replacement(
+            writer_draft, writer_draft, scope=scope, plan=plan
+        )
 
 
 @pytest.mark.parametrize("invalid", [False, True])

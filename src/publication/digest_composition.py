@@ -16,7 +16,7 @@ from src.publication.digest_presentation import (
     validate_digest_fact_ids,
 )
 
-COMPOSITION_POLICY_VERSION = "digest_composition_v7"
+COMPOSITION_POLICY_VERSION = "digest_composition_v8"
 
 
 class DigestFactRelationKind(str, Enum):
@@ -413,6 +413,7 @@ def _fact_records(
         _canonical_service_family,
         _load_digest_geography_resolver,
     )
+    from src.publication.digest_reporting_context import writer_citable_text
 
     resolver = _load_digest_geography_resolver(edition_slug)
     selected_story_ids = set(plan.story_ids)
@@ -476,7 +477,7 @@ def _fact_records(
             state=state,
             kind=kind,
             published=published,
-            text=fact.text,
+            text=writer_citable_text(str(fact.text)),
             resolver=resolver,
             snapshot_at=snapshot_at,
             resolve_text_location=True,
@@ -495,7 +496,9 @@ def _fact_records(
             if str(getattr(ev, "story_id", "")) != story_num:
                 continue
             ev_id = str(getattr(ev, "evidence_id", ""))
-            ev_text = str(getattr(ev, "text", "") or "").strip()
+            ev_text = writer_citable_text(
+                str(getattr(ev, "text", "") or getattr(ev, "source_text", "") or "")
+            )
             if not ev_id or not ev_text:
                 continue
             id_match = _EVENT_EVIDENCE_ID_RE.fullmatch(ev_id)
@@ -547,10 +550,11 @@ def _fact_records(
                     fact
                     for fact in story_facts
                     if (
-                        fact.text.strip() == ev_text
+                        writer_citable_text(str(fact.text)) == ev_text
                         or (
                             fact.original_location.strip()
-                            and fact.text.strip() == f"{fact.original_location.strip()}: {ev_text}"
+                            and writer_citable_text(str(fact.text))
+                            == f"{fact.original_location.strip()}: {ev_text}"
                         )
                     )
                     and item_provenance.intersection(fact.support_ids)
@@ -916,8 +920,49 @@ def _fact_signal_text(fact: DigestFactRecord | None) -> str:
     return " ".join((fact.canonical_service, fact.text)).casefold()
 
 
+_ROUTE_INVENTORY_RE = re.compile(
+    r"\bобъявлен\w*\s+о\s+(?:междугородн\w*\s+)?маршрут\w*\b",
+    re.IGNORECASE,
+)
+_ROUTE_PRACTICAL_DETAIL_RE = re.compile(
+    r"\d|\b(?:руб\w*|цен\w*|тариф\w*|расписан\w*|ежеднев\w*|еженедел\w*|"
+    r"кажд\w*|сегодня|завтра|вчера|утром|вечером|ночью|дн[её]м|"
+    r"отправля\w*|отправит\w*|прибыва\w*|прибыл\w*|ход\w*|курсир\w*|работ\w*|выполня\w*|"
+    r"отмен\w*|возобнов\w*|измен\w*|откры\w*|запус\w*|нов\w*|"
+    r"доступ\w*|перерыв\w*|задерж\w*|приостан\w*)\b",
+    re.IGNORECASE,
+)
+
+
+def _routine_route_inventory(fact: DigestFactRecord | None) -> bool:
+    # A narrow presentation-priority rule, never a Story eligibility veto.
+    # Missing corroboration/location is not considered. Any supplied practical
+    # transport detail or operation/change statement keeps ordinary priority.
+    if fact is None or fact.epistemic_kind == "service_access":
+        return False
+    return bool(_ROUTE_INVENTORY_RE.search(fact.text)) and not bool(
+        _ROUTE_PRACTICAL_DETAIL_RE.search(fact.text)
+    )
+
+
+def _unlocated_private_service_context(fact: DigestFactRecord | None) -> bool:
+    if fact is None or fact.epistemic_kind == "service_access":
+        return False
+    if fact.original_location or fact.canonical_place or re.search(r"\d", fact.text):
+        return False
+    return bool(
+        re.search(r"\b(?:сын|дочь|муж|жена|мама|отец)\b", fact.text, re.IGNORECASE)
+    ) and bool(
+        re.search(
+            r"\b(?:жив\w*\s+(?:там|в\s+(?:месте|городе))\s*,?\s*где|там\s+жив\w*)\b",
+            fact.text,
+            re.IGNORECASE,
+        )
+    )
+
+
 def _core_service_fact_signal(fact: DigestFactRecord | None) -> bool:
-    if fact is None:
+    if fact is None or _routine_route_inventory(fact) or _unlocated_private_service_context(fact):
         return False
     signal = _fact_signal_text(fact)
     if not signal:

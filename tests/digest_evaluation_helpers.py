@@ -11,8 +11,8 @@ from src.publication.editorial_adapter import FrozenEditorialInput
 from src.publication.renderers import PublicationDigestRenderer
 
 
-def assessment_inputs():
-    cards, evidence, presentation, plan = _fixture()
+def assessment_inputs(*extra_reports):
+    cards, evidence, presentation, plan = _fixture(*extra_reports)
     frozen = FrozenEditorialInput(
         EditorialAnalysis(cards=cards, evidence=evidence),
         PreparedBundle({}, "", 4, 4),

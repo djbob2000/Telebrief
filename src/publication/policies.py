@@ -20,6 +20,7 @@ from src.publication.repository import PublicationPolicyRepository
 logger = logging.getLogger(__name__)
 
 DIGEST_EDITORIALIZER_PROMPT_VERSION = "digest-editorializer-v17-compact-thematic-scope"
+DIGEST_EDITOR_PROMPT_VERSION = "digest-editor-v1-canonical-ledger-context"
 
 ARTICLE_PUBLICATION_TYPES: frozenset[str] = frozenset(
     {"daily_article", "article", "weekly_article", "monthly_article"}
@@ -277,6 +278,7 @@ class PublicationPolicyService:
                     )
             writer_config = {
                 "editorializer_prompt_version": DIGEST_EDITORIALIZER_PROMPT_VERSION,
+                "digest_editor_prompt_version": DIGEST_EDITOR_PROMPT_VERSION,
                 "narrative_contract_prompt_version": DIGEST_NARRATIVE_PROMPT_VERSION,
                 "ai_provider": ai_prov,
                 "ai_model": ai_mod,

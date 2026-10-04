@@ -10,7 +10,7 @@ from typing import Any, Literal, Mapping, Sequence
 from src.publication.digest_narrative import DigestNarrativeDraft
 from src.publication.evidence import PublicationEvidence
 
-DIGEST_DIAGNOSTICS_VERSION = "digest-diagnostics-v12"
+DIGEST_DIAGNOSTICS_VERSION = "digest-diagnostics-v13"
 
 _NAMED_CHAT_META = re.compile(r"\b(?:в|из)\s+(?:[а-яё-]+\s+){0,2}чат[аеу]\b", re.IGNORECASE)
 
@@ -319,13 +319,75 @@ def fragmented_power_report_item_indexes(items: Sequence[Any]) -> tuple[int, ...
     return power_indexes if isolated_count >= 2 else ()
 
 
+_VOLTAGE_DETAIL_RE = re.compile(
+    r"(?<![\d:])(?P<first>\d{2,3})(?:\s*[-–—]\s*(?P<second>\d{2,3}))?"
+    r"\s*(?:вольт(?:а|ов)?|в)(?![а-яёa-z])",
+    re.IGNORECASE,
+)
+
+
+def _voltage_details(text: str) -> set[str]:
+    return {
+        match["first"] + ("-" + match["second"] if match["second"] else "")
+        for match in _VOLTAGE_DETAIL_RE.finditer(text)
+    }
+
+
+def _repeated_measurement_warnings(
+    draft: DigestNarrativeDraft,
+    presentation_plan: Any | None,
+) -> list[DigestQualityWarning]:
+    # Only a unique approved fact establishes ownership. Equal measurements
+    # from separate reports are legitimate; raw number counts prove nothing.
+    owners: dict[str, set[str]] = {}
+    for fact in getattr(presentation_plan, "required_facts", ()):
+        for detail in _voltage_details(fact.text):
+            owners.setdefault(detail, set()).add(fact.fact_id)
+    warnings = []
+    for detail, fact_ids in owners.items():
+        if len(fact_ids) != 1:
+            continue
+        occurrences = [
+            (block, index, item)
+            for block in draft.blocks
+            for index, item in enumerate(block.items)
+            if detail in _voltage_details(f"{item.headline} {item.body}")
+        ]
+        mentions = sum(
+            max(
+                1,
+                sum(
+                    match["first"] + ("-" + match["second"] if match["second"] else "") == detail
+                    for match in _VOLTAGE_DETAIL_RE.finditer(item.body)
+                ),
+            )
+            for _, _, item in occurrences
+        )
+        if mentions < 2:
+            continue
+        for block, index, item in occurrences:
+            warnings.append(
+                DigestQualityWarning(
+                    code="REPEATED_SUPPORTED_MEASUREMENT",
+                    message=(
+                        "A voltage measurement owned by one approved fact appears in multiple "
+                        "items. Retain it once in its grounded item; do not remove other facts."
+                    ),
+                    block_id=block.block_id,
+                    item_index=index,
+                    headline=item.headline,
+                )
+            )
+    return warnings
+
+
 def audit_digest_prose_quality(
     draft: DigestNarrativeDraft,
     evidence: Mapping[str, PublicationEvidence],
     presentation_plan: Any | None = None,
 ) -> DigestProseQualityAudit:
     """Run non-blocking diagnostics on a narrative digest draft."""
-    warnings: list[DigestQualityWarning] = []
+    warnings = _repeated_measurement_warnings(draft, presentation_plan)
 
     detail_item_count = 0
     multi_story_item_count = 0
@@ -368,6 +430,24 @@ def audit_digest_prose_quality(
                 single_story_item_count += 1
 
             cited = [evidence[sid] for sid in item.cited_support_ids if sid in evidence]
+            from src.publication.digest_reporting_context import ambiguous_passing_fare
+
+            if ambiguous_passing_fare(
+                item.body, [source.text for source in cited if source.publication_use == "PUBLISH"]
+            ):
+                warnings.append(
+                    DigestQualityWarning(
+                        code="AMBIGUOUS_PASSING_BUS_FARE",
+                        message=(
+                            "Clarify the paid leg for the passing-bus price in its sentence. "
+                            "Keep the supplied same-leg comparison; final bus destinations "
+                            "are not the purchased fare destination."
+                        ),
+                        block_id=block.block_id,
+                        item_index=idx,
+                        headline=item.headline,
+                    )
+                )
 
             if len(item.body) > 650 and len(item.covered_fact_ids) >= 4:
                 warnings.append(

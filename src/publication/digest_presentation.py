@@ -365,6 +365,7 @@ class DigestPresentationPlan:
             enriched_facts.append(
                 replace(
                     fact,
+                    text=record.text,
                     support_ids=tuple(record.support_ids),
                     original_location=record.original_location,
                     canonical_area_key=record.canonical_area,
@@ -1195,6 +1196,51 @@ _STORY_IMPORTANCE_WEIGHTS = {
 }
 
 
+def _is_unlocated_personal_positive_service_check(
+    card: Any,
+    evidence: Mapping[str, Any],
+) -> bool:
+    """Keep private availability chatter out of a digest unless it adds local news."""
+    card_id = str(getattr(card, "id", ""))
+    story_id = card_id.removeprefix("story:")
+    rows = [
+        item
+        for item in evidence.values()
+        if str(getattr(item, "story_id", "")) == story_id
+        and getattr(item, "publication_use", "") == "PUBLISH"
+    ]
+    if not rows:
+        return False
+    source_items = {
+        (getattr(item, "source_id", None), getattr(item, "source_item_id", None))
+        for item in rows
+        if getattr(item, "source_item_id", None) is not None
+    }
+    if len(source_items) > 1:
+        return False
+
+    from src.publication.digest_reporting_context import writer_citable_text
+
+    personal = re.compile(
+        r"\b(?:у\s+меня|у\s+нас|у\s+него|у\s+не[её]|у\s+жител\w*)\b", re.IGNORECASE
+    )
+    service = re.compile(r"\b(?:свет|электрич\w*|электроснабж\w*|вод\w*|газ\w*)\b", re.IGNORECASE)
+    positive = re.compile(r"\b(?:есть|работа\w*)\b", re.IGNORECASE)
+    change = re.compile(
+        r"\b(?:включ\w*|восстанов\w*|появил\w*|отключ\w*|пропал\w*|перебо\w*|авари\w*|ремонт\w*)\b",
+        re.IGNORECASE,
+    )
+    texts = [writer_citable_text(str(getattr(item, "text", "") or "")) for item in rows]
+    return all(
+        text
+        and personal.search(text)
+        and service.search(text)
+        and positive.search(text)
+        and not change.search(text)
+        for text in texts
+    )
+
+
 def build_digest_presentation_plan(
     *,
     cards: Sequence[Any],
@@ -1295,7 +1341,12 @@ def build_digest_presentation_plan(
         balanced_cards.sort(key=_global_priority, reverse=True)
         balanced_cards = balanced_cards[:effective_max]
 
-    selected_cards = balanced_cards
+    selected_cards = [
+        card
+        for card in balanced_cards
+        if card.id in cards_with_city_situation
+        or not _is_unlocated_personal_positive_service_check(card, evidence_map)
+    ]
 
     return DigestPresentationPlan(
         story_ids=tuple(card.id for card in selected_cards),

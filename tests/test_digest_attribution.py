@@ -177,6 +177,65 @@ def test_chat_normalization_retains_exact_quote_and_repairs_surrounding_prose() 
     assert _fix_chat_leaks(text) == f"{quote}. Сообщается, что заполняют отопление."
 
 
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    (
+        (
+            "В местном чате со ссылкой на предыдущее сообщение сообщают, "
+            "что на Северной свет появился в 10:35.",
+            "В городе со ссылкой на предыдущее сообщение сообщают, "
+            "что на Северной свет появился в 10:35.",
+        ),
+        (
+            "В чате рассказали об отключении света на Северной.",
+            "В городе рассказали об отключении света на Северной.",
+        ),
+        (
+            "По сообщению в местном чате, свет появился на Северной в 10:35.",
+            "Сообщается, что свет появился на Северной в 10:35.",
+        ),
+        (
+            "В Бердянске, по сообщению в местном чате, заполняют систему отопления.",
+            "В Бердянске, по местному сообщению, заполняют систему отопления.",
+        ),
+        (
+            "По сообщению в бердянском чате, в городе заполняют систему отопления.",
+            "Сообщается, что в городе заполняют систему отопления.",
+        ),
+    ),
+    ids=(
+        "preserve-preposition",
+        "preserve-predicate",
+        "complete-attribution-prefix",
+        "infix-attribution",
+        "named-city-chat",
+    ),
+)
+def test_chat_cleanup_preserves_complete_reporting_sentence(body: str, expected: str) -> None:
+    draft = DigestNarrativeDraft(
+        blocks=(
+            DigestNarrativeBlockDraft(
+                block_id="utilities",
+                items=(
+                    DigestEditorialItemDraft(
+                        body=body,
+                        covered_story_ids=("story:power",),
+                        cited_support_ids=("support:resident-report",),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    cleaned = sanitize_digest_narrative_draft(draft)
+    item = cleaned.blocks[0].items[0]
+
+    assert item.body == expected
+    assert item.covered_story_ids == ("story:power",)
+    assert item.cited_support_ids == ("support:resident-report",)
+    assert sanitize_digest_narrative_draft(cleaned) == cleaned
+
+
 def test_repeated_singular_attribution_requests_prose_edit_without_veto() -> None:
     from src.publication.digest_quality_diagnostics import audit_digest_prose_quality
 

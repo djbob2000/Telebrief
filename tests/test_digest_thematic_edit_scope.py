@@ -103,6 +103,56 @@ def test_whole_block_recomposition_preserves_summary_only_story():
     assert "story:summary" in edited.blocks[0].items[0].covered_story_ids
 
 
+def test_writer_may_defer_an_omitted_summary_unit_to_the_editor():
+    from src.publication.digest_edit_scope import (
+        build_digest_block_edit_scope,
+        validate_digest_block_replacement,
+    )
+    from src.publication.digest_editor import DigestRecompositionError
+
+    _values, plan, complete = with_summary()
+    block = complete.blocks[0]
+    raw = {
+        "blocks": [
+            {
+                "block_id": block.block_id,
+                "items": [
+                    {
+                        "composition_unit_ids": list(item.composition_unit_ids),
+                        "covered_fact_ids": list(item.covered_fact_ids),
+                        "headline": item.headline,
+                        "body": item.body,
+                        "claims": [],
+                    }
+                    for item in block.items
+                    if "summary:test" not in item.composition_unit_ids
+                ],
+            }
+        ]
+    }
+    incomplete = _parse_composition_writer_output(
+        raw,
+        plan=plan,
+        allow_incomplete_fact_coverage=True,
+        allow_incomplete_summary_coverage=True,
+    )
+    scope = build_digest_block_edit_scope(
+        incomplete, plan=plan, block_ids=[block.block_id]
+    )
+    validate_digest_block_replacement(
+        incomplete,
+        incomplete,
+        scope=scope,
+        plan=plan,
+        allow_incomplete_fact_coverage=True,
+        allow_incomplete_summary_coverage=True,
+    )
+    with pytest.raises(DigestRecompositionError, match="MEMBERSHIP"):
+        validate_digest_block_replacement(
+            incomplete, incomplete, scope=scope, plan=plan
+        )
+
+
 def test_stale_fingerprint_and_lost_fact_rollback_entire_batch():
     from src.publication.digest_edit_scope import (
         build_digest_block_edit_scope,
@@ -278,3 +328,137 @@ def test_thematic_prompt_has_one_consistent_complete_scope_contract():
     assert "Keep standalone summary-only items unchanged" not in provider.system
     assert "target_recomposition_summary_unit_ids" in provider.system
     assert "without a fixed paragraph or item quota" in provider.system
+
+
+def test_text_editor_may_return_only_patched_blocks_and_preserves_others():
+    from src.publication.digest_editor import DigestEditor
+    from src.publication.digest_narrative import DigestNarrativeBlockDraft
+
+    values, plan, draft = with_summary()
+    original_block = draft.blocks[0]
+    untouched_block_id = "block:untouched"
+    untouched_item = replace(original_block.items[0], item_id="item:untouched")
+    untouched_block = DigestNarrativeBlockDraft(
+        block_id=untouched_block_id, items=(untouched_item,)
+    )
+    second_plan_block = replace(plan.blocks[0], block_id=untouched_block_id)
+    plan = replace(plan, blocks=(*plan.blocks, second_plan_block))
+    draft = replace(draft, blocks=(*draft.blocks, untouched_block))
+    target_item = original_block.items[0]
+
+    class Provider:
+        async def chat_completion(self, **kwargs):
+            return json.dumps(
+                {
+                    "blocks": [
+                        {
+                            "block_id": original_block.block_id,
+                            "items": [
+                                {
+                                    "item_id": target_item.item_id,
+                                    "headline": "Обновлённый заголовок",
+                                    "body": "Уточнённый текст.",
+                                }
+                            ],
+                            "merges": [],
+                        }
+                    ]
+                }
+            )
+
+    edited = asyncio.run(
+        DigestEditor(Provider()).polish_and_compress(
+            draft,
+            plan=plan,
+            evidence=values["evidence"],
+            target_item_ids=[target_item.item_id],
+        )
+    )
+
+    assert edited.blocks[0].items[0].headline == "Обновлённый заголовок"
+    assert edited.blocks[1] == untouched_block
+
+
+def test_thematic_editor_receives_and_can_restore_writer_omitted_facts():
+    from src.publication.digest_edit_scope import (
+        build_digest_block_edit_scope,
+        validate_digest_block_replacement,
+    )
+    from src.publication.digest_editor import DigestEditor
+
+    values, complete_draft = assessment_inputs()
+    plan = values["plan"]
+    plan_block = plan.blocks[0]
+    omitted_fact = plan_block.required_facts[-1]
+    incomplete_raw = {
+        "blocks": [
+            {
+                "block_id": plan_block.block_id,
+                "items": [
+                    {
+                        "composition_unit_ids": list(item.composition_unit_ids),
+                        "covered_fact_ids": [
+                            fact_id
+                            for fact_id in item.covered_fact_ids
+                            if fact_id != omitted_fact.fact_id
+                        ],
+                        "headline": item.headline,
+                        "body": item.body,
+                        "claims": [],
+                    }
+                    for item in complete_draft.blocks[0].items
+                    if set(item.covered_fact_ids) != {omitted_fact.fact_id}
+                ],
+            }
+        ]
+    }
+    from src.publication.digest_narrative import _parse_composition_writer_output
+
+    incomplete = _parse_composition_writer_output(
+        incomplete_raw, plan=plan, allow_incomplete_fact_coverage=True
+    )
+    scope = build_digest_block_edit_scope(
+        incomplete, plan=plan, block_ids=[plan_block.block_id]
+    )
+    fact_unit = {
+        str(fact_id): str(unit.unit_id)
+        for unit in plan_block.composition_units
+        for fact_id in unit.fact_ids
+    }
+    editor_output = {
+        "blocks": [
+            {
+                "block_id": plan_block.block_id,
+                "recomposed_items": [
+                    {
+                        "composition_unit_ids": [fact_unit[str(fact.fact_id)]],
+                        "covered_fact_ids": [str(fact.fact_id)],
+                        "headline": "",
+                        "body": str(fact.text),
+                        "claims": [],
+                    }
+                    for fact in plan_block.required_facts
+                ],
+            }
+        ]
+    }
+
+    class Provider:
+        async def chat_completion(self, **kwargs):
+            request = "\n".join(message["content"] for message in kwargs["messages"])
+            assert str(omitted_fact.fact_id) in request
+            assert str(omitted_fact.text) in request
+            return json.dumps(editor_output)
+
+    repaired = asyncio.run(
+        DigestEditor(Provider()).polish_and_compress(
+            incomplete,
+            plan=plan,
+            evidence=values["evidence"],
+            edit_scope=scope,
+        )
+    )
+    validate_digest_block_replacement(incomplete, repaired, scope=scope, plan=plan)
+    assert {
+        fact_id for item in repaired.blocks[0].items for fact_id in item.covered_fact_ids
+    } == {str(fact.fact_id) for fact in plan_block.required_facts}

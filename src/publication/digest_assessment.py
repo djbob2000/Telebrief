@@ -74,7 +74,10 @@ class DigestAssessment:
 
 
 def assess_digest_candidate(
-    draft: DigestNarrativeDraft, *, context: DigestAssessmentContext
+    draft: DigestNarrativeDraft,
+    *,
+    context: DigestAssessmentContext,
+    allow_incomplete_coverage: bool = False,
 ) -> DigestAssessment:
     candidate = sanitize_digest_narrative_draft(draft)
     validation = validate_digest_narrative(
@@ -85,7 +88,12 @@ def assess_digest_candidate(
         allowed_context_terms=context.allowed_context_terms,
         all_known_draft_supports=list(context.support_text_by_id.values()),
     )
-    coverage = build_digest_coverage_trace(context.presentation_plan, candidate, context.plan)
+    coverage = build_digest_coverage_trace(
+        context.presentation_plan,
+        candidate,
+        context.plan,
+        allow_incomplete_coverage=allow_incomplete_coverage,
+    )
     artifact = context.renderer.render_grouped_digest_artifact(
         context.frozen,
         snapshot_at=context.snapshot_at,

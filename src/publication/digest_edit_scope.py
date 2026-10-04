@@ -24,12 +24,7 @@ class DigestBlockEditScope:
     plan_fingerprint: str
     block_ids: tuple[str, ...]
     item_ids: tuple[str, ...]
-    memberships: tuple[
-        tuple[
-            str, tuple[str, ...], tuple[str, ...], tuple[str, ...], tuple[str, ...], tuple[str, ...]
-        ],
-        ...,
-    ]
+    memberships: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...]
 
 
 def build_digest_block_edit_scope(
@@ -48,17 +43,24 @@ def build_digest_block_edit_scope(
         block = actual[bid]
         items = block.items
         item_ids.extend(i.item_id for i in items)
-        summaries = {u.unit_id for u in planned[bid].composition_units if not u.fact_ids}
+        planned_block = planned[bid]
+        facts = tuple(
+            sorted(
+                str(fact_id)
+                for unit in planned_block.composition_units
+                for fact_id in unit.fact_ids
+            )
+        )
+        summaries = tuple(
+            sorted(
+                str(unit.unit_id) for unit in planned_block.composition_units if not unit.fact_ids
+            )
+        )
         memberships.append(
             (
                 bid,
-                tuple(sorted(fid for i in items for fid in i.covered_fact_ids)),
-                tuple(sorted({uid for i in items for uid in i.composition_unit_ids})),
-                tuple(
-                    sorted(uid for i in items for uid in i.composition_unit_ids if uid in summaries)
-                ),
-                tuple(sorted({sid for i in items for sid in i.covered_story_ids})),
-                tuple(sorted({sid for i in items for sid in i.cited_support_ids})),
+                facts,
+                summaries,
             )
         )
     if len(item_ids) != len(set(item_ids)) or any(not i for i in item_ids):
@@ -74,6 +76,9 @@ def validate_digest_block_replacement(
     *,
     scope: DigestBlockEditScope,
     plan: DigestNarrativePlan,
+    allow_incomplete_fact_coverage: bool = False,
+    allow_incomplete_summary_coverage: bool = False,
+    allow_duplicate_fact_coverage: bool = False,
 ) -> None:
     from src.publication.digest_editor import DigestRecompositionError
 
@@ -84,11 +89,39 @@ def validate_digest_block_replacement(
     for old, new in zip(base.blocks, replacement.blocks, strict=True):
         if old.block_id not in scope.block_ids and old != new:
             raise DigestRecompositionError("DIGEST_EDIT_SCOPE_UNAUTHORIZED_BLOCK")
-    updated = build_digest_block_edit_scope(replacement, plan=plan, block_ids=scope.block_ids)
-    for before, after in zip(scope.memberships, updated.memberships, strict=True):
-        if (
-            before[0] != after[0]
-            or Counter(before[1]) != Counter(after[1])
-            or before[2:] != after[2:]
-        ):
+    plan_blocks = {block.block_id: block for block in plan.blocks}
+    replacement_blocks = {block.block_id: block for block in replacement.blocks}
+    for block_id, allowed_facts, allowed_summaries in scope.memberships:
+        block = replacement_blocks[block_id]
+        summary_unit_ids = {
+            str(unit.unit_id)
+            for unit in plan_blocks[block_id].composition_units
+            if not unit.fact_ids
+        }
+        received_facts = [str(fact_id) for item in block.items for fact_id in item.covered_fact_ids]
+        received_summaries = [
+            str(unit_id)
+            for item in block.items
+            for unit_id in (
+                item.composition_unit_ids
+                or ((item.composition_unit_id,) if item.composition_unit_id else ())
+            )
+            if str(unit_id) in summary_unit_ids
+        ]
+        if allow_incomplete_fact_coverage:
+            facts_match = (
+                set(received_facts) <= set(allowed_facts)
+                if allow_duplicate_fact_coverage
+                else Counter(received_facts) <= Counter(allowed_facts)
+                and len(received_facts) == len(set(received_facts))
+            )
+        else:
+            facts_match = Counter(allowed_facts) == Counter(received_facts)
+        if allow_incomplete_summary_coverage:
+            summaries_match = Counter(received_summaries) <= Counter(allowed_summaries) and len(
+                received_summaries
+            ) == len(set(received_summaries))
+        else:
+            summaries_match = Counter(allowed_summaries) == Counter(received_summaries)
+        if not facts_match or not summaries_match:
             raise DigestRecompositionError("DIGEST_EDIT_SCOPE_MEMBERSHIP")

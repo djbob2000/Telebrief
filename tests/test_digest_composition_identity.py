@@ -127,6 +127,46 @@ def test_required_fact_location_prefix_does_not_duplicate_its_exact_evidence() -
     assert result.admitted_story_ids == {card.id}
 
 
+def test_composition_claim_text_excludes_reply_parent_metadata_but_keeps_raw_evidence() -> None:
+    author_text = "После отключения на сутки свет снова пропал."
+    parent_text = "Димитрова в ожидании чуда. Идут четвертые сутки без света"
+    annotated_text = f'{author_text} (in_reply_to: "{parent_text}")'
+    card = _story("story:1", "infrastructure", "telegram:source:1:item:10:rev:101:frag:1")
+    evidence = PublicationEvidence(
+        evidence_id="story:1:evidence:0:frag:1",
+        story_id=1,
+        text=annotated_text,
+        source_text=author_text,
+        kind="community_report",
+        publication_use="PUBLISH",
+        fragment_id=1,
+        source_ref="telegram:source:1:item:10:rev:101:frag:1",
+        source_id=1,
+        source_item_id=10,
+        source_role="community",
+        observed_at=None,
+    )
+    plan = DigestPresentationPlan(story_ids=(card.id,), required_facts=())
+    composition = build_digest_composition(
+        plan,
+        (card,),
+        {evidence.evidence_id: evidence},
+        edition_slug="",
+        snapshot_at=None,
+        max_chars=4096,
+        reserved_chars=0,
+        include_statistics=False,
+    )
+
+    planned = plan.with_composition(composition)
+
+    assert len(composition.fact_records) == 1
+    assert parent_text not in composition.fact_records[0].text
+    assert composition.fact_records[0].text == author_text
+    assert planned.required_facts[0].text == author_text
+    assert evidence.text == annotated_text
+
+
 def test_same_fragment_different_claim_is_not_merged_with_a_required_fact() -> None:
     source_ref = "telegram:source:1:item:10:rev:101:frag:1"
     card = _story("story:1", "infrastructure", source_ref)
@@ -508,3 +548,123 @@ def test_compact_observation_keeps_fact_coverage_and_renders_once() -> None:
     )
     assert lead == ""
     assert rendered.count(text) == 1
+
+
+@pytest.mark.parametrize(
+    ("source", "body", "valid", "finding"),
+    (
+        ("80 - 60 вольт", "Житель сообщил о напряжении «80–60 вольт».", False, "[direct_quote]"),
+        ("80 - 60 вольт", "Житель сообщил о напряжении «80 - 60 вольт».", True, "[direct_quote]"),
+        ("80 - 60 вольт", "Житель сообщил о напряжении 60–80 вольт.", True, "[direct_quote]"),
+        ("«Азмол – дали свет»", "Житель написал: «Азмол — дали свет».", False, "[direct_quote]"),
+        ("«Азмол – дали свет»", "Житель написал: «Азмол – дали свет».", True, "[direct_quote]"),
+        (
+            "Компания «Свет и вода» изменила тариф.",
+            "Компания «Свет и вода» изменила тариф.",
+            True,
+            "[direct_quote]",
+        ),
+        (
+            "На АКЗ свет появился в 10:35.",
+            "На АКЗ свет появился.",
+            False,
+            "MISSING_VISIBLE_REQUIRED_TIME",
+        ),
+        (
+            "На АКЗ свет появился в 10:35.",
+            "На АКЗ свет появился в 10:35.",
+            True,
+            "MISSING_VISIBLE_REQUIRED_TIME",
+        ),
+        (
+            "На АКЗ свет появился в 10:35.",
+            "На АКЗ свет появился в 10 часов 35 минут.",
+            True,
+            "MISSING_VISIBLE_REQUIRED_TIME",
+        ),
+        (
+            "На АКЗ свет появился в 9:05.",
+            "На АКЗ свет появился в 09:05.",
+            True,
+            "MISSING_VISIBLE_REQUIRED_TIME",
+        ),
+        (
+            "На Азмоле воду дают через день вечером на 4 часа.",
+            "На Азмоле воду дают через день вечером на четыре часа.",
+            True,
+            "MISSING_VISIBLE_REQUIRED_TIME",
+        ),
+    ),
+    ids=(
+        "changed-numeric-quote",
+        "exact-numeric-quote",
+        "indirect-measurement",
+        "changed-service-quote",
+        "exact-service-quote",
+        "organization-typography",
+        "missing-time",
+        "retained-time",
+        "clock-with-units",
+        "clock-leading-zero",
+        "duration-can-be-spelled-out",
+    ),
+)
+def test_visible_prose_preserves_numeric_testimony(
+    source: str, body: str, valid: bool, finding: str
+) -> None:
+    from src.publication.digest_narrative import (
+        _parse_composition_writer_output,
+        validate_digest_narrative,
+    )
+
+    story = _story("story:voltage", "utilities", "source-voltage")
+    fact = _required_fact("voltage", "utilities", story.id, "source-voltage", source)
+    unit = DigestCompositionUnit(
+        unit_id="unit-voltage",
+        rubric_id="utilities",
+        fact_ids=(fact.fact_id,),
+        story_ids=(story.id,),
+        support_ids=("source-voltage",),
+        canonical_area_key="unknown:voltage",
+        priority=40,
+    )
+    composition = DigestCompositionResult(
+        units=(unit,),
+        relations=(),
+        dispositions=(),
+        admitted_story_ids=frozenset({story.id}),
+        admitted_fact_ids=frozenset({fact.fact_id}),
+        estimated_visible_character_count=100,
+        fact_records=(_record(fact.fact_id, "utilities", story.id, "source-voltage", source),),
+    )
+    plan = _composition_narrative_plan(
+        cards=(story,),
+        rubrics=({"id": "utilities", "title": "Коммунальная обстановка"},),
+        presentation_plan=DigestPresentationPlan(
+            story_ids=(story.id,),
+            required_facts=(fact,),
+            composition=composition,
+        ),
+    )
+    draft = _parse_composition_writer_output(
+        {
+            "blocks": [
+                {
+                    "block_id": plan.blocks[0].block_id,
+                    "items": [
+                        {
+                            "composition_unit_ids": [unit.unit_id],
+                            "covered_fact_ids": [fact.fact_id],
+                            "headline": "",
+                            "body": body,
+                            "claims": [{"text": source, "covered_fact_ids": [fact.fact_id]}],
+                        }
+                    ],
+                }
+            ]
+        },
+        plan=plan,
+    )
+    result = validate_digest_narrative(draft, plan, {"source-voltage": source})
+    assert result.is_valid is valid, result.violations
+    assert any(finding in v for v in result.violations) is (not valid)
