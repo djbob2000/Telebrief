@@ -5,12 +5,14 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Mapping, Sequence
+from typing import Any, Literal, Mapping, Sequence
 
 from src.publication.digest_narrative import DigestNarrativeDraft
 from src.publication.evidence import PublicationEvidence
 
-DIGEST_DIAGNOSTICS_VERSION = "digest-diagnostics-v11"
+DIGEST_DIAGNOSTICS_VERSION = "digest-diagnostics-v12"
+
+_NAMED_CHAT_META = re.compile(r"\b(?:в|из)\s+(?:[а-яё-]+\s+){0,2}чат[аеу]\b", re.IGNORECASE)
 
 _ATTRIBUTION_PATTERNS = [
     re.compile(
@@ -348,6 +350,15 @@ def audit_digest_prose_quality(
                     )
                 )
         for idx, item in enumerate(block.items):
+            if _NAMED_CHAT_META.search(f"{item.headline} {item.body}"):
+                warnings.append(
+                    DigestQualityWarning(
+                        code="SOURCE_PROCESS_DESCRIPTION",
+                        message="State the supported news with natural attribution instead of describing its chat container.",
+                        block_id=block.block_id,
+                        item_index=idx,
+                    )
+                )
             detail_item_count += 1
             num_covered = len(item.covered_story_ids)
             covered_stories_detail += num_covered
@@ -809,3 +820,24 @@ def audit_rendered_digest(
     )
 
     return DigestQualityAudit(checks=tuple(checks), prose_audit=prose)
+
+
+@dataclass(frozen=True)
+class DigestEditorialReadiness:
+    """Advisory observations; absence of findings is not semantic certification."""
+
+    observations: tuple[DigestQualityWarning, ...] = ()
+    semantic_review_status: Literal["not_evaluated", "reviewed"] = "not_evaluated"
+
+    def as_metadata(self) -> dict[str, Any]:
+        return {
+            "semantic_review_status": self.semantic_review_status,
+            "observations": [
+                {"code": w.code, "block_id": w.block_id, "item_index": w.item_index}
+                for w in self.observations
+            ],
+        }
+
+
+def assess_digest_editorial_readiness(draft: DigestNarrativeDraft) -> DigestEditorialReadiness:
+    return DigestEditorialReadiness(audit_digest_prose_quality(draft, {}).warnings)
