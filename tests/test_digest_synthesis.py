@@ -996,6 +996,10 @@ def test_bounded_repair_polishes_new_items_and_keeps_last_safe_checkpoint(unsafe
             self.calls += 1
             request = json.loads(kwargs["messages"][1]["content"])
             observed_targets.append(request["target_item_ids"])
+            assert {fact["fact_id"] for fact in request["required_recomposition_facts"]} == set(
+                request["target_recomposition_fact_ids"]
+            )
+            assert all(fact["text"] for fact in request["required_recomposition_facts"])
             if self.calls == 1:
                 items = [raw_item(power_ids[:2], source_meta_prefix), raw_item(power_ids[2:])]
                 for item in items:

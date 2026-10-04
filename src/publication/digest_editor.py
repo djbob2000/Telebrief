@@ -394,7 +394,7 @@ class DigestEditor:
                 "not fact deletion: represent every fact from items marked "
                 "targeted_for_recomposition exactly once. Do not include facts from other items; "
                 "use target_recomposition_fact_ids from the user input as an exact checklist and "
-                "copy every ID into exactly one replacement item's covered_fact_ids. "
+                "copy every ID into exactly one replacement item's covered_fact_ids. Read required_recomposition_facts first and reconcile your output with that complete inventory before returning. A report about an unspecified household or a resident's relative remains required: retain its unknown-location limitation in a compact clause; do not decide it is too minor, redundant or insufficiently corroborated to include. "
                 "The program restores non-target fact items byte-for-byte. Keep standalone "
                 "summary-only items unchanged. If a targeted fact item also carries summary-only "
                 "units, preserve each such unit exactly once: include its unit ID in one replacement "
@@ -452,6 +452,12 @@ class DigestEditor:
             {
                 "target_item_ids": sorted(target_ids),
                 "target_recomposition_fact_ids": target_recomposition_fact_ids,
+                "required_recomposition_facts": [
+                    {"fact_id": fact_id, "text": fact.text, "block_id": block.block_id}
+                    for block in plan.blocks
+                    for fact in block.required_facts
+                    if (fact_id := str(fact.fact_id)) in target_recomposition_fact_ids
+                ],
                 "target_recomposition_summary_unit_ids": target_recomposition_summary_unit_ids,
                 "blocks": editor_blocks,
             },
