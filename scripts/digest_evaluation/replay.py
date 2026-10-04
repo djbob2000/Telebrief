@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +17,10 @@ from src.publication.digest_assessment import DigestAssessment, assess_digest_ca
 from src.publication.digest_editor import DigestEditor
 from src.publication.digest_narrative import DigestNarrativeWriter
 from src.publication.generation import _repair_digest_candidate
+
+
+class DigestReplayDependencyError(ValueError):
+    """An offline geographic dependency no longer matches the sealed snapshot."""
 
 
 @dataclass(frozen=True)
@@ -83,9 +89,24 @@ async def replay_digest(case: FrozenDigestCase, *, provider: Any) -> DigestRepla
         "versions": case.implementation_versions,
         "cost": None,
         "cost_availability": "not_available",
+        "writer_material_format": case.generation.get("writer_material_format", "legacy"),
+        "editor_scope": case.generation.get("editor_scope", "targeted_items"),
     }
     cfg = case.generation
     try:
+        slug = case.context.plan.edition_slug
+        if slug:
+            if not re.fullmatch(r"[A-Za-z0-9_-]+", slug):
+                raise DigestReplayDependencyError("DIGEST_REPLAY_GEOGRAPHY_ID")
+            profile = Path("data/city_profiles") / f"{slug}.yaml"
+            expected = cfg.get("geography_profile_hash")
+            if (
+                not expected
+                or not profile.is_file()
+                or hashlib.sha256(profile.read_bytes()).hexdigest() != expected
+            ):
+                raise DigestReplayDependencyError("DIGEST_REPLAY_GEOGRAPHY_CHANGED")
+            diagnostics["geography_profile_hash"] = expected
         async with asyncio.timeout(float(cfg["timeout_seconds"])):
             writer = DigestNarrativeWriter(
                 provider=counted, writer_material_format=cfg.get("writer_material_format", "legacy")
@@ -112,6 +133,7 @@ async def replay_digest(case: FrozenDigestCase, *, provider: Any) -> DigestRepla
                 timeout_seconds=float(cfg["timeout_seconds"]),
                 implementation_versions=case.implementation_versions,
                 editor_scope=cfg.get("editor_scope", "targeted_items"),
+                review_without_findings=bool(cfg.get("review_without_findings", False)),
                 deadline_at=start + float(cfg["timeout_seconds"]),
                 support_text_by_id=case.context.support_text_by_id,
             )

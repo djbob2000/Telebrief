@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import logging
 import os
 import sys
@@ -23,6 +24,11 @@ def parse_args() -> argparse.Namespace:
         "--variant", choices=("baseline", "compact", "thematic", "combined"), default="baseline"
     )
     parser.add_argument("--repeat", type=int, default=1)
+    parser.add_argument(
+        "--review-clean-text",
+        action="store_true",
+        help="Offline experiment: edit even without findings",
+    )
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
     if args.repeat < 1 or args.repeat > 3:
@@ -38,6 +44,7 @@ async def main() -> int:
         "writer_material_format": "compact_v1"
         if args.variant in ("compact", "combined")
         else "legacy",
+        "review_without_findings": args.review_clean_text,
         "editor_scope": "thematic_blocks"
         if args.variant in ("thematic", "combined")
         else "targeted_items",
@@ -57,9 +64,26 @@ async def main() -> int:
         openrouter_model=os.getenv("OPENROUTER_MODEL", ""),
         openrouter_model_2=os.getenv("OPENROUTER_MODEL_2", ""),
     )
+    from scripts.digest_evaluation.usage import instrument_usage, summarize_usage
+
+    usage_records = instrument_usage(provider)
+    source_root = Path(__file__).resolve().parent.parent
+    implementation_hash = hashlib.sha256()
+    for file in sorted((source_root / "src/publication").glob("digest_*.py")):
+        implementation_hash.update(file.name.encode())
+        implementation_hash.update(file.read_bytes())
+    implementation_hash.update((source_root / "src/publication/generation.py").read_bytes())
     failed = False
     for repeat in range(1, args.repeat + 1):
+        usage_records.clear()
         result = await replay_digest(case, provider=provider)
+        result.diagnostics.update(summarize_usage(usage_records))
+        result.diagnostics["cost_availability"] = (
+            "provider_reported" if result.diagnostics["cost"] is not None else "not_available"
+        )
+        result.diagnostics["runtime_source_hash"] = implementation_hash.hexdigest()
+        result.diagnostics["input_hash"] = hashlib.sha256(args.fixture.read_bytes()).hexdigest()
+        result.diagnostics["configured_model"] = cfg["model"]
         result.diagnostics.update(variant=args.variant, repeat=repeat)
         write_replay_result(result, args.output_dir / f"{case.name}-{args.variant}-{repeat}")
         print(

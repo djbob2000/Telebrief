@@ -76,6 +76,7 @@ def run_repair(provider, scope="thematic_blocks", timeout=10, **extra):
             timeout_seconds=timeout,
             implementation_versions={},
             editor_scope=scope,
+            review_without_findings=extra.pop("review_without_findings", True),
             **extra,
         )
     )
@@ -141,3 +142,27 @@ def test_unknown_scope_config_rejected():
 
     with pytest.raises(ValueError, match="digest_editor_scope"):
         PublicationEditorialConfig(digest_editor_scope="typo")
+
+
+def test_production_thematic_mode_does_not_pay_for_clean_writer():
+    provider = Provider()
+    _, result, _ = run_repair(provider, review_without_findings=False)
+    assert provider.calls == 0
+    assert result[2] == 0
+
+
+def test_production_thematic_findings_authorize_the_complete_block(monkeypatch):
+    from src.publication import generation
+
+    original = generation._digest_repair_request
+
+    def request(checkpoint):
+        findings, targets, blocks = original(checkpoint)
+        return findings + ["STYLE_OBSERVATION: repair this theme"], targets, blocks
+
+    monkeypatch.setattr(generation, "_digest_repair_request", request)
+    provider = Provider()
+    initial, result, observer = run_repair(provider, review_without_findings=False)
+    assert provider.calls == 1
+    assert result[0][0] == initial.draft
+    assert observer.outcomes[0]["editor_outcome"] == "unchanged_safe"

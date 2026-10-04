@@ -47,3 +47,31 @@ def test_missing_required_input_rejected_before_provider_call(tmp_path):
     path.write_text(json.dumps({"version": "digest-case-v1", "name": "incomplete"}))
     with pytest.raises(ValueError, match="DIGEST_CASE"):
         load_digest_case(path)
+
+
+def test_real_context_roundtrip_preserves_article_and_operational_records(tmp_path):
+    from scripts.digest_evaluation.fixtures import (
+        FrozenDigestCase,
+        load_digest_case,
+        write_digest_case,
+    )
+    from src.publication.article_context import ArticleEditorialContext, PublicationWindow
+    from src.publication.digest_assessment import DigestAssessmentContext
+
+    values, _ = assessment_inputs()
+    window = PublicationWindow(values["snapshot_at"], values["snapshot_at"])
+    article = ArticleEditorialContext(
+        ("Источник",), (), {}, (), publication_window=window, edition_slug="berdyansk"
+    )
+    values["frozen"] = replace(
+        values["frozen"], analysis=replace(values["frozen"].analysis, article_context=article)
+    )
+    case = FrozenDigestCase(
+        "real",
+        DigestAssessmentContext(**values),
+        {"language": "Russian", "model": None, "max_output_tokens": 4096, "timeout_seconds": 120},
+        {"writer": "test"},
+    )
+    path = tmp_path / "case.json"
+    write_digest_case(case, path)
+    assert load_digest_case(path).context.frozen.analysis.article_context == article

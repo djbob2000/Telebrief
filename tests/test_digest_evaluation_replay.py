@@ -82,3 +82,48 @@ def test_rejected_and_failed_outputs_label_checkpoint_status(tmp_path):
     write_replay_result(failed, tmp_path / "failed")
     assert "private secret" not in (tmp_path / "failed.json").read_text()
     assert "No assessed draft" in (tmp_path / "failed.txt").read_text()
+
+
+def test_replay_refuses_changed_geographic_profile_before_provider():
+    from dataclasses import replace
+
+    from scripts.digest_evaluation.replay import replay_digest
+
+    case, _ = make_case()
+    case = replace(
+        case,
+        context=replace(case.context, plan=replace(case.context.plan, edition_slug="berdyansk")),
+        generation={**case.generation, "geography_profile_hash": "wrong"},
+    )
+
+    class Provider:
+        async def chat_completion(self, **kwargs):
+            raise AssertionError("changed profile reached provider")
+
+    result = asyncio.run(replay_digest(case, provider=Provider()))
+    assert result.status == "failed"
+    assert result.diagnostics["provider_calls"] == 0
+    assert result.diagnostics["error_kind"] == "DigestReplayDependencyError"
+
+
+def test_replay_accepts_unchanged_frozen_geographic_profile():
+    import hashlib
+    from dataclasses import replace
+    from pathlib import Path
+
+    from scripts.digest_evaluation.replay import replay_digest
+
+    case, raw = make_case()
+    case = replace(
+        case,
+        context=replace(case.context, plan=replace(case.context.plan, edition_slug="berdyansk")),
+        generation={
+            **case.generation,
+            "geography_profile_hash": hashlib.sha256(
+                Path("data/city_profiles/berdyansk.yaml").read_bytes()
+            ).hexdigest(),
+        },
+    )
+    result = asyncio.run(replay_digest(case, provider=Provider(json.dumps(raw))))
+    assert result.status == "accepted"
+    assert result.diagnostics["provider_calls"] == 1

@@ -183,3 +183,98 @@ def test_known_id_without_grounded_claim_is_not_enough():
     result = assess_digest_candidate(bad, context=DigestAssessmentContext(**values))
     assert not result.is_safe
     assert result.coverage.material_fact_coverage == 1.0
+
+
+@pytest.mark.parametrize(
+    "relative,allowed",
+    [
+        ("В другом доме ", False),
+        ("В соседнем доме ", False),
+        ("В другом сообщении ", True),
+        ("", True),
+    ],
+)
+def test_unspecified_household_woven_without_invented_area(relative, allowed):
+    from pathlib import Path
+
+    from scripts.digest_evaluation.fixtures import load_digest_case
+    from src.publication.digest_assessment import assess_digest_candidate
+
+    case = load_digest_case(Path("tests/fixtures/digest_editorial/community_microdetails.json"))
+    block = case.context.plan.blocks[0]
+    text = " ".join(f.text for f in block.required_facts)
+    text = text.replace("Жильцы скинулись", relative + "жильцы скинулись")
+    raw = {
+        "blocks": [
+            {
+                "block_id": block.block_id,
+                "items": [
+                    {
+                        "composition_unit_ids": [u.unit_id for u in block.composition_units],
+                        "covered_fact_ids": [f.fact_id for f in block.required_facts],
+                        "body": text,
+                        "claims": [],
+                    }
+                ],
+            }
+        ]
+    }
+    draft = _parse_composition_writer_output(raw, plan=case.context.plan)
+    result = assess_digest_candidate(draft, context=case.context)
+    assert result.validation.is_valid is allowed, result.validation.violations
+
+
+def test_explicit_single_source_household_relation_remains_publishable():
+    from src.publication.digest_relation_support import (
+        find_unsupported_relative_household_relations,
+    )
+
+    text = "В соседнем доме жильцы скинулись по 300 рублей."
+    assert not find_unsupported_relative_household_relations(text, [text])
+
+
+def test_thematic_editor_missing_complete_support_context_is_explicit_skip():
+    from src.publication.digest_edit_scope import build_digest_block_edit_scope
+    from src.publication.digest_editor import DigestEditor, DigestEditorContextMissingError
+
+    values, draft = assessment_inputs()
+    scope = build_digest_block_edit_scope(
+        draft, plan=values["plan"], block_ids=[draft.blocks[0].block_id]
+    )
+
+    class Provider:
+        async def chat_completion(self, **kwargs):
+            raise AssertionError("incomplete evidence reached provider")
+
+    with pytest.raises(DigestEditorContextMissingError, match="DIGEST_EDITOR_CONTEXT_MISSING"):
+        asyncio.run(
+            DigestEditor(Provider()).polish_and_compress(
+                draft, plan=values["plan"], evidence={}, edit_scope=scope
+            )
+        )
+
+
+def test_thematic_prompt_has_one_consistent_complete_scope_contract():
+    from src.publication.digest_edit_scope import build_digest_block_edit_scope
+    from src.publication.digest_editor import DigestEditor
+
+    values, plan, draft = with_summary()
+    scope = build_digest_block_edit_scope(draft, plan=plan, block_ids=[draft.blocks[0].block_id])
+
+    class Provider:
+        system = ""
+
+        async def chat_completion(self, **kwargs):
+            self.system = kwargs["messages"][0]["content"]
+            return "{}"
+
+    provider = Provider()
+    with pytest.raises(ValueError):
+        asyncio.run(
+            DigestEditor(provider).polish_and_compress(
+                draft, plan=plan, evidence=values["evidence"], edit_scope=scope
+            )
+        )
+    assert "Keep standalone summary-only items unchanged" not in provider.system
+    assert "target_recomposition_summary_unit_ids" in provider.system
+    assert "without a fixed paragraph or item quota" in provider.system

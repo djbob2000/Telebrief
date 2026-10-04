@@ -28,7 +28,7 @@
 1. Summary-only Story без required facts должен пережить полную перекомпоновку блока — тест задачи 5.
 2. Семейное сообщение без района должно встроиться с ограничением знания, без приписывания района соседнего предложения — тест задач 3 и 5.
 3. Две разные улицы и два имени одной улицы требуют разной географической обработки — тесты задачи 3.
-4. Безопасный writer с нулём regex warnings должен попасть в новый редакторский режим; no-op не означает сбой публикации — тест задачи 6.
+4. Безопасный writer с нулём regex warnings пропускает production редактор; обязательный обзор доступен только в offline эксперименте. No-op не означает сбой публикации — тест задачи 6.
 5. Ошибка второго редактора, cancellation и непоместившийся контекст не должны превращаться в доставку непроверенного кандидата — тесты задач 5 и 6.
 
 ## Карта файлов и границы
@@ -155,7 +155,7 @@
 
 - `PublicationEditorialConfig.digest_editor_scope: Literal['targeted_items', 'thematic_blocks'] = 'targeted_items'`.
 - `_repair_digest_candidate` получает keyword `editor_scope: str = 'targeted_items'`, сохраняет возвращаемый checkpoint/used/call count contract.
-- Новый mode даёт первый scope на полные существующие блоки при наличии usable writer candidate, даже без regex findings. Последующий scope пересчитывается по exact checkpoint. Второй вызов только при unresolved findings/rejected edit.
+- Новый mode даёт первый scope на полные существующие блоки при наличии usable writer candidate и замечаний. Вариант без findings проверяется только offline флагом `--review-clean-text`; отклонён для production после измеренного роста стоимости 2,806x. Последующий scope пересчитывается по exact checkpoint. Второй вызов только при unresolved findings/rejected edit.
 - Observer safe metadata `editor_outcome` имеет значения из spec §6.3. `unchanged_safe` может завершить редактуру успешно без изменения текста; не считать его factual failure.
 
 - [ ] Написать `test_zero_warnings_still_get_one_editorial_call_in_thematic_mode` и `test_legacy_mode_zero_warnings_still_skips_editor`.

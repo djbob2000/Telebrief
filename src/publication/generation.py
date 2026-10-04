@@ -151,6 +151,7 @@ async def _repair_digest_candidate(
     timeout_seconds: float,
     implementation_versions: Any,
     editor_scope: str = "targeted_items",
+    review_without_findings: bool = False,
     deadline_at: float | None = None,
     max_context_chars: int | None = None,
     support_text_by_id: Mapping[str, str] | None = None,
@@ -163,6 +164,7 @@ async def _repair_digest_candidate(
     from src.publication.digest_edit_scope import build_digest_block_edit_scope
     from src.publication.digest_editor import (
         DigestEditorContextBudgetError,
+        DigestEditorContextMissingError,
         DigestRecompositionError,
     )
     from src.publication.digest_narrative import sanitize_digest_narrative_draft
@@ -170,7 +172,7 @@ async def _repair_digest_candidate(
     if editor_scope not in ("targeted_items", "thematic_blocks"):
         raise ValueError("digest_editor_scope is unsupported")
     thematic = editor_scope == "thematic_blocks"
-    if not thematic and not _digest_repair_request(checkpoint)[0]:
+    if not _digest_repair_request(checkpoint)[0] and not (thematic and review_without_findings):
         return checkpoint, False, 0
     deadline = deadline_at if deadline_at is not None else time.monotonic() + timeout_seconds
     actual_calls = 0
@@ -179,7 +181,11 @@ async def _repair_digest_candidate(
     max_calls = 2
     for call in range(max_calls):
         findings, targets, recompose_ids = _digest_repair_request(checkpoint)
-        if not findings and not feedback and (call > 0 or not thematic):
+        if (
+            not findings
+            and not feedback
+            and (call > 0 or not thematic or not review_without_findings)
+        ):
             break
         edit_scope = None
         if thematic:
@@ -285,6 +291,11 @@ async def _repair_digest_candidate(
                 feedback = "the targeted wording did not change"
         except (TimeoutError, asyncio.CancelledError):
             raise
+        except DigestEditorContextMissingError:
+            await observer.attempt_finished(
+                attempt_id, "succeeded", metadata={"editor_outcome": "skipped_missing_context"}
+            )
+            break
         except DigestEditorContextBudgetError:
             await observer.attempt_finished(
                 attempt_id, "succeeded", metadata={"editor_outcome": "skipped_context_budget"}

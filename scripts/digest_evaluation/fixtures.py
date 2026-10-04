@@ -10,9 +10,12 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from src import collector, editorial_models
+from src import city_context, collector, editorial_models
 from src.config.schemas import publication as config_models
+from src.domain import edition_geography, event_payload, operational_state
 from src.publication import (
+    article_context,
+    article_coverage,
     city_situation,
     digest_composition,
     digest_narrative,
@@ -35,7 +38,15 @@ class FrozenDigestCase:
 _MODULES = (
     collector,
     editorial_models,
+    city_context,
+    edition_geography,
+    event_payload,
+    operational_state,
+    article_context,
+    article_coverage,
     config_models,
+    article_context,
+    article_coverage,
     city_situation,
     digest_composition,
     digest_narrative,

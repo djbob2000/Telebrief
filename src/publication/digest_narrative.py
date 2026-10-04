@@ -1914,6 +1914,21 @@ def _composition_visible_risk_validation(
         for record in plan_block.composition_fact_records
         if getattr(record, "fact_id", None)
     }
+    item_records = [records[fid] for fid in item.covered_fact_ids if fid in records]
+    if item_records and all(
+        not record.original_location and not record.canonical_place for record in item_records
+    ):
+        from src.publication.digest_relation_support import (
+            find_unsupported_relative_household_relations,
+        )
+
+        exact_supports = [support_map[sid] for sid in item.cited_support_ids if sid in support_map]
+        for _relation in find_unsupported_relative_household_relations(
+            f"{item.headline} {item.body}", exact_supports
+        ):
+            violations.append(
+                f"UNSUPPORTED_DIGEST_RELATION:unknown_household_relation:{plan_block.block_id}:{item.item_id}"
+            )
     # A location can resolve to multiple frozen facts (for example, more than
     # one report for the same place). They may share proof only when the
     # composition has explicitly sealed them as one SAME_FACT component.
