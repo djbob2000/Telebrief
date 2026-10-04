@@ -4163,8 +4163,11 @@ def _parse_composition_writer_output(
 class DigestNarrativeWriter:
     """Single-call narrative digest writer synthesizing flowing prose across rubric blocks."""
 
-    def __init__(self, provider: Any) -> None:
+    def __init__(self, provider: Any, *, writer_material_format: str = "legacy") -> None:
+        if writer_material_format not in ("legacy", "compact_v1"):
+            raise ValueError("digest_writer_material_format is unsupported")
         self._provider = provider
+        self._writer_material_format = writer_material_format
 
     async def _generate_composition_draft(
         self,
@@ -4217,7 +4220,20 @@ class DigestNarrativeWriter:
             "Return only valid JSON matching this schema; include every input block in the same order:\n"
             f"{schema_desc}"
         )
-        user_prompt = json.dumps({"blocks": blocks_payload}, ensure_ascii=False, indent=2)
+        if self._writer_material_format == "compact_v1":
+            from src.publication.digest_writer_material import (
+                COMPACT_DIGEST_BRIEF,
+                build_compact_digest_material,
+                encode_digest_material,
+            )
+
+            material = build_compact_digest_material(plan=plan, evidence=evidence, cards=cards)
+            user_prompt = encode_digest_material(material)
+            system_prompt = (
+                COMPACT_DIGEST_BRIEF + f"\nOutput language: {language}\nSchema: {schema_desc}"
+            )
+        else:
+            user_prompt = json.dumps({"blocks": blocks_payload}, ensure_ascii=False, indent=2)
         chat_kwargs: dict[str, Any] = {
             "messages": [
                 {"role": "system", "content": system_prompt},

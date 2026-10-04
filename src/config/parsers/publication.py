@@ -675,6 +675,8 @@ def _parse_publication_editorial_config(settings_dict: dict) -> PublicationEdito
         article_max_sections=_val_pos_int("article_max_sections", 8),
         article_max_direct_quotes=_val_nonneg_int("article_max_direct_quotes", 4),
         digest_narrative_mode=mode_val,
+        digest_writer_material_format=raw.get("digest_writer_material_format", "legacy"),
+        digest_editor_scope=raw.get("digest_editor_scope", "targeted_items"),
         digest_narrative_max_cards_per_block=_val_pos_int(
             "digest_narrative_max_cards_per_block", 6
         ),

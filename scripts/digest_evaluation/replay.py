@@ -87,7 +87,9 @@ async def replay_digest(case: FrozenDigestCase, *, provider: Any) -> DigestRepla
     cfg = case.generation
     try:
         async with asyncio.timeout(float(cfg["timeout_seconds"])):
-            writer = DigestNarrativeWriter(provider=counted)
+            writer = DigestNarrativeWriter(
+                provider=counted, writer_material_format=cfg.get("writer_material_format", "legacy")
+            )
             draft = await writer.generate_narrative_draft(
                 plan=case.context.plan,
                 cards=case.context.frozen.analysis.cards,

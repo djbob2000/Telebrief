@@ -635,7 +635,12 @@ class PublicationGenerationService:
                     )
 
                     writer_provider = getattr(self.generator, "provider", None)
-                    writer = DigestNarrativeWriter(provider=writer_provider)
+                    writer = DigestNarrativeWriter(
+                        provider=writer_provider,
+                        writer_material_format=getattr(
+                            pub_edit, "digest_writer_material_format", "legacy"
+                        ),
+                    )
                     att_id = await observer.attempt_started(
                         "writer",
                         metadata={

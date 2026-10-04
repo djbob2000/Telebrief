@@ -193,6 +193,8 @@ class PublicationEditorialConfig:
 
     article_claim_min_content_coverage: float = 0.50
     digest_narrative_mode: str = "deterministic"
+    digest_writer_material_format: str = "legacy"
+    digest_editor_scope: str = "targeted_items"
     digest_narrative_max_cards_per_block: int = 6
 
     digest_narrative_max_output_tokens: int = 4096
@@ -227,6 +229,10 @@ class PublicationEditorialConfig:
             raise ValueError(
                 f"digest_narrative_mode must be 'deterministic', 'single_call', or 'journalistic', got {self.digest_narrative_mode!r}"
             )
+        if self.digest_writer_material_format not in ("legacy", "compact_v1"):
+            raise ValueError("digest_writer_material_format must be legacy or compact_v1")
+        if self.digest_editor_scope not in ("targeted_items", "thematic_blocks"):
+            raise ValueError("digest_editor_scope must be targeted_items or thematic_blocks")
         if self.digest_narrative_max_cards_per_block <= 0:
             raise ValueError("digest_narrative_max_cards_per_block must be a positive integer")
         if self.digest_narrative_max_output_tokens <= 0:
