@@ -111,6 +111,9 @@ async def replay_digest(case: FrozenDigestCase, *, provider: Any) -> DigestRepla
                 model=cfg["model"],
                 timeout_seconds=float(cfg["timeout_seconds"]),
                 implementation_versions=case.implementation_versions,
+                editor_scope=cfg.get("editor_scope", "targeted_items"),
+                deadline_at=start + float(cfg["timeout_seconds"]),
+                support_text_by_id=case.context.support_text_by_id,
             )
             assessment = DigestAssessment(*checkpoint)
             status = "accepted" if assessment.is_safe else "rejected"

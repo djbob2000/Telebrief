@@ -6,7 +6,8 @@ import asyncio
 import datetime as dt
 import logging
 import re
-from collections.abc import Callable, Sequence
+import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from typing import Any
 
@@ -149,24 +150,51 @@ async def _repair_digest_candidate(
     model: str | None,
     timeout_seconds: float,
     implementation_versions: Any,
+    editor_scope: str = "targeted_items",
+    deadline_at: float | None = None,
+    max_context_chars: int | None = None,
+    support_text_by_id: Mapping[str, str] | None = None,
 ) -> tuple[tuple[Any, ...], bool, int]:
     """Use the existing editor at most twice, retaining each exact safe assessment.
 
     Style diagnostics request an edit; they do not establish factual unsafety
     or unreadability. A rejected later edit cannot erase a safe earlier result.
     """
-    from src.publication.digest_editor import DigestRecompositionError
+    from src.publication.digest_edit_scope import build_digest_block_edit_scope
+    from src.publication.digest_editor import (
+        DigestEditorContextBudgetError,
+        DigestRecompositionError,
+    )
     from src.publication.digest_narrative import sanitize_digest_narrative_draft
 
-    if not _digest_repair_request(checkpoint)[0]:
+    if editor_scope not in ("targeted_items", "thematic_blocks"):
+        raise ValueError("digest_editor_scope is unsupported")
+    thematic = editor_scope == "thematic_blocks"
+    if not thematic and not _digest_repair_request(checkpoint)[0]:
         return checkpoint, False, 0
+    deadline = deadline_at if deadline_at is not None else time.monotonic() + timeout_seconds
+    actual_calls = 0
     used = False
     feedback = ""
     max_calls = 2
     for call in range(max_calls):
         findings, targets, recompose_ids = _digest_repair_request(checkpoint)
-        if not findings:
+        if not findings and not feedback and (call > 0 or not thematic):
             break
+        edit_scope = None
+        if thematic:
+            block_ids = tuple(block.block_id for block in checkpoint[0].blocks)
+            if call > 0 and not feedback:
+                observed = {w.block_id for w in checkpoint[4].prose_audit.warnings}
+                block_ids = tuple(bid for bid in block_ids if bid in observed) or block_ids
+            edit_scope = build_digest_block_edit_scope(
+                checkpoint[0], plan=plan, block_ids=block_ids
+            )
+            targets = edit_scope.item_ids
+            recompose_ids = edit_scope.block_ids
+            findings.append(
+                "EDITORIAL_CONSTRAINT: Edit the authorized full themes for natural hierarchy, cohesion, precise detail and honest attribution. Keep unchanged themes when already clear; do not invent context or remove selected facts."
+            )
         if feedback:
             findings.append(
                 "EDITORIAL_CONSTRAINT: The previous edit was rejected: "
@@ -188,8 +216,19 @@ async def _repair_digest_candidate(
                 ][:20],
             },
         )
+        actual_calls += 1
         try:
-            async with asyncio.timeout(timeout_seconds):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("DIGEST_GENERATION_DEADLINE")
+            extra_kwargs: dict[str, Any] = {}
+            if edit_scope is not None:
+                extra_kwargs.update(
+                    edit_scope=edit_scope,
+                    max_context_chars=max_context_chars,
+                    support_text_by_id=support_text_by_id,
+                )
+            async with asyncio.timeout(remaining):
                 edited = await editor.polish_and_compress(
                     checkpoint[0],
                     plan=plan,
@@ -199,6 +238,7 @@ async def _repair_digest_candidate(
                     violations=findings,
                     target_item_ids=targets,
                     recompose_block_ids=recompose_ids,
+                    **extra_kwargs,
                 )
             candidate = sanitize_digest_narrative_draft(edited)
             validation, coverage, artifact, audit = evaluate_candidate(candidate)
@@ -209,18 +249,28 @@ async def _repair_digest_candidate(
                 and coverage.material_fact_coverage >= 1.0
             )
             accepted = safe and candidate != checkpoint[0]
+            outcome = (
+                "accepted_change" if accepted else ("unchanged_safe" if safe else "rejected_unsafe")
+            )
             await observer.attempt_finished(
                 attempt_id,
-                "succeeded" if accepted else "failed",
-                error_kind=None if accepted else "digest_editor_combined_repair_unresolved",
+                "succeeded" if (accepted or safe and thematic) else "failed",
+                error_kind=None
+                if (accepted or safe and thematic)
+                else "digest_editor_combined_repair_unresolved",
                 metadata={
                     "repair_used": accepted,
+                    "editor_outcome": outcome,
                     "validation": {
                         "is_valid": validation.is_valid,
                         "scope": "implemented_hard_checks_only",
                         "not_evaluated": list(validation.not_evaluated),
                     },
-                    "quality_audit": audit.as_metadata(),
+                    "quality_audit": {
+                        "is_publishable": audit.is_publishable,
+                        "finding_codes": [c.code for c in audit.checks],
+                        "style_codes": [w.code for w in audit.prose_audit.warnings],
+                    },
                 },
             )
             if accepted:
@@ -230,17 +280,26 @@ async def _repair_digest_candidate(
             elif not safe:
                 feedback = "the candidate failed factual, coverage, or rendered-post safety checks"
             else:
+                if thematic:
+                    break
                 feedback = "the targeted wording did not change"
+        except (TimeoutError, asyncio.CancelledError):
+            raise
+        except DigestEditorContextBudgetError:
+            await observer.attempt_finished(
+                attempt_id, "succeeded", metadata={"editor_outcome": "skipped_context_budget"}
+            )
+            break
         except Exception as exc:
             feedback = str(exc) if isinstance(exc, DigestRecompositionError) else type(exc).__name__
             await observer.attempt_finished(
                 attempt_id,
                 "failed",
                 error_kind="digest_editor_combined_repair_exception",
-                metadata={"error_message": feedback},
+                metadata={"error_message": feedback, "editor_outcome": "invalid_response"},
             )
             logger.warning("DigestEditor repair rejected: %s", feedback)
-    return checkpoint, used, max_calls
+    return checkpoint, used, actual_calls
 
 
 class PublicationGenerationService:
@@ -493,6 +552,12 @@ class PublicationGenerationService:
 
                 narrative_draft = None
                 pub_edit = getattr(self.config.settings, "publication_editorial", None)
+                digest_implementation_versions.update(
+                    writer_material_format=getattr(
+                        pub_edit, "digest_writer_material_format", "legacy"
+                    ),
+                    editor_scope=getattr(pub_edit, "digest_editor_scope", "targeted_items"),
+                )
                 configured_narrative_mode = (
                     getattr(pub_edit, "digest_narrative_mode", "deterministic")
                     if pub_edit
@@ -651,6 +716,7 @@ class PublicationGenerationService:
                             "situation_group_count": len(presentation_plan.city_situation.groups),
                         },
                     )
+                    generation_deadline = time.monotonic() + narrative_timeout
                     try:
                         has_topic_bundles = any(
                             getattr(b, "topic_bundles", None) for b in plan.blocks
@@ -748,6 +814,12 @@ class PublicationGenerationService:
                             or getattr(self.config.settings, "ai_model", None),
                             timeout_seconds=narrative_timeout,
                             implementation_versions=digest_implementation_versions,
+                            editor_scope=getattr(pub_edit, "digest_editor_scope", "targeted_items"),
+                            deadline_at=generation_deadline
+                            if getattr(pub_edit, "digest_editor_scope", "targeted_items")
+                            == "thematic_blocks"
+                            else None,
+                            support_text_by_id=support_text_index,
                         )
                         draft_cand, val_res, coverage_trace, rendered_artifact, rendered_audit = (
                             checkpoint
@@ -804,7 +876,8 @@ class PublicationGenerationService:
                             "digest_quality_audit": rendered_audit.as_metadata(),
                             "digest_repair": {
                                 "used": repair_used,
-                                "max_calls": digest_repair_max_calls,
+                                "max_calls": 2,
+                                "actual_calls": digest_repair_max_calls,
                             },
                             "digest_implementation_versions": digest_implementation_versions,
                             "upstream_hard_exclusion_count": None,
