@@ -104,6 +104,7 @@ def _digest_repair_request(
     )
     findings.extend(
         f"STYLE_OBSERVATION:{warning.code}: block={warning.block_id} "
+        f"item_id={_digest_warning_item_id(draft, warning)} "
         f"item_index={warning.item_index}: {warning.message}"
         for warning in audit.prose_audit.warnings
     )
@@ -138,6 +139,37 @@ def _digest_repair_request(
             item.item_id for block in draft.blocks for item in block.items if item.item_id
         )
     return findings, targets, recompose_ids
+
+
+def _digest_warning_item_id(draft: Any, warning: Any) -> str:
+    if warning.item_index is None:
+        return "unknown"
+    for block in draft.blocks:
+        if block.block_id != warning.block_id:
+            continue
+        if 0 <= warning.item_index < len(block.items):
+            return block.items[warning.item_index].item_id or "unknown"
+    return "unknown"
+
+
+def _digest_warning_item_ids(
+    draft: Any,
+    warnings: Any,
+    *,
+    codes: set[str],
+    allowed_ids: set[str],
+) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            item.item_id
+            for warning in warnings
+            if warning.code in codes and warning.block_id
+            for block in draft.blocks
+            if block.block_id == warning.block_id
+            for index, item in enumerate(block.items)
+            if index == warning.item_index and item.item_id and item.item_id in allowed_ids
+        )
+    )
 
 
 def _digest_local_issue_keys(checkpoint: tuple[Any, ...]) -> set[tuple[str, str]]:
@@ -231,6 +263,14 @@ async def _repair_digest_candidate(
                 "EDITORIAL_CONSTRAINT: Recompose the authorized full themes for natural hierarchy, cohesion, precise detail and honest attribution. Reconcile the complete required fact inventory and represent every fact exactly once. Keep unchanged themes when already clear; do not invent context or remove selected facts."
             )
         if call > 0 and thematic:
+            findings.append(
+                "EDITORIAL_CONSTRAINT: Recheck the final wording against its own supporting facts "
+                "and source text. Keep each street, district, date, duration, clock time and service "
+                "state attached to the fact that supplies it. Preserve city-wide scope only when "
+                "that fact explicitly says city-wide; do not transfer a time, status or location "
+                "between facts. When support is unclear, keep the narrow attributed wording rather "
+                "than broadening the claim."
+            )
             if checkpoint_requires_recomposition:
                 findings.append(
                     "EDITORIAL_CONSTRAINT: This final editor call must use full thematic recomposition because the current checkpoint is still unsafe. Return recomposed_items for every authorized block; a text-only patch cannot restore missing facts or repair fact membership."
@@ -261,6 +301,31 @@ async def _repair_digest_candidate(
                     "authorized items; preserve other items exactly. Do not merge or recompose blocks. "
                     "Replace source-process narration with natural attributed reporting, preserving uncertainty."
                 )
+            if not checkpoint_requires_recomposition:
+                warning_targets = _digest_warning_item_ids(
+                    checkpoint[0],
+                    checkpoint[4].prose_audit.warnings,
+                    codes={
+                        "REPETITIVE_BODY_ATTRIBUTION",
+                        "SOURCE_META_NARRATION",
+                        "SOURCE_PROCESS_DESCRIPTION",
+                        "OVERLONG_SYNTHESIS",
+                    },
+                    allowed_ids=set(targets),
+                )
+                if warning_targets:
+                    findings.append(
+                        "EDITORIAL_CONSTRAINT: Apply the specific repair to these diagnosed items: "
+                        + ", ".join(warning_targets)
+                        + ". For repeated attribution, use one frame only across reports with the "
+                        "same source and certainty; retain attribution when either changes and keep "
+                        "qualifiers such as 'возможно', but do not repeat the same attribution as "
+                        "'по их словам' in the same passage. Replace message-logistics phrases with the "
+                        "supported event itself, without implying an unknown place is a different "
+                        "district. For an overlong item, regroup the facts into two or three clear "
+                        "service or locality passages when evidence supports that split. Preserve "
+                        "each exact fact once and keep its time, place, uncertainty, and source scope."
+                    )
         if feedback:
             findings.append(
                 "EDITORIAL_CONSTRAINT: The previous edit was rejected: "

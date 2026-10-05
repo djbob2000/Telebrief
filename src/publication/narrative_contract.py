@@ -181,6 +181,9 @@ Editorial craft:
   or place, attach honest attribution naturally in scope, and develop the subject without
   restating a thesis headline.
   An isolated observation with no extra detail can be one complete attributed sentence.
+- Keep every item body within the 1,200-character hard limit. If a useful synthesis is longer,
+  split it into a few coherent passages by service or supported locality; never truncate or
+  drop facts to meet the limit.
 - Write about the city, not the message stream. Avoid 'в одном из сообщений', 'другое
   сообщение описывает', 'опубликовано объявление о' and question-and-answer narration.
   Establish community attribution for the connected observations and keep it in scope;

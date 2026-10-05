@@ -50,10 +50,16 @@ _TEMPORAL_CHAIN_RE = re.compile(
 _REPETITIVE_BODY_ATTRIBUTION_RE = re.compile(
     r"(?:\bпо\s+(?:сообщениям|сообщению|словам|информации|данным)\s+"
     r"(?:жителей|жителя|жительницы|горожан|горожанина|очевидцев|очевидца)\b|"
+    r"\bпо\s+(?:их|его|е[её])\s+словам\b|"
     r"\b(?:жители|житель|жительница|горожане|горожанин|очевидцы|очевидец)\s+"
     r"(?:также\s+)?(?:сообща(?:ют|ет)|пиш(?:ут|ет)|говор(?:ят|ит)|делятся)\b)",
     re.IGNORECASE,
 )
+_PLURAL_RESIDENT_ATTRIBUTION_RE = re.compile(
+    r"\b(?:жител(?:и|ей)|горожан(?:е|)|очевидц(?:ы|ев))\b|\bпо\s+их\s+словам\b",
+    re.IGNORECASE,
+)
+_PRONOUN_ATTRIBUTION_RE = re.compile(r"\bпо\s+(их|его|е[её])\s+словам\b", re.IGNORECASE)
 _CHAT_SLANG_OR_METADATA_RE = re.compile(
     r"(?:\b(?:чо\s+за\s+фигня|идите\s+нах|кинули\s+не\s+только\s+вас)\b|"
     r"\bсмайлик(?:ами|и)?\b|(?:публикуют\s+)?сообщения\s+с\s+эмодзи|"
@@ -263,6 +269,28 @@ def _has_attribution(text: str) -> bool:
     return any(p.search(text) for p in _ATTRIBUTION_PATTERNS)
 
 
+def _repeated_body_attribution_count(text: str) -> int:
+    repeated = 0
+    for pronoun_match in _PRONOUN_ATTRIBUTION_RE.finditer(text):
+        preceding = text[max(0, pronoun_match.start() - 240) : pronoun_match.start()]
+        prior_attributions = list(_REPETITIVE_BODY_ATTRIBUTION_RE.finditer(preceding))
+        if not prior_attributions:
+            continue
+        source_phrase = prior_attributions[-1].group(0)
+        pronoun = pronoun_match.group(1).casefold()
+        if pronoun == "их":
+            repeated += int(bool(_PLURAL_RESIDENT_ATTRIBUTION_RE.search(source_phrase)))
+        elif pronoun == "его":
+            repeated += int(
+                bool(re.search(r"\b(?:житель|горожанин|очевидец)\b", source_phrase, re.I))
+            )
+        else:
+            repeated += int(
+                bool(re.search(r"\b(?:жительница|горожанка|очевидка)\b", source_phrase, re.I))
+            )
+    return repeated
+
+
 def _check_duplicated_attribution(headline: str, body: str) -> bool:
     return _has_attribution(headline) and _has_attribution(body)
 
@@ -454,8 +482,10 @@ def audit_digest_prose_quality(
                     DigestQualityWarning(
                         code="OVERLONG_SYNTHESIS",
                         message=(
-                            "A dense multi-fact paragraph needs readable topic regrouping; "
-                            "retain every supported fact and synthesize overlapping reports once."
+                            f"This {len(item.body)}-character item covers "
+                            f"{len(item.covered_fact_ids)} required facts. If the evidence supports "
+                            "it, regroup it into two or three cohesive passages by service or "
+                            "locality. Keep every fact exactly once and avoid a street-by-street list."
                         ),
                         block_id=block.block_id,
                         item_index=idx,
@@ -497,13 +527,16 @@ def audit_digest_prose_quality(
                 )
 
             item_full_text = f"{item.headline} {item.body}"
-            if _SOURCE_META_NARRATION_RE.search(item_full_text):
+            source_meta_match = _SOURCE_META_NARRATION_RE.search(item_full_text)
+            if source_meta_match:
                 warnings.append(
                     DigestQualityWarning(
                         code="SOURCE_META_NARRATION",
                         message=(
-                            "Describe the supported city development directly; do not narrate "
-                            "separate source messages or list what posts mention."
+                            f"Phrase «{source_meta_match.group(0)}» narrates how reports arrived. "
+                            "State the supported city fact directly and keep only the attribution "
+                            "needed to preserve its source or uncertainty. Do not infer that an "
+                            "unnamed location is different from another place."
                         ),
                         block_id=block.block_id,
                         item_index=idx,
@@ -533,11 +566,21 @@ def audit_digest_prose_quality(
                     )
                 )
 
-            if len(_REPETITIVE_BODY_ATTRIBUTION_RE.findall(item.body)) > 1:
+            repeated_attribution_count = _repeated_body_attribution_count(item.body)
+            if repeated_attribution_count > 0:
+                restatement_label = (
+                    "restatement" if repeated_attribution_count == 1 else "restatements"
+                )
                 warnings.append(
                     DigestQualityWarning(
                         code="REPETITIVE_BODY_ATTRIBUTION",
-                        message="Body contains multiple repetitive attribution phrases.",
+                        message=(
+                            f"A pronoun repeats an attribution for the same source "
+                            f"({repeated_attribution_count} redundant {restatement_label}). Keep "
+                            "one frame when the source and certainty are unchanged; retain separate "
+                            "attribution when the speaker, location scope, or certainty changes. "
+                            "Never turn a resident report into an unqualified fact."
+                        ),
                         block_id=block.block_id,
                         item_index=idx,
                         headline=item.headline,

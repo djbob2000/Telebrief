@@ -404,6 +404,7 @@ def test_second_editor_call_recomposes_remaining_structural_style_findings():
     from dataclasses import replace
 
     from src.publication.digest_quality_diagnostics import DigestQualityWarning
+    from src.publication.digest_narrative import DIGEST_ITEM_BODY_MAX_CHARS
 
     values, draft = assessment_inputs()
     context = DigestAssessmentContext(**values)
@@ -413,9 +414,11 @@ def test_second_editor_call_recomposes_remaining_structural_style_findings():
         def __init__(self):
             self.calls = 0
             self.requests = []
+            self.system_prompts = []
 
         async def chat_completion(self, **kwargs):
             self.calls += 1
+            self.system_prompts.append(kwargs["messages"][0]["content"])
             request = json.loads(kwargs["messages"][1]["content"])
             self.requests.append(request)
             rows = request["required_recomposition_facts"]
@@ -487,6 +490,11 @@ def test_second_editor_call_recomposes_remaining_structural_style_findings():
     expected = {str(fact.fact_id) for fact in context.plan.blocks[0].required_facts}
     assert set(provider.requests[1]["target_recomposition_fact_ids"]) == expected
     assert provider.requests[1]["blocks"][0]["allow_recomposition"] is True
+    assert (
+        f"Each replacement item body must stay within {DIGEST_ITEM_BODY_MAX_CHARS} characters; "
+        "split a longer synthesis into coherent items without dropping or truncating any fact."
+        in provider.system_prompts[1]
+    )
     assert checkpoint[2].material_fact_coverage == 1.0
 
 
