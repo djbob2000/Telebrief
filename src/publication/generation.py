@@ -291,7 +291,10 @@ async def _repair_digest_candidate(
         ):
             break
         edit_scope = None
-        if thematic or size_only_failure:
+        should_recompose = size_only_failure or (
+            thematic and (call == 0 or checkpoint_requires_recomposition or structural_retry_blocks)
+        )
+        if should_recompose:
             block_ids = (
                 tuple(block.block_id for block in checkpoint[0].blocks)
                 if size_only_failure or call == 0 or checkpoint_requires_recomposition
