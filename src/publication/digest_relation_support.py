@@ -211,3 +211,27 @@ def find_unsupported_digest_relations(
             )
 
     return violations
+
+
+_RELATIVE_HOUSEHOLD_RE = re.compile(r"\b(?:в|у)\s+(?:другом|соседнем)\s+доме\b", re.IGNORECASE)
+
+
+def find_unsupported_relative_household_relations(
+    text: str, support_texts: Sequence[str]
+) -> list[DigestRelationViolation]:
+    """Check explicit physical-house comparisons only for unlocated reports.
+
+    The caller establishes that all cited fact locations are unknown. A source
+    can still explicitly report a different/neighboring house without naming an
+    address; that faithful single-source statement remains allowed.
+    """
+    supported = {
+        m.group(0).casefold()
+        for support in support_texts
+        for m in _RELATIVE_HOUSEHOLD_RE.finditer(support)
+    }
+    return [
+        DigestRelationViolation(m.group(0), m.group(0), "", reason="UNSUPPORTED_DIGEST_RELATION")
+        for m in _RELATIVE_HOUSEHOLD_RE.finditer(text)
+        if m.group(0).casefold() not in supported
+    ]

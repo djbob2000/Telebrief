@@ -12,7 +12,26 @@ if TYPE_CHECKING:
     from src.publication.article_length import ArticleLengthProfile
 
 ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v13"
-DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v12-newsroom"
+DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v19-reply-evidence-boundary"
+
+DIGEST_REPLY_CONTEXT_GUIDE = (
+    "In reporting metadata, reply-parent, parent message and «родительское сообщение» "
+    "mean the preceding message in a reply chain, not a person's parent. "
+    "Support rows sharing canonical_evidence_ids are aliases of evidence, not additional witnesses. "
+    "Source-item metadata identifies reports, not a count of distinct people. "
+    "Reply context is background only: keep supplied parent text in reply_parent_context with kind background_only_not_citable, never treat it as the current author's wording or copy it into facts, Claim Atoms, reader prose, quotes or the quote allowlist. "
+    "It does not by itself establish a service state, "
+    "source role or missing event detail. Report the supported update directly "
+    "without describing reply mechanics. switch_clock_roles describes a time of day, never a duration: "
+    "дали около 13 часов means an approximate 13:00 switch time, not 13 hours of supply. "
+    "Do not infer a family relationship from "
+    "reply metadata. Genuine family references in citable testimony remain valid "
+    "reporting material; preserve them when part of the required facts."
+    " Protected_details belong to their owning fact: keep each clock observation "
+    "attached to its supplied location and service, and each price to its paid journey leg. "
+    "These fields are navigation to exact evidence, not permission to infer a street, "
+    "conditions on the rest of an area, or a restoration sequence from untimed reports."
+)
 
 
 def build_article_narrative_contract(
@@ -157,9 +176,14 @@ Editorial craft:
 - For a busy electricity theme, aim for 1–3 connected items organized by supported places
   or chronology. Item counts and lengths are editorial targets, not reasons to drop facts
   or add filler. Other services need their own clear place in the rubric.
-- Choose an optional short scan label and emoji, or an empty headline and one natural
-  paragraph. The body develops the subject; it must not restate a thesis headline.
+- Default to an empty headline and one complete natural paragraph, with an optional emoji.
+  Use a short noun scan label only when it adds navigation. Lead with the supported news
+  or place, attach honest attribution naturally in scope, and develop the subject without
+  restating a thesis headline.
   An isolated observation with no extra detail can be one complete attributed sentence.
+- Keep every item body within the 1,200-character hard limit. If a useful synthesis is longer,
+  split it into a few coherent passages by service or supported locality; never truncate or
+  drop facts to meet the limit.
 - Write about the city, not the message stream. Avoid 'в одном из сообщений', 'другое
   сообщение описывает', 'опубликовано объявление о' and question-and-answer narration.
   Establish community attribution for the connected observations and keep it in scope;
@@ -202,5 +226,6 @@ Evidence boundary:
 - resident_question, question_context and CONTEXT supports are background, not established
   facts or service states. Where a factual answer exists, report the answer; a question
   alone must not become meta-news ('жители интересуются') or an invented answer.
+- {DIGEST_REPLY_CONTEXT_GUIDE}
 - No speculation, sensationalism, invented connective facts or decorative filler.
 """

@@ -177,7 +177,66 @@ def test_chat_normalization_retains_exact_quote_and_repairs_surrounding_prose() 
     assert _fix_chat_leaks(text) == f"{quote}. Сообщается, что заполняют отопление."
 
 
-def test_repeated_singular_attribution_requests_prose_edit_without_veto() -> None:
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    (
+        (
+            "В местном чате со ссылкой на предыдущее сообщение сообщают, "
+            "что на Северной свет появился в 10:35.",
+            "В городе со ссылкой на предыдущее сообщение сообщают, "
+            "что на Северной свет появился в 10:35.",
+        ),
+        (
+            "В чате рассказали об отключении света на Северной.",
+            "В городе рассказали об отключении света на Северной.",
+        ),
+        (
+            "По сообщению в местном чате, свет появился на Северной в 10:35.",
+            "Сообщается, что свет появился на Северной в 10:35.",
+        ),
+        (
+            "В Бердянске, по сообщению в местном чате, заполняют систему отопления.",
+            "В Бердянске, по местному сообщению, заполняют систему отопления.",
+        ),
+        (
+            "По сообщению в бердянском чате, в городе заполняют систему отопления.",
+            "Сообщается, что в городе заполняют систему отопления.",
+        ),
+    ),
+    ids=(
+        "preserve-preposition",
+        "preserve-predicate",
+        "complete-attribution-prefix",
+        "infix-attribution",
+        "named-city-chat",
+    ),
+)
+def test_chat_cleanup_preserves_complete_reporting_sentence(body: str, expected: str) -> None:
+    draft = DigestNarrativeDraft(
+        blocks=(
+            DigestNarrativeBlockDraft(
+                block_id="utilities",
+                items=(
+                    DigestEditorialItemDraft(
+                        body=body,
+                        covered_story_ids=("story:power",),
+                        cited_support_ids=("support:resident-report",),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    cleaned = sanitize_digest_narrative_draft(draft)
+    item = cleaned.blocks[0].items[0]
+
+    assert item.body == expected
+    assert item.covered_story_ids == ("story:power",)
+    assert item.cited_support_ids == ("support:resident-report",)
+    assert sanitize_digest_narrative_draft(cleaned) == cleaned
+
+
+def test_distinct_singular_sources_keep_separate_attribution_without_warning() -> None:
     from src.publication.digest_quality_diagnostics import audit_digest_prose_quality
 
     body = (
@@ -194,5 +253,139 @@ def test_repeated_singular_attribution_requests_prose_edit_without_veto() -> Non
         ),
     )
     audit = audit_digest_prose_quality(draft, {})
-    assert "REPETITIVE_BODY_ATTRIBUTION" in {warning.code for warning in audit.warnings}
+    assert "REPETITIVE_BODY_ATTRIBUTION" not in {warning.code for warning in audit.warnings}
     assert audit.is_publishable
+
+
+def test_pronoun_restatement_counts_as_repeated_attribution() -> None:
+    from src.publication.digest_quality_diagnostics import audit_digest_prose_quality
+
+    draft = DigestNarrativeDraft(
+        blocks=(
+            DigestNarrativeBlockDraft(
+                block_id="utilities",
+                items=(
+                    DigestEditorialItemDraft(
+                        body="Жители сообщают, что на улице А нет света. По их словам, отключение длится сутки."
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    audit = audit_digest_prose_quality(draft, {})
+    warning = next(w for w in audit.warnings if w.code == "REPETITIVE_BODY_ATTRIBUTION")
+
+    assert "A pronoun repeats an attribution for the same source" in warning.message
+    assert "1 redundant restatement" in warning.message
+    assert audit.is_publishable
+
+
+def test_same_attribution_wording_for_different_places_is_not_flagged() -> None:
+    from src.publication.digest_quality_diagnostics import audit_digest_prose_quality
+
+    draft = DigestNarrativeDraft(
+        blocks=(
+            DigestNarrativeBlockDraft(
+                block_id="utilities",
+                items=(
+                    DigestEditorialItemDraft(
+                        body=(
+                            "На Лисках, по сообщению жителя, света нет. "
+                            "В селе Осипенко, по сообщению жителя, электричество есть."
+                        )
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    audit = audit_digest_prose_quality(draft, {})
+
+    assert "REPETITIVE_BODY_ATTRIBUTION" not in {warning.code for warning in audit.warnings}
+    assert audit.is_publishable
+
+
+def test_repetition_repair_finding_names_exact_item_and_preserves_source_scope() -> None:
+    from types import SimpleNamespace
+
+    from src.publication.digest_quality_diagnostics import DigestQualityWarning
+    from src.publication.generation import _digest_repair_request
+
+    draft = DigestNarrativeDraft(
+        blocks=(
+            DigestNarrativeBlockDraft(
+                block_id="utilities",
+                items=(DigestEditorialItemDraft(item_id="item:power-1", body="report"),),
+            ),
+        ),
+    )
+    warning = DigestQualityWarning(
+        code="REPETITIVE_BODY_ATTRIBUTION",
+        message=(
+            "Body contains 3 attribution phrases. Use one natural attribution for observations "
+            "with the same source and certainty; retain separate attribution when the speaker, "
+            "source, or certainty changes."
+        ),
+        block_id="utilities",
+        item_index=0,
+    )
+    checkpoint = (
+        draft,
+        SimpleNamespace(violations=()),
+        None,
+        None,
+        SimpleNamespace(checks=(), prose_audit=SimpleNamespace(warnings=(warning,))),
+    )
+
+    findings, targets, _ = _digest_repair_request(checkpoint)
+
+    assert targets == ("item:power-1",)
+    assert any("item_id=item:power-1" in finding for finding in findings)
+    assert any("certainty changes" in finding for finding in findings)
+
+
+def test_source_meta_warning_identifies_phrase_and_unknown_place_constraint() -> None:
+    from src.publication.digest_quality_diagnostics import audit_digest_prose_quality
+
+    draft = DigestNarrativeDraft(
+        blocks=(
+            DigestNarrativeBlockDraft(
+                block_id="utilities",
+                items=(
+                    DigestEditorialItemDraft(body="В другом сообщении пишут, что пропала связь."),
+                ),
+            ),
+        ),
+    )
+
+    audit = audit_digest_prose_quality(draft, {})
+    warning = next(w for w in audit.warnings if w.code == "SOURCE_META_NARRATION")
+
+    assert "«В другом сообщении»" in warning.message
+    assert "Do not infer that an unnamed location is different" in warning.message
+
+
+def test_overlong_warning_gives_size_and_safe_regrouping_instruction() -> None:
+    from src.publication.digest_quality_diagnostics import audit_digest_prose_quality
+
+    draft = DigestNarrativeDraft(
+        blocks=(
+            DigestNarrativeBlockDraft(
+                block_id="utilities",
+                items=(
+                    DigestEditorialItemDraft(
+                        body="x" * 701,
+                        covered_fact_ids=("f1", "f2", "f3", "f4"),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    audit = audit_digest_prose_quality(draft, {})
+    warning = next(w for w in audit.warnings if w.code == "OVERLONG_SYNTHESIS")
+
+    assert "701-character item covers 4 required facts" in warning.message
+    assert "two or three cohesive passages" in warning.message
+    assert "every fact exactly once" in warning.message

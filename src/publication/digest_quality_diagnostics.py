@@ -5,12 +5,14 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Mapping, Sequence
+from typing import Any, Literal, Mapping, Sequence
 
 from src.publication.digest_narrative import DigestNarrativeDraft
 from src.publication.evidence import PublicationEvidence
 
-DIGEST_DIAGNOSTICS_VERSION = "digest-diagnostics-v11"
+DIGEST_DIAGNOSTICS_VERSION = "digest-diagnostics-v13"
+
+_NAMED_CHAT_META = re.compile(r"\b(?:в|из)\s+(?:[а-яё-]+\s+){0,2}чат[аеу]\b", re.IGNORECASE)
 
 _ATTRIBUTION_PATTERNS = [
     re.compile(
@@ -48,10 +50,16 @@ _TEMPORAL_CHAIN_RE = re.compile(
 _REPETITIVE_BODY_ATTRIBUTION_RE = re.compile(
     r"(?:\bпо\s+(?:сообщениям|сообщению|словам|информации|данным)\s+"
     r"(?:жителей|жителя|жительницы|горожан|горожанина|очевидцев|очевидца)\b|"
+    r"\bпо\s+(?:их|его|е[её])\s+словам\b|"
     r"\b(?:жители|житель|жительница|горожане|горожанин|очевидцы|очевидец)\s+"
     r"(?:также\s+)?(?:сообща(?:ют|ет)|пиш(?:ут|ет)|говор(?:ят|ит)|делятся)\b)",
     re.IGNORECASE,
 )
+_PLURAL_RESIDENT_ATTRIBUTION_RE = re.compile(
+    r"\b(?:жител(?:и|ей)|горожан(?:е|)|очевидц(?:ы|ев))\b|\bпо\s+их\s+словам\b",
+    re.IGNORECASE,
+)
+_PRONOUN_ATTRIBUTION_RE = re.compile(r"\bпо\s+(их|его|е[её])\s+словам\b", re.IGNORECASE)
 _CHAT_SLANG_OR_METADATA_RE = re.compile(
     r"(?:\b(?:чо\s+за\s+фигня|идите\s+нах|кинули\s+не\s+только\s+вас)\b|"
     r"\bсмайлик(?:ами|и)?\b|(?:публикуют\s+)?сообщения\s+с\s+эмодзи|"
@@ -261,6 +269,28 @@ def _has_attribution(text: str) -> bool:
     return any(p.search(text) for p in _ATTRIBUTION_PATTERNS)
 
 
+def _repeated_body_attribution_count(text: str) -> int:
+    repeated = 0
+    for pronoun_match in _PRONOUN_ATTRIBUTION_RE.finditer(text):
+        preceding = text[max(0, pronoun_match.start() - 240) : pronoun_match.start()]
+        prior_attributions = list(_REPETITIVE_BODY_ATTRIBUTION_RE.finditer(preceding))
+        if not prior_attributions:
+            continue
+        source_phrase = prior_attributions[-1].group(0)
+        pronoun = pronoun_match.group(1).casefold()
+        if pronoun == "их":
+            repeated += int(bool(_PLURAL_RESIDENT_ATTRIBUTION_RE.search(source_phrase)))
+        elif pronoun == "его":
+            repeated += int(
+                bool(re.search(r"\b(?:житель|горожанин|очевидец)\b", source_phrase, re.I))
+            )
+        else:
+            repeated += int(
+                bool(re.search(r"\b(?:жительница|горожанка|очевидка)\b", source_phrase, re.I))
+            )
+    return repeated
+
+
 def _check_duplicated_attribution(headline: str, body: str) -> bool:
     return _has_attribution(headline) and _has_attribution(body)
 
@@ -317,13 +347,75 @@ def fragmented_power_report_item_indexes(items: Sequence[Any]) -> tuple[int, ...
     return power_indexes if isolated_count >= 2 else ()
 
 
+_VOLTAGE_DETAIL_RE = re.compile(
+    r"(?<![\d:])(?P<first>\d{2,3})(?:\s*[-–—]\s*(?P<second>\d{2,3}))?"
+    r"\s*(?:вольт(?:а|ов)?|в)(?![а-яёa-z])",
+    re.IGNORECASE,
+)
+
+
+def _voltage_details(text: str) -> set[str]:
+    return {
+        match["first"] + ("-" + match["second"] if match["second"] else "")
+        for match in _VOLTAGE_DETAIL_RE.finditer(text)
+    }
+
+
+def _repeated_measurement_warnings(
+    draft: DigestNarrativeDraft,
+    presentation_plan: Any | None,
+) -> list[DigestQualityWarning]:
+    # Only a unique approved fact establishes ownership. Equal measurements
+    # from separate reports are legitimate; raw number counts prove nothing.
+    owners: dict[str, set[str]] = {}
+    for fact in getattr(presentation_plan, "required_facts", ()):
+        for detail in _voltage_details(fact.text):
+            owners.setdefault(detail, set()).add(fact.fact_id)
+    warnings = []
+    for detail, fact_ids in owners.items():
+        if len(fact_ids) != 1:
+            continue
+        occurrences = [
+            (block, index, item)
+            for block in draft.blocks
+            for index, item in enumerate(block.items)
+            if detail in _voltage_details(f"{item.headline} {item.body}")
+        ]
+        mentions = sum(
+            max(
+                1,
+                sum(
+                    match["first"] + ("-" + match["second"] if match["second"] else "") == detail
+                    for match in _VOLTAGE_DETAIL_RE.finditer(item.body)
+                ),
+            )
+            for _, _, item in occurrences
+        )
+        if mentions < 2:
+            continue
+        for block, index, item in occurrences:
+            warnings.append(
+                DigestQualityWarning(
+                    code="REPEATED_SUPPORTED_MEASUREMENT",
+                    message=(
+                        "A voltage measurement owned by one approved fact appears in multiple "
+                        "items. Retain it once in its grounded item; do not remove other facts."
+                    ),
+                    block_id=block.block_id,
+                    item_index=index,
+                    headline=item.headline,
+                )
+            )
+    return warnings
+
+
 def audit_digest_prose_quality(
     draft: DigestNarrativeDraft,
     evidence: Mapping[str, PublicationEvidence],
     presentation_plan: Any | None = None,
 ) -> DigestProseQualityAudit:
     """Run non-blocking diagnostics on a narrative digest draft."""
-    warnings: list[DigestQualityWarning] = []
+    warnings = _repeated_measurement_warnings(draft, presentation_plan)
 
     detail_item_count = 0
     multi_story_item_count = 0
@@ -348,6 +440,15 @@ def audit_digest_prose_quality(
                     )
                 )
         for idx, item in enumerate(block.items):
+            if _NAMED_CHAT_META.search(f"{item.headline} {item.body}"):
+                warnings.append(
+                    DigestQualityWarning(
+                        code="SOURCE_PROCESS_DESCRIPTION",
+                        message="State the supported news with natural attribution instead of describing its chat container.",
+                        block_id=block.block_id,
+                        item_index=idx,
+                    )
+                )
             detail_item_count += 1
             num_covered = len(item.covered_story_ids)
             covered_stories_detail += num_covered
@@ -357,14 +458,34 @@ def audit_digest_prose_quality(
                 single_story_item_count += 1
 
             cited = [evidence[sid] for sid in item.cited_support_ids if sid in evidence]
+            from src.publication.digest_reporting_context import ambiguous_passing_fare
+
+            if ambiguous_passing_fare(
+                item.body, [source.text for source in cited if source.publication_use == "PUBLISH"]
+            ):
+                warnings.append(
+                    DigestQualityWarning(
+                        code="AMBIGUOUS_PASSING_BUS_FARE",
+                        message=(
+                            "Clarify the paid leg for the passing-bus price in its sentence. "
+                            "Keep the supplied same-leg comparison; final bus destinations "
+                            "are not the purchased fare destination."
+                        ),
+                        block_id=block.block_id,
+                        item_index=idx,
+                        headline=item.headline,
+                    )
+                )
 
             if len(item.body) > 650 and len(item.covered_fact_ids) >= 4:
                 warnings.append(
                     DigestQualityWarning(
                         code="OVERLONG_SYNTHESIS",
                         message=(
-                            "A dense multi-fact paragraph needs readable topic regrouping; "
-                            "retain every supported fact and synthesize overlapping reports once."
+                            f"This {len(item.body)}-character item covers "
+                            f"{len(item.covered_fact_ids)} required facts. If the evidence supports "
+                            "it, regroup it into two or three cohesive passages by service or "
+                            "locality. Keep every fact exactly once and avoid a street-by-street list."
                         ),
                         block_id=block.block_id,
                         item_index=idx,
@@ -406,13 +527,16 @@ def audit_digest_prose_quality(
                 )
 
             item_full_text = f"{item.headline} {item.body}"
-            if _SOURCE_META_NARRATION_RE.search(item_full_text):
+            source_meta_match = _SOURCE_META_NARRATION_RE.search(item_full_text)
+            if source_meta_match:
                 warnings.append(
                     DigestQualityWarning(
                         code="SOURCE_META_NARRATION",
                         message=(
-                            "Describe the supported city development directly; do not narrate "
-                            "separate source messages or list what posts mention."
+                            f"Phrase «{source_meta_match.group(0)}» narrates how reports arrived. "
+                            "State the supported city fact directly and keep only the attribution "
+                            "needed to preserve its source or uncertainty. Do not infer that an "
+                            "unnamed location is different from another place."
                         ),
                         block_id=block.block_id,
                         item_index=idx,
@@ -442,11 +566,21 @@ def audit_digest_prose_quality(
                     )
                 )
 
-            if len(_REPETITIVE_BODY_ATTRIBUTION_RE.findall(item.body)) > 1:
+            repeated_attribution_count = _repeated_body_attribution_count(item.body)
+            if repeated_attribution_count > 0:
+                restatement_label = (
+                    "restatement" if repeated_attribution_count == 1 else "restatements"
+                )
                 warnings.append(
                     DigestQualityWarning(
                         code="REPETITIVE_BODY_ATTRIBUTION",
-                        message="Body contains multiple repetitive attribution phrases.",
+                        message=(
+                            f"A pronoun repeats an attribution for the same source "
+                            f"({repeated_attribution_count} redundant {restatement_label}). Keep "
+                            "one frame when the source and certainty are unchanged; retain separate "
+                            "attribution when the speaker, location scope, or certainty changes. "
+                            "Never turn a resident report into an unqualified fact."
+                        ),
                         block_id=block.block_id,
                         item_index=idx,
                         headline=item.headline,
@@ -809,3 +943,24 @@ def audit_rendered_digest(
     )
 
     return DigestQualityAudit(checks=tuple(checks), prose_audit=prose)
+
+
+@dataclass(frozen=True)
+class DigestEditorialReadiness:
+    """Advisory observations; absence of findings is not semantic certification."""
+
+    observations: tuple[DigestQualityWarning, ...] = ()
+    semantic_review_status: Literal["not_evaluated", "reviewed"] = "not_evaluated"
+
+    def as_metadata(self) -> dict[str, Any]:
+        return {
+            "semantic_review_status": self.semantic_review_status,
+            "observations": [
+                {"code": w.code, "block_id": w.block_id, "item_index": w.item_index}
+                for w in self.observations
+            ],
+        }
+
+
+def assess_digest_editorial_readiness(draft: DigestNarrativeDraft) -> DigestEditorialReadiness:
+    return DigestEditorialReadiness(audit_digest_prose_quality(draft, {}).warnings)

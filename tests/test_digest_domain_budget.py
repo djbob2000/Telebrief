@@ -277,3 +277,120 @@ def test_russian_lookalikes_do_not_starve_grounded_service_facts(
 
     assert "story:grounded-service" in result.admitted_story_ids
     assert secondary_id not in result.admitted_story_ids
+
+
+def test_bare_route_inventory_does_not_take_core_service_budget():
+    advert = _candidate(
+        "story:routes",
+        "mobility",
+        "transport",
+        "Объявление о маршрутах Бердянск → Москва, Ростов, Крым и обратно.",
+        epistemic_kind="community_report",
+    )
+    water = _candidate(
+        "story:water",
+        "infrastructure",
+        "water",
+        "На Азмоле вода подаётся через день по 4 часа.",
+    )
+    result = _compose([advert, water], max_chars=4096)
+    records = {record.story_ids[0]: record for record in result.fact_records}
+    assert _core_service_domains(records["story:routes"]) == set()
+    limited = _compose([advert, water], max_chars=250)
+    assert "story:water" in limited.admitted_story_ids
+    assert "story:routes" not in limited.admitted_story_ids
+    # The full knowledge inventory and source-backed route report still exist.
+    assert any("story:routes" in r.story_ids for r in limited.fact_records)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Открыт новый маршрут Бердянск — Мелитополь.",
+        "Объявление о маршрутах: автобус до Мелитополя отправляется в 08:30.",
+        "Объявление о маршрутах: проезд до Мелитополя стоит 800 рублей.",
+        "Житель сообщает, что автобус №4 ходит примерно раз в час.",
+        "Объявление о маршрутах: рейсы в Москву отменены.",
+    ],
+)
+def test_practical_transport_updates_keep_core_priority(text):
+    candidate = _candidate(
+        "story:transport", "mobility", "transport", text, epistemic_kind="community_report"
+    )
+    result = _compose([candidate], max_chars=4096)
+    assert _core_service_domains(result.fact_records[0]) == {"transport"}
+
+
+def test_departure_places_alone_are_still_a_route_inventory():
+    candidate = _candidate(
+        "story:routes",
+        "mobility",
+        "transport",
+        "Объявление о маршруте: отправление из Бердянска и Мелитополя в Тбилиси и Батуми.",
+        epistemic_kind="community_report",
+    )
+    result = _compose([candidate], max_chars=4096)
+    assert _core_service_domains(result.fact_records[0]) == set()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Жительница сообщает, что её сын живёт там, где света нет неделями.",
+        "Там живет мой сын и электричества нет неделями!",
+    ],
+)
+def test_unlocated_family_complaint_is_not_a_core_service_update(text):
+    candidate = _candidate(
+        "story:family",
+        "infrastructure",
+        "electricity",
+        text,
+        epistemic_kind="community_report",
+    )
+    result = _compose([candidate], max_chars=4096)
+    assert _core_service_domains(result.fact_records[0]) == set()
+    assert candidate[0].id in result.admitted_story_ids
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Сын на АКЗ сообщает, что света нет уже неделю.",
+        "У сына напряжение 154 В, он заряжает телефон.",
+        "Житель сообщает, что в частном секторе света нет неделями.",
+    ],
+)
+def test_localized_family_report_or_concrete_measurement_keeps_priority(text):
+    candidate = _candidate(
+        "story:report", "infrastructure", "electricity", text, epistemic_kind="community_report"
+    )
+    result = _compose([candidate], max_chars=4096)
+    assert _core_service_domains(result.fact_records[0]) == {"power"}
+
+
+def test_digest_plan_drops_only_unlocalized_private_positive_service_check():
+    from src.publication.digest_presentation import build_digest_presentation_plan
+
+    from test_digest_synthesis import _fixture
+
+    cards, evidence, _, _ = _fixture(
+        ("power", "", "Житель сообщил, что у него есть электричество, вода и газ.")
+    )
+    plan = build_digest_presentation_plan(
+        cards=cards, evidence=evidence, include_all_candidates=True
+    )
+    assert "story:5" not in plan.story_ids
+    assert {"story:1", "story:2", "story:3", "story:4"} <= set(plan.story_ids)
+
+
+def test_digest_plan_keeps_located_positive_service_observation():
+    from src.publication.digest_presentation import build_digest_presentation_plan
+
+    from test_digest_synthesis import _fixture
+
+    cards, evidence, _, _ = _fixture(("power", "АКЗ", "Житель сообщает, что на АКЗ свет есть."))
+    plan = build_digest_presentation_plan(
+        cards=cards, evidence=evidence, include_all_candidates=True
+    )
+    assert "story:5" in plan.story_ids

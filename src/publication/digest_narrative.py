@@ -19,17 +19,27 @@ from src.publication.digest_presentation import (
     RequiredDigestFact,
     validate_digest_fact_ids,
 )
+from src.publication.digest_reporting_context import (
+    fare_comparison_context,
+    publish_support_metadata,
+    writer_citable_text,
+)
 from src.publication.errors import DigestCoverageInvariantError
 from src.publication.evidence import PublicationEvidence
 
 logger = logging.getLogger(__name__)
 
+SAME_SITUATION_WRITER_GUIDANCE = (
+    "same_situation_groups link separate facts only when the resolved place, service, and "
+    "reported state match. Where it reads naturally, state that shared condition once in one "
+    "reader item while retaining every fact ID and each fact's unique location detail, time, "
+    "attribution, uncertainty, and scope. The link does not establish continuous duration, "
+    "cause, or identical sources; preserve different times and qualifications explicitly."
+)
+
 DIGEST_COMPOSITION_MEMBERSHIP_VERSION = "digest_membership_v3"
 
 _INTERNAL_LEAKAGE_RE = re.compile(r"\[(?:story:\d+|SUPPORT\s+\d+|ref-\d+|tg:\S+)\]", re.IGNORECASE)
-_INTERNAL_REPLY_ANNOTATION_RE = re.compile(
-    r'\s*\(in_reply_to:\s*".*"\)\s*$', re.IGNORECASE | re.DOTALL
-)
 _DIGEST_ATTRIBUTION_RE = re.compile(
     r"\b(?:"
     r"(?:по\s+(?:сообщениям|словам|информации|данным)\s+(?:жителей|горожан|очевидцев))"
@@ -54,7 +64,7 @@ _GENERIC_DIGEST_TOPIC_RE = re.compile(
 
 def _sanitize_digest_support_text(text: str) -> str:
     """Remove Event-First reply metadata before projecting evidence to readers."""
-    return _INTERNAL_REPLY_ANNOTATION_RE.sub("", text or "").strip()
+    return writer_citable_text(text)
 
 
 def _strip_leading_digest_attribution(text: str) -> str:
@@ -282,11 +292,24 @@ def _fix_chat_leaks_unquoted(text: str) -> str:
         return text
     # Keep community attribution, but remove the technical channel as the
     # apparent source of the report.
+    local_chat = r"(?:(?:городском|местном|районном|локальном|[А-Яа-яЁё]+ском)\s+)?чате"
+    t = re.sub(
+        rf",\s*по\s+сообщению\s+в\s+{local_chat}\b,\s*",
+        ", по местному сообщению, ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    t = re.sub(
+        rf"\bпо\s+сообщению\s+в\s+{local_chat}\b,\s*",
+        lambda match: "Сообщается, что " if match.group()[0].isupper() else "сообщается, что ",
+        t,
+        flags=re.IGNORECASE,
+    )
     local_channel = r"(?:(?:городском|местном|районном|локальном)\s+)?канале"
     t = re.sub(
         rf"\bпо\s+сообщению\s+в\s+{local_channel}\b",
         "по сообщению жителя",
-        text,
+        t,
         flags=re.IGNORECASE,
     )
     t = re.sub(
@@ -347,7 +370,7 @@ def _fix_chat_leaks_unquoted(text: str) -> str:
     )
     # 3. "в городских чатах / в чатах / в чате / в пабликах / в каналах"
     t = re.sub(
-        r"\bв\s+(?:городских\s+|местных\s+|районных\s+)?чатах(?:\s+[А-Яа-яA-Za-z-]+)?\b",
+        r"\bв\s+(?:городских\s+|местных\s+|районных\s+)?чатах\b",
         "в городе",
         t,
         flags=re.IGNORECASE,
@@ -359,7 +382,7 @@ def _fix_chat_leaks_unquoted(text: str) -> str:
         flags=re.IGNORECASE,
     )
     t = re.sub(
-        r"\bв\s+(?:городском\s+|местном\s+|районном\s+)?чате(?:\s+[А-Яа-яA-Za-z-]+)?\b",
+        rf"\bв\s+{local_chat}\b",
         "в городе",
         t,
         flags=re.IGNORECASE,
@@ -1887,6 +1910,27 @@ def _validate_composition_membership(
     return errors
 
 
+def _clock_field_validation_text(text: str) -> str:
+    """Recognize explicit clock notation without rewriting prose or quotations."""
+    pattern = re.compile(
+        r"\bв\s+(\d{1,2})\s+час(?:а|ов)?\s+(\d{1,2})\s+минут(?:а|ы)?\b",
+        re.IGNORECASE,
+    )
+
+    def clock(match: re.Match[str]) -> str:
+        hour, minute = int(match[1]), int(match[2])
+        return f"в {hour:02d}:{minute:02d}" if hour < 24 and minute < 60 else match.group()
+
+    result = []
+    cursor = 0
+    for quote in _HEADLINE_QUOTED_SPAN_RE.finditer(text):
+        result.append(pattern.sub(clock, text[cursor : quote.start()]))
+        result.append(quote.group())
+        cursor = quote.end()
+    result.append(pattern.sub(clock, text[cursor:]))
+    return "".join(result)
+
+
 def _composition_visible_risk_validation(
     *,
     item: DigestEditorialItemDraft,
@@ -1914,6 +1958,21 @@ def _composition_visible_risk_validation(
         for record in plan_block.composition_fact_records
         if getattr(record, "fact_id", None)
     }
+    item_records = [records[fid] for fid in item.covered_fact_ids if fid in records]
+    if item_records and all(
+        not record.original_location and not record.canonical_place for record in item_records
+    ):
+        from src.publication.digest_relation_support import (
+            find_unsupported_relative_household_relations,
+        )
+
+        exact_supports = [support_map[sid] for sid in item.cited_support_ids if sid in support_map]
+        for _relation in find_unsupported_relative_household_relations(
+            f"{item.headline} {item.body}", exact_supports
+        ):
+            violations.append(
+                f"UNSUPPORTED_DIGEST_RELATION:unknown_household_relation:{plan_block.block_id}:{item.item_id}"
+            )
     # A location can resolve to multiple frozen facts (for example, more than
     # one report for the same place). They may share proof only when the
     # composition has explicitly sealed them as one SAME_FACT component.
@@ -1962,16 +2021,76 @@ def _composition_visible_risk_validation(
         for fact_id in fact_ids
     }
     resolver = _load_digest_geography_resolver(plan.edition_slug)
-    visible_item_text = f"{item.headline} {item.body}"
+    visible_item_text = _clock_field_validation_text(f"{item.headline} {item.body}")
+    from src.publication.digest_evidence_ledger import DigestEvidenceLedger
+
+    ledger = DigestEvidenceLedger.from_records(item_records, support_map)
+    binding = ledger.check_visible(visible_item_text, resolver=resolver)
+    violations.extend(finding.diagnostic() for finding in binding.violations)
+    not_evaluated.extend(
+        f"{code}:{plan_block.block_id}:{item.item_id or 'item'}" for code in binding.not_evaluated
+    )
     # A clock value absent from every exact item support is unsupported even
     # when mixed fact geography prevents a finer clause-to-fact binding.
     # Missing metadata alone remains NOT_EVALUATED, as below.
     item_support_ids = {
         str(support_id) for fact_id in fact_ids for support_id in records[fact_id].support_ids
     }
+    # Normalized numeric matching proves a value, not exact quoted wording.
+    # Check numeric testimony and explicit service-state speech here; a mere
+    # provider/place name and ordinary indirect prose keep their existing policy.
+    if item_support_ids and item_support_ids.issubset(support_map):
+        exact_item_supports = [support_map[sid] for sid in sorted(item_support_ids)]
+        for risk in extract_concrete_claims(visible_item_text):
+            if risk.kind != "direct_quote":
+                continue
+            quoted_text = risk.raw[1:-1]
+            numeric_testimony = re.fullmatch(
+                r"\d[\d\s.,+\-–—/:]*\s*(?:вольт|ватт|киловатт|градус|час|минут|суток|день|дня|дней|рубл|руб|₽)\w*",
+                quoted_text,
+                flags=re.IGNORECASE,
+            )
+            service_testimony = re.search(
+                r"\b(?:свет\w*|электр\w*|вод\w*|газ\w*|интернет\w*|связ\w*)\b",
+                quoted_text,
+                re.IGNORECASE,
+            ) and re.search(
+                r"\b(?:нет|дали|дают|включили|отключили|включают|отключают|появил(?:ся|ась|ись|ось)|пришл(?:а|о|и)|пропал(?:а|о|и)?|работа(?:ет|ют|л[аои]?|ли))\b",
+                quoted_text,
+                re.IGNORECASE,
+            )
+            if not numeric_testimony and not service_testimony:
+                continue
+            if not any(quoted_text in source for source in exact_item_supports):
+                unsupported.append(risk)
+                violations.append(
+                    f"UNSUPPORTED_CONCRETE_CLAIM: [direct_quote] '{risk.raw}' "
+                    f"does not retain exact testimony in block {plan_block.block_id}"
+                )
     visible_clocks = [
         risk for risk in extract_concrete_claims(visible_item_text) if risk.kind == "time"
     ]
+
+    def clock_value(raw: str) -> str:
+        hour, minute = raw.strip().split(":")
+        return f"{int(hour):02d}:{int(minute):02d}"
+
+    visible_clock_values = {
+        clock_value(risk.raw)
+        for risk in visible_clocks
+        if re.fullmatch(r"\d{1,2}:\d{2}", risk.raw.strip())
+    }
+    for record in item_records:
+        for risk in extract_concrete_claims(record.text):
+            if (
+                risk.kind == "time"
+                and re.fullmatch(r"\d{1,2}:\d{2}", risk.raw.strip())
+                and clock_value(risk.raw) not in visible_clock_values
+            ):
+                violations.append(
+                    f"MISSING_VISIBLE_REQUIRED_TIME:{record.fact_id}:{risk.normalized} "
+                    f"in block {plan_block.block_id}"
+                )
     if visible_clocks and item_support_ids and item_support_ids.issubset(support_map):
         exact_item_supports = [support_map[sid] for sid in sorted(item_support_ids)]
         for risk in visible_clocks:
@@ -2057,7 +2176,9 @@ def _composition_visible_risk_validation(
         not_evaluated.append(f"{code}:{plan_block.block_id}:{item.item_id or 'item'}")
 
     for visible_text in (item.headline, item.body):
-        for sentence in re.split(r"(?<=[.!?;])\s+", visible_text or ""):
+        for sentence in re.split(
+            r"(?<=[.!?;])\s+", _clock_field_validation_text(visible_text or "")
+        ):
             for clause in re.split(
                 r"(?i)(?:,\s*|\s+)(?:тогда как|в то время как|при этом|зато|но|а)\s+",
                 sentence,
@@ -3724,10 +3845,14 @@ def _publish_support_texts(
 ) -> dict[str, tuple[str, ...]]:
     """Index only exact PUBLISH evidence references for canonical writer input."""
     output: dict[str, list[str]] = {}
+    from src.publication.digest_reporting_context import writer_citable_text
+
     for evidence_id, item in evidence.items():
         if str(getattr(item, "publication_use", "")) != "PUBLISH":
             continue
-        text = str(getattr(item, "text", "") or getattr(item, "source_text", "") or "").strip()
+        text = writer_citable_text(
+            str(getattr(item, "text", "") or getattr(item, "source_text", "") or "")
+        )
         if not text:
             continue
         refs = {str(evidence_id)}
@@ -3805,6 +3930,56 @@ def _related_reporting_sets(block: DigestNarrativeBlock) -> list[dict[str, Any]]
     return result
 
 
+def _same_situation_groups(block: DigestNarrativeBlock) -> list[dict[str, Any]]:
+    """Expose resolved same-state relations as editorial hints, never fact identity."""
+    fact_ids = tuple(str(record.fact_id) for record in block.composition_fact_records)
+    parent = {fact_id: fact_id for fact_id in fact_ids}
+    edge_kinds: dict[frozenset[str], set[str]] = {}
+
+    def find(fact_id: str) -> str:
+        while parent[fact_id] != fact_id:
+            parent[fact_id] = parent[parent[fact_id]]
+            fact_id = parent[fact_id]
+        return fact_id
+
+    for relation in block.composition_relations:
+        kind = str(getattr(relation.kind, "value", relation.kind))
+        if kind not in {"SAME_FACT", "SAME_SITUATION"}:
+            continue
+        left = str(relation.left_fact_id)
+        right = str(relation.right_fact_id)
+        if left not in parent or right not in parent:
+            continue
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+        edge_kinds.setdefault(frozenset((left, right)), set()).add(kind)
+
+    grouped: dict[str, list[str]] = {}
+    for fact_id in fact_ids:
+        grouped.setdefault(find(fact_id), []).append(fact_id)
+
+    result = []
+    for group in grouped.values():
+        if len(group) < 2:
+            continue
+        members = set(group)
+        kinds = {
+            kind
+            for edge, edge_values in edge_kinds.items()
+            if edge.issubset(members)
+            for kind in edge_values
+        }
+        result.append(
+            {
+                "navigation_only": True,
+                "relation": "same_situation" if "SAME_SITUATION" in kinds else "same_fact",
+                "fact_ids": group,
+            }
+        )
+    return result
+
+
 def _composition_writer_payload(
     *,
     plan: DigestNarrativePlan,
@@ -3812,7 +3987,11 @@ def _composition_writer_payload(
     cards: Sequence[StoryCard],
 ) -> list[dict[str, Any]]:
     """Build canonical input without introducing evidence outside frozen units."""
+    from src.publication.digest_evidence_ledger import DigestEvidenceEntry
+    from src.publication.digest_reporting_context import writer_citable_text
+
     publish_texts = _publish_support_texts(evidence)
+    support_metadata = publish_support_metadata(evidence)
     cards_by_id = {str(getattr(card, "id", "")): card for card in cards}
     payload: list[dict[str, Any]] = []
     for block in plan.blocks:
@@ -3843,13 +4022,12 @@ def _composition_writer_payload(
                     raise DigestCoverageInvariantError(
                         f"DIGEST_COMPOSITION_SUPPORT_TEXT_MISSING:{unit_id}:{support_id}"
                     )
-                evidence_item = evidence.get(support_id)
                 support_rows.append(
                     {
                         "support_id": support_id,
                         "texts": list(texts),
-                        "evidence_kind": str(getattr(evidence_item, "kind", "")),
-                        "source_role": str(getattr(evidence_item, "source_role", "")),
+                        "fare_comparisons": fare_comparison_context(texts),
+                        **support_metadata.get(support_id, {}),
                     }
                 )
 
@@ -3871,7 +4049,7 @@ def _composition_writer_payload(
                 facts_payload.append(
                     {
                         "fact_id": fact_id,
-                        "text": str(fact.text),
+                        "text": writer_citable_text(str(fact.text)),
                         "story_ids": list(record.story_ids),
                         "support_ids": list(fact_support_ids),
                         "original_location": str(getattr(record, "original_location", "")),
@@ -3880,11 +4058,17 @@ def _composition_writer_payload(
                         "effective_time": record.effective_time.isoformat()
                         if record.effective_time
                         else None,
-                        "observed_time": record.observed_time.isoformat()
-                        if record.observed_time
-                        else None,
                         "service_state": str(record.service_state),
                         "epistemic_kind": str(record.epistemic_kind),
+                        "protected_details": DigestEvidenceEntry(
+                            record,
+                            tuple(
+                                text
+                                for sid in fact_support_ids
+                                for text in publish_texts.get(sid, ())
+                            ),
+                            True,
+                        ).writer_details(),
                         "source_publication_time": (
                             record.source_publication_time.isoformat()
                             if record.source_publication_time
@@ -3919,6 +4103,7 @@ def _composition_writer_payload(
                 "rubric_title": block.rubric_title,
                 "reader_synthesis_groups": _reader_synthesis_groups(block),
                 "related_reporting_sets": _related_reporting_sets(block),
+                "same_situation_groups": _same_situation_groups(block),
                 "composition_units": unit_rows,
             }
         )
@@ -3944,8 +4129,12 @@ def _parse_composition_writer_output(
     parsed: Any,
     *,
     plan: DigestNarrativePlan,
+    allow_incomplete_fact_coverage: bool = False,
+    allow_incomplete_summary_coverage: bool = False,
+    allow_unmapped_writer_unit_ids: bool = False,
+    allow_duplicate_writer_fact_ids: bool = False,
 ) -> DigestNarrativeDraft:
-    """Fail closed on absent, unknown, duplicated, or widened composition membership."""
+    """Derive immutable evidence membership; optionally defer omissions to the editor."""
     if not isinstance(parsed, Mapping) or not isinstance(parsed.get("blocks"), list):
         raise ValueError("composition draft must contain a blocks list")
     raw_blocks = parsed["blocks"]
@@ -3984,8 +4173,12 @@ def _parse_composition_writer_output(
             unit_ids = tuple(str(unit_id).strip() for unit_id in raw_unit_ids)
             if len(unit_ids) != len(set(unit_ids)):
                 raise ValueError("composition item contains duplicate unit IDs")
-            if any(unit_id not in units for unit_id in unit_ids):
+            if (
+                any(unit_id not in units for unit_id in unit_ids)
+                and not allow_unmapped_writer_unit_ids
+            ):
                 raise ValueError(f"unknown composition_unit_id in {block.block_id}: {unit_ids!r}")
+            unit_ids = tuple(unit_id for unit_id in unit_ids if unit_id in units)
             if "covered_story_ids" in raw_item or "cited_support_ids" in raw_item:
                 raise ValueError(
                     "writer may not author Story or support membership on composition path"
@@ -4111,6 +4304,10 @@ def _parse_composition_writer_output(
             allowed_support_ids = {
                 str(sid) for unit_id in unit_ids for sid in units[unit_id].support_ids
             }
+            if not exact_item_unit_ids:
+                if allow_unmapped_writer_unit_ids:
+                    continue
+                raise ValueError("composition item has no exact fact or summary membership")
             if not set(story_ids).issubset(allowed_story_ids):
                 raise ValueError(f"derived Stories outside composition units {unit_ids}")
             if not set(support_ids).issubset(allowed_support_ids):
@@ -4149,12 +4346,18 @@ def _parse_composition_writer_output(
             if unit.fact_ids:
                 expected = {str(fid) for fid in unit.fact_ids}
                 actual_list = used_facts_by_unit[unit_id]
-                if len(actual_list) != len(set(actual_list)) or set(actual_list) != expected:
+                has_duplicates = len(actual_list) != len(set(actual_list))
+                has_missing = set(actual_list) != expected
+                if (has_duplicates and not allow_duplicate_writer_fact_ids) or (
+                    has_missing and not allow_incomplete_fact_coverage
+                ):
                     raise ValueError(
                         f"composition unit fact partition mismatch for {unit_id}: "
                         f"missing={sorted(expected - set(actual_list))}"
                     )
-            elif used_summary_by_unit[unit_id] != 1:
+            elif used_summary_by_unit[unit_id] != 1 and not (
+                allow_incomplete_summary_coverage and used_summary_by_unit[unit_id] == 0
+            ):
                 raise ValueError(f"summary-only composition unit missing item: {unit_id}")
         blocks.append(DigestNarrativeBlockDraft(block_id=block.block_id, items=tuple(items)))
     return DigestNarrativeDraft(blocks=tuple(blocks), situation_items=())
@@ -4163,8 +4366,11 @@ def _parse_composition_writer_output(
 class DigestNarrativeWriter:
     """Single-call narrative digest writer synthesizing flowing prose across rubric blocks."""
 
-    def __init__(self, provider: Any) -> None:
+    def __init__(self, provider: Any, *, writer_material_format: str = "legacy") -> None:
+        if writer_material_format not in ("legacy", "compact_v1"):
+            raise ValueError("digest_writer_material_format is unsupported")
         self._provider = provider
+        self._writer_material_format = writer_material_format
 
     async def _generate_composition_draft(
         self,
@@ -4191,7 +4397,7 @@ class DigestNarrativeWriter:
             '"composition_unit_ids":["one or more exact unit IDs from this same-rubric block"],'
             '"covered_fact_ids":["exact facts this item covers; empty only when all named units are summary-only"],'
             '"emoji":"optional short semantic emoji",'
-            '"headline":"optional short scan label or concise headline; may be empty for a complete natural paragraph",'
+            '"headline":"empty by default; optional short noun scan label only when it adds navigation",'
             '"body":"cohesive concise prose",'
             '"claims":[{"text":"summary-only proposition; use an empty claims list for fact-only items",'
             '"covered_fact_ids":[],'
@@ -4203,6 +4409,7 @@ class DigestNarrativeWriter:
             "Write fluent, natural prose from the supplied frozen composition plan.\n"
             "Use reader_synthesis_groups as your editorial roadmap before composing items. They group reporting about a service for readability; they are navigation, not evidence, fact equivalence, chronology, geography, or permission to omit material.\n"
             "Normally synthesize each service group into its preferred_max_reader_items or fewer cohesive items. Keep every exact fact ID and split for readability only when the material requires it. Do not create a separate item for every street or source message.\n"
+            f"{SAME_SITUATION_WRITER_GUIDANCE}\n"
             "Compare related_reporting_sets before writing: their text anchors flag potential overlap across units and service groups. They do not prove SAME_FACT, shared geography or chronology. Integrate overlapping observations into the same item where supported, state a shared detail once, and retain every distinct fact and its unique detail. Do not mention the same outage/location in multiple items merely because separate Stories repeat it.\n"
             "COMPOSITION CONTRACT:\n"
             "- Every item names one or more exact composition_unit_ids from this block; units in an item must belong to this same rubric. Do not invent, shorten, or infer IDs. The units define which material an item may represent; they do not require one visible item each.\n"
@@ -4217,7 +4424,20 @@ class DigestNarrativeWriter:
             "Return only valid JSON matching this schema; include every input block in the same order:\n"
             f"{schema_desc}"
         )
-        user_prompt = json.dumps({"blocks": blocks_payload}, ensure_ascii=False, indent=2)
+        if self._writer_material_format == "compact_v1":
+            from src.publication.digest_writer_material import (
+                COMPACT_DIGEST_BRIEF,
+                build_compact_digest_material,
+                encode_digest_material,
+            )
+
+            material = build_compact_digest_material(plan=plan, evidence=evidence, cards=cards)
+            user_prompt = encode_digest_material(material)
+            system_prompt = (
+                COMPACT_DIGEST_BRIEF + f"\nOutput language: {language}\nSchema: {schema_desc}"
+            )
+        else:
+            user_prompt = json.dumps({"blocks": blocks_payload}, ensure_ascii=False, indent=2)
         chat_kwargs: dict[str, Any] = {
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -4231,47 +4451,27 @@ class DigestNarrativeWriter:
         }
         if model:
             chat_kwargs["model"] = model
-        for attempt in range(2):
-            raw_response = await self._provider.chat_completion(**chat_kwargs)
-            cleaned = (raw_response or "").strip()
-            if cleaned.startswith("```"):
-                lines = cleaned.splitlines()
-                if lines and lines[0].startswith("```"):
-                    lines = lines[1:]
-                if lines and lines[-1].startswith("```"):
-                    lines = lines[:-1]
-                cleaned = "\n".join(lines).strip()
-            first_brace, last_brace = cleaned.find("{"), cleaned.rfind("}")
-            if first_brace < 0 or last_brace <= first_brace:
-                if attempt == 0:
-                    continue
-                raise ValueError("composition writer response did not contain a JSON object")
-            try:
-                parsed = json.loads(cleaned[first_brace : last_brace + 1])
-                return _parse_composition_writer_output(parsed, plan=plan)
-            except (ValueError, json.JSONDecodeError) as exc:
-                if attempt == 0:
-                    logger.warning(
-                        "Composition draft attempt 1 failed validation (%s); requesting repair from writer",
-                        exc,
-                    )
-                    messages = list(chat_kwargs["messages"])
-                    messages.append({"role": "assistant", "content": cleaned})
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                f"Your previous response had a validation error: {exc}.\n"
-                                "Please fix this error and output the complete corrected JSON. "
-                                "Make sure every listed fact ID appears in covered_fact_ids of exactly one item, "
-                                "and every claim partitions those facts."
-                            ),
-                        }
-                    )
-                    chat_kwargs["messages"] = messages
-                    continue
-                raise
-        raise ValueError("composition writer failed to produce valid output after retry")
+        raw_response = await self._provider.chat_completion(**chat_kwargs)
+        cleaned = (raw_response or "").strip()
+        if cleaned.startswith("```"):
+            lines = cleaned.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].startswith("```"):
+                lines = lines[:-1]
+            cleaned = "\n".join(lines).strip()
+        first_brace, last_brace = cleaned.find("{"), cleaned.rfind("}")
+        if first_brace < 0 or last_brace <= first_brace:
+            raise ValueError("composition writer response did not contain a JSON object")
+        parsed = json.loads(cleaned[first_brace : last_brace + 1])
+        return _parse_composition_writer_output(
+            parsed,
+            plan=plan,
+            allow_incomplete_fact_coverage=True,
+            allow_incomplete_summary_coverage=True,
+            allow_unmapped_writer_unit_ids=True,
+            allow_duplicate_writer_fact_ids=True,
+        )
 
     async def generate_journalistic_digest(
         self,
@@ -5621,15 +5821,16 @@ def build_digest_support_text_index(
     index: dict[str, str] = {}
 
     # 1. Primary PUBLISH evidence and its canonical source/fragment aliases.
+    from src.publication.digest_reporting_context import writer_citable_text
+
     for eid, evi in evidence.items():
         if getattr(evi, "publication_use", "") != "PUBLISH":
             continue
-        if getattr(evi, "text", None):
-            index[eid] = evi.text
-        elif getattr(evi, "source_text", None):
-            index[eid] = evi.source_text
-        text = str(getattr(evi, "text", "") or getattr(evi, "source_text", "") or "").strip()
+        text = writer_citable_text(
+            str(getattr(evi, "text", "") or getattr(evi, "source_text", "") or "")
+        )
         if text:
+            index[eid] = text
             for ref in (
                 str(getattr(evi, "evidence_id", "") or "").strip(),
                 str(getattr(evi, "source_ref", "") or "").strip(),
@@ -5648,7 +5849,7 @@ def build_digest_support_text_index(
         if isinstance(records, dict):
             for ref, rec in records.items():
                 msg = getattr(rec, "message", None)
-                msg_text = getattr(msg, "text", "") if msg else ""
+                msg_text = writer_citable_text(getattr(msg, "text", "") if msg else "")
                 if msg_text and ref not in index:
                     index[ref] = msg_text
 

@@ -171,8 +171,10 @@ def build_digest_coverage_trace(
     plan: DigestPresentationPlan,
     final_draft: DigestNarrativeDraft,
     narrative_plan: DigestNarrativePlan | None = None,
+    *,
+    allow_incomplete_coverage: bool = False,
 ) -> DigestCoverageTrace:
-    """Build and audit the canonical final digest coverage trace."""
+    """Build a coverage trace; incomplete coverage is allowed only for repair checkpoints."""
     # Map dashboard coverage
     dashboard_groups_by_story: dict[str, list[str]] = {}
     dashboard_supports_by_story: dict[str, list[str]] = {}
@@ -409,21 +411,21 @@ def build_digest_coverage_trace(
         detail_texts = tuple(detail_texts_by_story.get(sid, ()))
 
         if pres.mode == "DASHBOARD_ONLY":
-            if not dash_groups or not dash_supports:
+            if not allow_incomplete_coverage and (not dash_groups or not dash_supports):
                 raise DigestCoverageInvariantError(
                     f"missing dashboard coverage for {sid} (mode=DASHBOARD_ONLY)"
                 )
         elif pres.mode == "DETAIL_ONLY":
-            if not detail_items or not detail_supports:
+            if not allow_incomplete_coverage and (not detail_items or not detail_supports):
                 raise DigestCoverageInvariantError(
                     f"missing detail coverage for {sid} (mode=DETAIL_ONLY)"
                 )
         elif pres.mode == "DASHBOARD_AND_DRILLDOWN":
-            if not dash_groups or not dash_supports:
+            if not allow_incomplete_coverage and (not dash_groups or not dash_supports):
                 raise DigestCoverageInvariantError(
                     f"missing dashboard coverage for {sid} (mode=DASHBOARD_AND_DRILLDOWN)"
                 )
-            if not detail_items or not detail_supports:
+            if not allow_incomplete_coverage and (not detail_items or not detail_supports):
                 raise DigestCoverageInvariantError(
                     f"missing detail coverage for {sid} (mode=DASHBOARD_AND_DRILLDOWN)"
                 )

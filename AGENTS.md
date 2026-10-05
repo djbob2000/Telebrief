@@ -131,6 +131,7 @@ Rules:
 - A location-only clarification (for example, which district contains a street or where a landmark stands) is context, not a publishable Story or reader-facing item. Keep the location when it anchors a concrete event, service state, or practical access detail.
 - Narrow deterministic causal relation validation rejects unsupported mechanism/cause claims with `UNSUPPORTED_DIGEST_RELATION`.
 - Related stories may be grouped for presentation inside their deterministic rubric/block, but legitimate coverage must not silently disappear.
+- An internal `SAME_SITUATION` relation is editorial navigation only. It requires a shared resolved place, service, and known reported state; it does not merge or delete fact/Story/source identities, establish continuous duration or cause, or make separate source reports identical. State a supported shared condition once where natural, while preserving each fact's distinct time, location detail, attribution, uncertainty, and scope. Keep conflicting states distinct.
 - Commercial classifieds, private disputes, personal accusations, phone-number spam, repetitive ad copy, and directory-style payload must not dominate the digest.
 - Community reports must preserve their epistemic status through natural attribution without duplicating attribution phrases in both headline and body.
 - The digest should be compact and easy to scan, but not so aggressively compressed that meaningful local facts disappear.
@@ -328,7 +329,7 @@ When the writer draft contains isolated factual or stylistic validation issues (
 
 All structural operations returned in one response are resolved against the same immutable base before application and form one atomic batch. The complete resulting draft is assessed, including Evidence Boundary and reader-quality checks. Any operation error, new blocker, ambiguous/global finding, or assessment error rolls back the entire structural batch to the exact pre-structure checkpoint. If the response also contains legacy text patches, only those already accepted at that checkpoint remain. Text-only patches keep their existing per-unit quarantine behavior. Each editor call re-validates the exact resulting draft and checkpoint; an unsafe final candidate still fails closed.
 
-Generation remains limited to one logical writer stage (at most two nonempty responses only under the unusable-response rule above) and at most two calls to this existing editor, under the shared generation deadline. There is no extra planner, independent writer retry, or per-operation model call. Structural editing is skipped with a safe outcome if the complete article context or required eligible support context cannot fit the current budgets; a truncated article must never be presented as complete context.
+Event-First article generation remains limited to one logical writer stage (at most two nonempty responses only under the unusable-response rule above) and at most two calls to this existing editor, under the shared generation deadline. Digest repair uses its separate budget in §0.10. There is no extra planner, independent writer retry, or per-operation model call. Structural editing is skipped with a safe outcome if the complete article context or required eligible support context cannot fit the current budgets; a truncated article must never be presented as complete context.
 
 Ordinary colloquial author prose is a nonblocking register repair; actual disclosure of collection mechanics remains `CHAT_KITCHEN_LEAK`. Never treat harmless colloquial wording as evidence of an unsupported fact.
 
@@ -393,7 +394,7 @@ Agents must not make changes whose effect is to:
 - treat a support-level topic hint as proof of a service state, causal relation, shared chronology, geographic relation, or publication eligibility;
 - change article eligibility or require corroboration because an ArticleSupport has a topic hint, or suppress a useful legitimate single-source community report for lack of corroboration;
 - use structural editing to change units outside the current pass's explicit allowlist, reuse stale positional IDs, transfer old Claim Atoms to rewritten prose, or partially apply a structural batch after any operation or full-candidate assessment failure;
-- add a planner, independent second writer stage, per-operation model call, or editor call beyond the two-call budget or shared generation deadline; the sole exception is the bounded next-slot transition for a definitively unusable response described in §0.7;
+- for Event-First articles, add a planner, independent second writer stage, per-operation model call, or editor call beyond the two-call budget or shared generation deadline; the sole exception is the bounded next-slot transition for a definitively unusable response described in §0.7. Digest editor repairs follow the separate three-call rule below;
 - strengthen verification so aggressively that legitimate community news disappears;
 - reintroduce claim-first per-message LLM explosion as the default processing architecture;
 - hardcode one city's geography or examples into generic production prompt logic;
@@ -405,7 +406,27 @@ Agents must not make changes whose effect is to:
 - configure or run AI models not explicitly declared in `.env` (strict runtime allowlist enforced in `src/ai_providers.py`).
 
 
-## 0.10 Target reader experience
+## 0.10 Digest editorial verification lessons
+
+- Verify material delivery at the actual provider boundary: each referenced PUBLISH support must have its citable text and source identity in the editor request. A complete internal evidence map does not establish that the model received it.
+- Protected numeric/time details stay attached to their owning fact, location, service and supplied conditions. Check these bindings in actual candidate prose; do not let another fact's true number or destination justify a different assertion. An unresolved binding remains NOT_EVALUATED, not a corroboration or eligibility veto.
+- Geographic identifiers from municipal, colloquial and elevation views are not interchangeable. Disjoint identifiers in different views do not by themselves prove different physical locations.
+- Forward the specific findings from a rejected editor candidate to the next existing call. Retain the prior exact assessed checkpoint until a replacement passes; never silently delete failing sentences or add calls to compensate.
+- Fewer visible items do not by themselves mean better synthesis. Assess whether each paragraph has a clear subject and readable internal relations; replacing scattered bullets with one long service/address inventory is not an editorial success. Paragraph or character counts remain diagnostics, not new publication vetoes.
+- A replay of an old frozen presentation plan tests composition, not the current Selection policy. If the old plan already approves promotional or conversational material, keep it for a faithful replay and report the upstream defect separately; never silently delete it in the writer to improve a quality score.
+- A technical `accepted` result, valid fact IDs and 100% membership coverage do not establish semantic fidelity or readable journalism. Report `NOT_EVALUATED` bindings explicitly; never describe them as verified. Assess the exact rendered prose against its own supporting evidence as well as the selected Story/fact inventory.
+- Trace defects through the original source, writer-facing material, raw writer response, each existing editor response and final rendering before changing prompts or validators. The editor may introduce ambiguity or fragmentation into a better writer draft; assess the resulting candidate, not the intended repair.
+- Observation timestamps remain internal provenance for validation; do not expose them as digest event dates in writer/editor fact rows. Preserve explicit source dates and times in citable text. This digest projection rule does not change the article dossier contract.
+- Keep a fare attached to the paid journey leg. A passing bus's final destination is not necessarily the destination purchased for that price. Preserve the supplied leg in writer material and edited prose; do not infer a missing leg from the route name.
+- Technical support aliases must retain their canonical evidence/source identity and consistent source-role metadata. Multiple IDs pointing to the same evidence are not additional witnesses. An ambiguous alias must not be assigned an invented single source identity.
+- `reply-parent`, `parent message` and «родительское сообщение» in metadata mean the preceding message in a reply chain. They establish neither a family relationship nor an operational fact. Preserve genuine family testimony, but omit collection mechanics from reader prose. Source-role wording must follow the evidence: several messages do not by themselves prove several people or groups of residents.
+- Text serialized as `in_reply_to` is not citable wording from the current author. Exclude the parent text from digest fact records, Claim Atoms, citable support text, and quote allowlists. When the writer dossier needs reply context, retain it only in an explicitly labelled `background_only_not_citable` field; preserve the original message and parent linkage internally for provenance.
+- Direct-quote fidelity includes internal punctuation and numeric spelling. Typography around a quote may change; its contents must remain exact. If prose requires correction or compression, use faithful indirect speech. Do not silently alter or strip a failed quotation during finalization.
+- Deterministic attribution cleanup must preserve surrounding predicates, prepositions, facts and quoted spans. A generic pattern must not consume an arbitrary word following “chat” or “channel”. Verify full sentences and repeated application, not only regex matches.
+- Compare changes on frozen, identical inputs and retain failed/rejected runs. Reused development windows are not independent holdouts; manual self-review is not blind review. A targeted defect disappearing does not establish overall quality improvement. Model upgrades require demonstrated reader benefit, not technical acceptance alone.
+- Improve material organization and bounded editing without suppressing useful single-source reports, adding stylistic publication vetoes, or adding model stages. Keep editorial readiness separate from Evidence Boundary safety. Store experiment-specific scores, costs and prose outside this canonical contract.
+
+## 0.11 Target reader experience
 
 **Digest:** fast to scan, broad enough to be useful, operationally clear, epistemically honest.
 
@@ -438,7 +459,7 @@ EventPayload + exact fragment provenance
         ↓
 Publication snapshot + selection
         ↓
-        ├── Digest: coverage-preserving selection -> DigestPresentationPlan -> City Situation + detail rendering -> DigestCoverageTrace -> publication
+        ├── Digest: coverage-preserving selection -> DigestPresentationPlan -> thematic AI synthesis and bounded editing -> evidence/coverage validation -> DigestCoverageTrace -> publication
         └── Article: coverage-preserving selection -> ArticleCoveragePlan -> writer attempt -> targeted validation/editing -> ArticleClaimTrace -> publication
         ↓
 Delivery
@@ -1333,3 +1354,9 @@ For article work, optimize for:
 > **rich city-life coverage + editorial hierarchy + preserved microdetails + evidence fidelity.**
 
 That is the Telebrief product.
+
+### Digest editorial repair checkpoints
+
+Thematic digest editing may reorganize authorized blocks on the first editor call. The second call repairs remaining factual or prose findings. A third and final call is allowed only for a fully covered candidate whose remaining issue is text size, or for specific reader-quality warnings on an otherwise safe candidate. For a size-only failure, pass the exact latest assessed candidate to the final editor, preserve every selected Story and required fact, and recompose the authorized themes to fit Telegram and per-item limits. A length-failing candidate is input for repair, never a publishable checkpoint; the final candidate must pass the complete canonical assessment. Keep the configured repair deadline. Never truncate text or remove selected facts to meet a character limit. Article editing retains its separate two-call ceiling. A source-backed measurement repeated from one approved fact is a repair advisory, not a publication blocker or corroboration requirement. Quarantine edits that introduce repetition or ambiguous fare meaning into an already safe checkpoint; retain the exact previous assessment. Equal measurements in separate approved facts are not proof of duplication. A successful replay of a previously used frozen run remains a regression check, not an independent quality evaluation. Inspect actual prose and evaluate new reporting windows with current Selection before claiming editorial quality.
+
+A single speaker's unlocated statement that their own light, water and gas are available, without a change, interruption, practical detail or other local anchor, is private status chatter and may be left out of the scan-first digest before its presentation plan is approved. Keep the evidence internally. Preserve localized positive availability reports, outage/repair changes, practical consequences, and reports from multiple distinct source items.

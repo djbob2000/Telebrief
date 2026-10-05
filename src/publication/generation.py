@@ -6,7 +6,8 @@ import asyncio
 import datetime as dt
 import logging
 import re
-from collections.abc import Callable, Sequence
+import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from typing import Any
 
@@ -102,7 +103,9 @@ def _digest_repair_request(
         if str(check.status) == "FAIL"
     )
     findings.extend(
-        f"STYLE_OBSERVATION:{warning.code}: {warning.message}"
+        f"STYLE_OBSERVATION:{warning.code}: block={warning.block_id} "
+        f"item_id={_digest_warning_item_id(draft, warning)} "
+        f"item_index={warning.item_index}: {warning.message}"
         for warning in audit.prose_audit.warnings
     )
     findings = list(dict.fromkeys(findings))
@@ -138,6 +141,77 @@ def _digest_repair_request(
     return findings, targets, recompose_ids
 
 
+def _digest_warning_item_id(draft: Any, warning: Any) -> str:
+    if warning.item_index is None:
+        return "unknown"
+    for block in draft.blocks:
+        if block.block_id != warning.block_id:
+            continue
+        if 0 <= warning.item_index < len(block.items):
+            return block.items[warning.item_index].item_id or "unknown"
+    return "unknown"
+
+
+def _digest_warning_item_ids(
+    draft: Any,
+    warnings: Any,
+    *,
+    codes: set[str],
+    allowed_ids: set[str],
+) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            item.item_id
+            for warning in warnings
+            if warning.code in codes and warning.block_id
+            for block in draft.blocks
+            if block.block_id == warning.block_id
+            for index, item in enumerate(block.items)
+            if index == warning.item_index and item.item_id and item.item_id in allowed_ids
+        )
+    )
+
+
+def _digest_local_issue_keys(checkpoint: tuple[Any, ...]) -> set[tuple[str, str]]:
+    draft, _, _, _, audit = checkpoint
+    return {
+        (warning.code, item.item_id)
+        for warning in audit.prose_audit.warnings
+        for block in draft.blocks
+        if block.block_id == warning.block_id
+        for index, item in enumerate(block.items)
+        if index == warning.item_index and item.item_id
+    }
+
+
+def _digest_has_only_size_failure(checkpoint: tuple[Any, ...]) -> bool:
+    """Return whether a fully covered candidate has only a size-related failure."""
+    _, validation, coverage, _, audit = checkpoint
+    blocking_failures = audit.blocking_failures
+    length_violation_prefixes = ("BODY_TOO_LONG:", "HEADLINE_TOO_LONG:")
+    length_violations = tuple(
+        violation
+        for violation in validation.violations
+        if violation.startswith(length_violation_prefixes)
+    )
+    other_violations = tuple(
+        violation
+        for violation in validation.violations
+        if not violation.startswith(length_violation_prefixes)
+    )
+    post_limit_failed = any(
+        check.code == "TELEGRAM_SINGLE_POST_LIMIT" for check in blocking_failures
+    )
+    return (
+        not other_violations
+        and not validation.unsupported_claims
+        and coverage.story_coverage >= 1.0
+        and coverage.material_fact_coverage >= 1.0
+        and (bool(length_violations) or post_limit_failed)
+        and all(check.code == "TELEGRAM_SINGLE_POST_LIMIT" for check in blocking_failures)
+    )
+
+
 async def _repair_digest_candidate(
     *,
     checkpoint: tuple[Any, ...],
@@ -149,30 +223,173 @@ async def _repair_digest_candidate(
     model: str | None,
     timeout_seconds: float,
     implementation_versions: Any,
+    editor_scope: str = "targeted_items",
+    review_without_findings: bool = False,
+    deadline_at: float | None = None,
+    max_context_chars: int | None = None,
+    support_text_by_id: Mapping[str, str] | None = None,
 ) -> tuple[tuple[Any, ...], bool, int]:
-    """Use the existing editor at most twice, retaining each exact safe assessment.
+    """Use up to three bounded editor calls, retaining each exact safe assessment.
 
     Style diagnostics request an edit; they do not establish factual unsafety
-    or unreadability. A rejected later edit cannot erase a safe earlier result.
+    or unreadability. The final call is reserved for remaining style findings or
+    a complete, fully covered candidate that fails only a size check.
+    A rejected later edit cannot erase a safe earlier result.
     """
-    from src.publication.digest_editor import DigestRecompositionError
+    from src.publication.digest_edit_scope import build_digest_block_edit_scope
+    from src.publication.digest_editor import (
+        DigestEditorContextBudgetError,
+        DigestEditorContextMissingError,
+        DigestRecompositionError,
+    )
     from src.publication.digest_narrative import sanitize_digest_narrative_draft
 
-    if not _digest_repair_request(checkpoint)[0]:
+    if editor_scope not in ("targeted_items", "thematic_blocks"):
+        raise ValueError("digest_editor_scope is unsupported")
+    thematic = editor_scope == "thematic_blocks"
+    if not _digest_repair_request(checkpoint)[0] and not (thematic and review_without_findings):
         return checkpoint, False, 0
+    deadline = deadline_at if deadline_at is not None else time.monotonic() + timeout_seconds
+    actual_calls = 0
     used = False
     feedback = ""
-    max_calls = 2
+    feedback_targets: tuple[str, ...] = ()
+    safe_checkpoint = checkpoint
+    editor_checkpoint = checkpoint
+    max_calls = 3
     for call in range(max_calls):
+        checkpoint = editor_checkpoint
+        size_only_failure = _digest_has_only_size_failure(checkpoint)
+        if call == 2 and not size_only_failure:
+            checkpoint_safe = (
+                checkpoint[1].is_valid
+                and checkpoint[4].is_publishable
+                and checkpoint[2].story_coverage >= 1.0
+                and checkpoint[2].material_fact_coverage >= 1.0
+            )
+            if not checkpoint_safe or not checkpoint[4].prose_audit.warnings:
+                break
         findings, targets, recompose_ids = _digest_repair_request(checkpoint)
-        if not findings:
+        checkpoint_requires_recomposition = not (
+            checkpoint[1].is_valid
+            and checkpoint[4].is_publishable
+            and checkpoint[2].story_coverage >= 1.0
+            and checkpoint[2].material_fact_coverage >= 1.0
+        )
+        structural_retry_blocks = tuple(
+            dict.fromkeys(
+                warning.block_id
+                for warning in checkpoint[4].prose_audit.warnings
+                if warning.code in {"OVERLONG_SYNTHESIS", "FRAGMENTED_SERVICE_REPORTS"}
+                and warning.block_id
+            )
+        )
+        if (
+            not findings
+            and not feedback
+            and (call > 0 or not thematic or not review_without_findings)
+        ):
             break
+        edit_scope = None
+        should_recompose = size_only_failure or (
+            thematic and (call == 0 or checkpoint_requires_recomposition or structural_retry_blocks)
+        )
+        if should_recompose:
+            block_ids = (
+                tuple(block.block_id for block in checkpoint[0].blocks)
+                if size_only_failure or call == 0 or checkpoint_requires_recomposition
+                else structural_retry_blocks
+            )
+            edit_scope = build_digest_block_edit_scope(
+                checkpoint[0], plan=plan, block_ids=block_ids
+            )
+            targets = edit_scope.item_ids
+            recompose_ids = edit_scope.block_ids
+            findings.append(
+                "EDITORIAL_CONSTRAINT: Recompose the authorized full themes for natural hierarchy, cohesion, precise detail and honest attribution. Reconcile the complete required fact inventory and represent every fact exactly once. Keep unchanged themes when already clear; do not invent context or remove selected facts."
+            )
+        if call == 2:
+            if size_only_failure:
+                findings.append(
+                    "EDITORIAL_CONSTRAINT: FINAL_COMPRESSION. The previous candidate represents 100% of selected stories and required facts; its remaining failures concern text size. This is the final repair call. Its current rendered length is "
+                    f"{getattr(checkpoint[3], 'visible_character_count', 'unknown')} visible characters and "
+                    f"{getattr(checkpoint[3], 'utf16_character_count', 'unknown')} UTF-16 units; target at most 3600 characters. "
+                    "Compress this exact candidate by removing duplicate wording, repeated labels and unnecessary phrasing. Keep each item body within the 1200-character limit. Preserve every selected story and fact exactly once, with its place, time, number, attribution, uncertainty and service scope attached. Do not solve length by dropping a fact, story, item, rubric or required detail. Recompose the full authorized themes and check the final rendered length."
+                )
+            else:
+                findings.append(
+                    "EDITORIAL_CONSTRAINT: FINAL_EDITORIAL_PASS. This is the final bounded style pass. Resolve the remaining listed prose warnings with the smallest clear edits. Preserve every selected story and fact exactly once, with its evidence, attribution, uncertainty, place, time and scope unchanged."
+                )
+        if call > 0 and thematic:
+            findings.append(
+                "EDITORIAL_CONSTRAINT: Recheck the final wording against its own supporting facts "
+                "and source text. Keep each street, district, date, duration, clock time and service "
+                "state attached to the fact that supplies it. Preserve city-wide scope only when "
+                "that fact explicitly says city-wide; do not transfer a time, status or location "
+                "between facts. When support is unclear, keep the narrow attributed wording rather "
+                "than broadening the claim."
+            )
+            if checkpoint_requires_recomposition:
+                findings.append(
+                    "EDITORIAL_CONSTRAINT: This final editor call must use full thematic recomposition because the current checkpoint is still unsafe. Return recomposed_items for every authorized block; a text-only patch cannot restore missing facts or repair fact membership."
+                )
+            elif structural_retry_blocks:
+                findings.append(
+                    "EDITORIAL_CONSTRAINT: This final editor call must recompose each authorized theme that still has a structural readability finding. Group related service reports into fewer coherent passages, remove repeated facts and message-by-message narration, and retain every exact fact once. Return recomposed_items, not text-only patches."
+                )
+            else:
+                recompose_ids = ()
+                # A safe checkpoint needs only local text repair. If the existing
+                # candidate still lacks complete coverage or fails a hard check,
+                # keep the repair structural so it can restore fact membership.
+                local_targets = tuple(
+                    dict.fromkeys(
+                        item.item_id
+                        for warning in checkpoint[4].prose_audit.warnings
+                        for block in checkpoint[0].blocks
+                        if block.block_id == warning.block_id
+                        for index, item in enumerate(block.items)
+                        if index == warning.item_index and item.item_id
+                    )
+                )
+                targets = local_targets or targets or feedback_targets
+                findings.append(
+                    "EDITORIAL_CONSTRAINT: This is the final local text repair. Change only "
+                    "authorized items; preserve other items exactly. Do not merge or recompose blocks. "
+                    "Replace source-process narration with natural attributed reporting, preserving uncertainty."
+                )
+            if not checkpoint_requires_recomposition:
+                warning_targets = _digest_warning_item_ids(
+                    checkpoint[0],
+                    checkpoint[4].prose_audit.warnings,
+                    codes={
+                        "REPETITIVE_BODY_ATTRIBUTION",
+                        "SOURCE_META_NARRATION",
+                        "SOURCE_PROCESS_DESCRIPTION",
+                        "OVERLONG_SYNTHESIS",
+                    },
+                    allowed_ids=set(targets),
+                )
+                if warning_targets:
+                    findings.append(
+                        "EDITORIAL_CONSTRAINT: Apply the specific repair to these diagnosed items: "
+                        + ", ".join(warning_targets)
+                        + ". For repeated attribution, use one frame only across reports with the "
+                        "same source and certainty; retain attribution when either changes and keep "
+                        "qualifiers such as 'возможно', but do not repeat the same attribution as "
+                        "'по их словам' in the same passage. Replace message-logistics phrases with the "
+                        "supported event itself, without implying an unknown place is a different "
+                        "district. For an overlong item, regroup the facts into two or three clear "
+                        "service or locality passages when evidence supports that split. Preserve "
+                        "each exact fact once and keep its time, place, uncertainty, and source scope."
+                    )
         if feedback:
             findings.append(
                 "EDITORIAL_CONSTRAINT: The previous edit was rejected: "
                 + feedback
                 + " Preserve every targeted fact and summary unit exactly once."
             )
+        feedback_targets = targets
         attempt_id = await observer.attempt_started(
             "repair",
             metadata={
@@ -188,8 +405,22 @@ async def _repair_digest_candidate(
                 ][:20],
             },
         )
+        actual_calls += 1
         try:
-            async with asyncio.timeout(timeout_seconds):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("DIGEST_GENERATION_DEADLINE")
+            extra_kwargs: dict[str, Any] = {
+                "max_context_chars": max_context_chars,
+                "support_text_by_id": support_text_by_id,
+            }
+            if edit_scope is not None:
+                extra_kwargs.update(
+                    edit_scope=edit_scope,
+                    max_context_chars=max_context_chars,
+                    support_text_by_id=support_text_by_id,
+                )
+            async with asyncio.timeout(remaining):
                 edited = await editor.polish_and_compress(
                     checkpoint[0],
                     plan=plan,
@@ -199,6 +430,7 @@ async def _repair_digest_candidate(
                     violations=findings,
                     target_item_ids=targets,
                     recompose_block_ids=recompose_ids,
+                    **extra_kwargs,
                 )
             candidate = sanitize_digest_narrative_draft(edited)
             validation, coverage, artifact, audit = evaluate_candidate(candidate)
@@ -208,39 +440,159 @@ async def _repair_digest_candidate(
                 and coverage.story_coverage >= 1.0
                 and coverage.material_fact_coverage >= 1.0
             )
-            accepted = safe and candidate != checkpoint[0]
+            checkpoint_safe = (
+                checkpoint[1].is_valid
+                and checkpoint[4].is_publishable
+                and checkpoint[2].story_coverage >= 1.0
+                and checkpoint[2].material_fact_coverage >= 1.0
+            )
+            # Preserve an already clear price-to-leg relation. This quarantines
+            # an editor regression; the advisory itself never vetoes publication
+            # or prevents recovery from an initially unsafe writer response.
+            previous_fare_ambiguities = {
+                warning.block_id
+                for warning in checkpoint[4].prose_audit.warnings
+                if warning.code == "AMBIGUOUS_PASSING_BUS_FARE"
+            }
+            new_fare_ambiguities = {
+                warning.block_id
+                for warning in audit.prose_audit.warnings
+                if warning.code == "AMBIGUOUS_PASSING_BUS_FARE"
+            } - previous_fare_ambiguities
+            previous_repetition = sum(
+                w.code == "REPEATED_SUPPORTED_MEASUREMENT"
+                for w in checkpoint[4].prose_audit.warnings
+            )
+            new_repetition = (
+                sum(w.code == "REPEATED_SUPPORTED_MEASUREMENT" for w in audit.prose_audit.warnings)
+                > previous_repetition
+            )
+            editorial_regression = (
+                safe and checkpoint_safe and (bool(new_fare_ambiguities) or new_repetition)
+            )
+            local_issues = {
+                issue for issue in _digest_local_issue_keys(checkpoint) if issue[1] in targets
+            }
+            remaining_issues = _digest_local_issue_keys(
+                (candidate, validation, coverage, artifact, audit)
+            )
+            no_local_progress = (
+                thematic
+                and call > 0
+                and safe
+                and checkpoint_safe
+                and candidate != checkpoint[0]
+                and bool(local_issues)
+                and not (local_issues - remaining_issues)
+            )
+            accepted = (
+                safe
+                and not editorial_regression
+                and not no_local_progress
+                and candidate != checkpoint[0]
+            )
+            outcome = (
+                "rejected_editorial_regression"
+                if editorial_regression
+                else "rejected_editorial_no_progress"
+                if no_local_progress
+                else "accepted_change"
+                if accepted
+                else "unchanged_safe"
+                if safe
+                else "rejected_unsafe"
+            )
             await observer.attempt_finished(
                 attempt_id,
-                "succeeded" if accepted else "failed",
-                error_kind=None if accepted else "digest_editor_combined_repair_unresolved",
+                "succeeded"
+                if (
+                    accepted
+                    or safe
+                    and thematic
+                    and not editorial_regression
+                    and not no_local_progress
+                )
+                else "failed",
+                error_kind=None
+                if (
+                    accepted
+                    or safe
+                    and thematic
+                    and not editorial_regression
+                    and not no_local_progress
+                )
+                else "digest_editor_combined_repair_unresolved",
                 metadata={
                     "repair_used": accepted,
+                    "editor_outcome": outcome,
                     "validation": {
                         "is_valid": validation.is_valid,
                         "scope": "implemented_hard_checks_only",
                         "not_evaluated": list(validation.not_evaluated),
                     },
-                    "quality_audit": audit.as_metadata(),
+                    "quality_audit": {
+                        "is_publishable": audit.is_publishable,
+                        "finding_codes": [c.code for c in audit.checks],
+                        "style_codes": [w.code for w in audit.prose_audit.warnings],
+                    },
                 },
             )
             if accepted:
                 checkpoint = (candidate, validation, coverage, artifact, audit)
+                safe_checkpoint = checkpoint
+                editor_checkpoint = checkpoint
                 used = True
                 feedback = ""
+            elif no_local_progress:
+                feedback = "the local edit did not resolve any diagnosed target issue"
+            elif editorial_regression:
+                feedback = (
+                    "the edit introduced a repeated supported measurement or an ambiguous passing-bus "
+                    "fare into a safe checkpoint; retain each measurement once with its owner "
+                    "and preserve the explicit paid-leg meaning"
+                )
             elif not safe:
-                feedback = "the candidate failed factual, coverage, or rendered-post safety checks"
+                candidate_checkpoint = (candidate, validation, coverage, artifact, audit)
+                rejected_findings, _, _ = _digest_repair_request(candidate_checkpoint)
+                if _digest_has_only_size_failure(candidate_checkpoint):
+                    editor_checkpoint = candidate_checkpoint
+                    feedback = (
+                        "the candidate preserves all selected stories and required facts and "
+                        "passes the other blocking checks, but its rendered text exceeds the "
+                        "single-post limit; continue from this exact candidate and compress it "
+                        "without dropping facts"
+                    )
+                else:
+                    feedback = (
+                        "the candidate failed factual, coverage, or rendered-post safety checks:\n"
+                        + "\n".join(rejected_findings)
+                    )
             else:
+                if thematic:
+                    break
                 feedback = "the targeted wording did not change"
+        except (TimeoutError, asyncio.CancelledError):
+            raise
+        except DigestEditorContextMissingError:
+            await observer.attempt_finished(
+                attempt_id, "succeeded", metadata={"editor_outcome": "skipped_missing_context"}
+            )
+            break
+        except DigestEditorContextBudgetError:
+            await observer.attempt_finished(
+                attempt_id, "succeeded", metadata={"editor_outcome": "skipped_context_budget"}
+            )
+            break
         except Exception as exc:
             feedback = str(exc) if isinstance(exc, DigestRecompositionError) else type(exc).__name__
             await observer.attempt_finished(
                 attempt_id,
                 "failed",
                 error_kind="digest_editor_combined_repair_exception",
-                metadata={"error_message": feedback},
+                metadata={"error_message": feedback, "editor_outcome": "invalid_response"},
             )
             logger.warning("DigestEditor repair rejected: %s", feedback)
-    return checkpoint, used, max_calls
+    return safe_checkpoint, used, actual_calls
 
 
 class PublicationGenerationService:
@@ -317,6 +669,7 @@ class PublicationGenerationService:
                 from src.publication.digest_quality_diagnostics import DIGEST_DIAGNOSTICS_VERSION
                 from src.publication.narrative_contract import DIGEST_NARRATIVE_PROMPT_VERSION
                 from src.publication.policies import (
+                    DIGEST_EDITOR_PROMPT_VERSION,
                     DIGEST_EDITORIALIZER_PROMPT_VERSION,
                     SELECTION_SEMANTICS_VERSION,
                 )
@@ -361,6 +714,9 @@ class PublicationGenerationService:
                     ),
                     "editorializer_prompt_version": writer_config.get(
                         "editorializer_prompt_version", DIGEST_EDITORIALIZER_PROMPT_VERSION
+                    ),
+                    "digest_editor_prompt_version": writer_config.get(
+                        "digest_editor_prompt_version", DIGEST_EDITOR_PROMPT_VERSION
                     ),
                     "narrative_contract_prompt_version": writer_config.get(
                         "narrative_contract_prompt_version", DIGEST_NARRATIVE_PROMPT_VERSION
@@ -493,6 +849,12 @@ class PublicationGenerationService:
 
                 narrative_draft = None
                 pub_edit = getattr(self.config.settings, "publication_editorial", None)
+                digest_implementation_versions.update(
+                    writer_material_format=getattr(
+                        pub_edit, "digest_writer_material_format", "legacy"
+                    ),
+                    editor_scope=getattr(pub_edit, "digest_editor_scope", "targeted_items"),
+                )
                 configured_narrative_mode = (
                     getattr(pub_edit, "digest_narrative_mode", "deterministic")
                     if pub_edit
@@ -610,7 +972,6 @@ class PublicationGenerationService:
                         DigestNarrativeWriter,
                         build_digest_support_text_index,
                         plan_digest_narrative_blocks,
-                        validate_digest_narrative,
                     )
 
                     detail_cards = [
@@ -636,7 +997,12 @@ class PublicationGenerationService:
                     )
 
                     writer_provider = getattr(self.generator, "provider", None)
-                    writer = DigestNarrativeWriter(provider=writer_provider)
+                    writer = DigestNarrativeWriter(
+                        provider=writer_provider,
+                        writer_material_format=getattr(
+                            pub_edit, "digest_writer_material_format", "legacy"
+                        ),
+                    )
                     att_id = await observer.attempt_started(
                         "writer",
                         metadata={
@@ -647,6 +1013,7 @@ class PublicationGenerationService:
                             "situation_group_count": len(presentation_plan.city_situation.groups),
                         },
                     )
+                    generation_deadline = time.monotonic() + narrative_timeout
                     try:
                         has_topic_bundles = any(
                             getattr(b, "topic_bundles", None) for b in plan.blocks
@@ -676,11 +1043,7 @@ class PublicationGenerationService:
                             all_draft_support_texts, getattr(run, "snapshot_at", None)
                         )
 
-                        from src.publication.digest_coverage import build_digest_coverage_trace
                         from src.publication.digest_narrative import sanitize_digest_narrative_draft
-                        from src.publication.digest_quality_diagnostics import (
-                            audit_rendered_digest,
-                        )
                         from src.publication.errors import DigestCoverageInvariantError
 
                         support_text_index = build_digest_support_text_index(
@@ -693,41 +1056,35 @@ class PublicationGenerationService:
                             all_draft_support_texts, getattr(run, "snapshot_at", None)
                         )
 
-                        def _evaluate_candidate(candidate: Any) -> tuple[Any, Any, Any, Any]:
-                            candidate = sanitize_digest_narrative_draft(candidate)
-                            validation = validate_digest_narrative(
+                        from src.publication.digest_assessment import (
+                            DigestAssessmentContext,
+                            assess_digest_candidate,
+                        )
+
+                        assessment_context = DigestAssessmentContext(
+                            frozen=frozen,
+                            plan=plan,
+                            presentation_plan=presentation_plan,
+                            evidence=evidence_dict,
+                            support_text_by_id=support_text_index,
+                            allowed_context_terms=allowed_digest_terms,
+                            snapshot_at=run.snapshot_at,
+                            timezone_name=getattr(self.config.settings, "timezone", "UTC"),
+                            renderer=renderer,
+                        )
+
+                        def _evaluate_candidate(
+                            candidate: Any, *, allow_incomplete_coverage: bool = False
+                        ) -> tuple[Any, Any, Any, Any]:
+                            return assess_digest_candidate(
                                 candidate,
-                                plan,
-                                support_text_by_id=support_text_index,
-                                situation_plan=presentation_plan.city_situation,
-                                allowed_context_terms=allowed_digest_terms,
-                                all_known_draft_supports=all_draft_support_texts,
-                            )
-                            coverage = build_digest_coverage_trace(
-                                presentation_plan,
-                                candidate,
-                                plan,
-                            )
-                            artifact = renderer.render_grouped_digest_artifact(
-                                frozen,
-                                snapshot_at=run.snapshot_at,
-                                timezone_name=getattr(self.config.settings, "timezone", "UTC"),
-                                narrative_draft=candidate,
-                                presentation_plan=presentation_plan,
-                            )
-                            audit = audit_rendered_digest(
-                                artifact,
-                                candidate,
-                                evidence_dict,
-                                presentation_plan,
-                                coverage,
-                                narrative_validation=validation,
-                            )
-                            return validation, coverage, artifact, audit
+                                context=assessment_context,
+                                allow_incomplete_coverage=allow_incomplete_coverage,
+                            ).checks()
 
                         draft_cand = sanitize_digest_narrative_draft(draft_cand)
                         val_res, coverage_trace, rendered_artifact, rendered_audit = (
-                            _evaluate_candidate(draft_cand)
+                            _evaluate_candidate(draft_cand, allow_incomplete_coverage=True)
                         )
                         if val_res.not_evaluated:
                             logger.info(
@@ -758,6 +1115,12 @@ class PublicationGenerationService:
                             or getattr(self.config.settings, "ai_model", None),
                             timeout_seconds=narrative_timeout,
                             implementation_versions=digest_implementation_versions,
+                            editor_scope=getattr(pub_edit, "digest_editor_scope", "targeted_items"),
+                            support_text_by_id=support_text_index,
+                            deadline_at=generation_deadline
+                            if getattr(pub_edit, "digest_editor_scope", "targeted_items")
+                            == "thematic_blocks"
+                            else None,
                         )
                         draft_cand, val_res, coverage_trace, rendered_artifact, rendered_audit = (
                             checkpoint
@@ -814,7 +1177,8 @@ class PublicationGenerationService:
                             "digest_quality_audit": rendered_audit.as_metadata(),
                             "digest_repair": {
                                 "used": repair_used,
-                                "max_calls": digest_repair_max_calls,
+                                "max_calls": 3,
+                                "actual_calls": digest_repair_max_calls,
                             },
                             "digest_implementation_versions": digest_implementation_versions,
                             "upstream_hard_exclusion_count": None,
