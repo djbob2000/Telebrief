@@ -29,6 +29,14 @@ from src.publication.evidence import PublicationEvidence
 
 logger = logging.getLogger(__name__)
 
+SAME_SITUATION_WRITER_GUIDANCE = (
+    "same_situation_groups link separate facts only when the resolved place, service, and "
+    "reported state match. Where it reads naturally, state that shared condition once in one "
+    "reader item while retaining every fact ID and each fact's unique location detail, time, "
+    "attribution, uncertainty, and scope. The link does not establish continuous duration, "
+    "cause, or identical sources; preserve different times and qualifications explicitly."
+)
+
 DIGEST_COMPOSITION_MEMBERSHIP_VERSION = "digest_membership_v3"
 
 _INTERNAL_LEAKAGE_RE = re.compile(r"\[(?:story:\d+|SUPPORT\s+\d+|ref-\d+|tg:\S+)\]", re.IGNORECASE)
@@ -3922,6 +3930,56 @@ def _related_reporting_sets(block: DigestNarrativeBlock) -> list[dict[str, Any]]
     return result
 
 
+def _same_situation_groups(block: DigestNarrativeBlock) -> list[dict[str, Any]]:
+    """Expose resolved same-state relations as editorial hints, never fact identity."""
+    fact_ids = tuple(str(record.fact_id) for record in block.composition_fact_records)
+    parent = {fact_id: fact_id for fact_id in fact_ids}
+    edge_kinds: dict[frozenset[str], set[str]] = {}
+
+    def find(fact_id: str) -> str:
+        while parent[fact_id] != fact_id:
+            parent[fact_id] = parent[parent[fact_id]]
+            fact_id = parent[fact_id]
+        return fact_id
+
+    for relation in block.composition_relations:
+        kind = str(getattr(relation.kind, "value", relation.kind))
+        if kind not in {"SAME_FACT", "SAME_SITUATION"}:
+            continue
+        left = str(relation.left_fact_id)
+        right = str(relation.right_fact_id)
+        if left not in parent or right not in parent:
+            continue
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+        edge_kinds.setdefault(frozenset((left, right)), set()).add(kind)
+
+    grouped: dict[str, list[str]] = {}
+    for fact_id in fact_ids:
+        grouped.setdefault(find(fact_id), []).append(fact_id)
+
+    result = []
+    for group in grouped.values():
+        if len(group) < 2:
+            continue
+        members = set(group)
+        kinds = {
+            kind
+            for edge, edge_values in edge_kinds.items()
+            if edge.issubset(members)
+            for kind in edge_values
+        }
+        result.append(
+            {
+                "navigation_only": True,
+                "relation": "same_situation" if "SAME_SITUATION" in kinds else "same_fact",
+                "fact_ids": group,
+            }
+        )
+    return result
+
+
 def _composition_writer_payload(
     *,
     plan: DigestNarrativePlan,
@@ -4045,6 +4103,7 @@ def _composition_writer_payload(
                 "rubric_title": block.rubric_title,
                 "reader_synthesis_groups": _reader_synthesis_groups(block),
                 "related_reporting_sets": _related_reporting_sets(block),
+                "same_situation_groups": _same_situation_groups(block),
                 "composition_units": unit_rows,
             }
         )
@@ -4350,6 +4409,7 @@ class DigestNarrativeWriter:
             "Write fluent, natural prose from the supplied frozen composition plan.\n"
             "Use reader_synthesis_groups as your editorial roadmap before composing items. They group reporting about a service for readability; they are navigation, not evidence, fact equivalence, chronology, geography, or permission to omit material.\n"
             "Normally synthesize each service group into its preferred_max_reader_items or fewer cohesive items. Keep every exact fact ID and split for readability only when the material requires it. Do not create a separate item for every street or source message.\n"
+            f"{SAME_SITUATION_WRITER_GUIDANCE}\n"
             "Compare related_reporting_sets before writing: their text anchors flag potential overlap across units and service groups. They do not prove SAME_FACT, shared geography or chronology. Integrate overlapping observations into the same item where supported, state a shared detail once, and retain every distinct fact and its unique detail. Do not mention the same outage/location in multiple items merely because separate Stories repeat it.\n"
             "COMPOSITION CONTRACT:\n"
             "- Every item names one or more exact composition_unit_ids from this block; units in an item must belong to this same rubric. Do not invent, shorten, or infer IDs. The units define which material an item may represent; they do not require one visible item each.\n"

@@ -207,20 +207,21 @@ def test_noop_safe_edit_does_not_force_second_call():
 def test_second_no_progress_edit_retains_first_exact_assessed_checkpoint():
     provider = Provider("safe_then_unsafe")
     _, result, observer = run_repair(provider)
-    assert provider.calls == 2
+    assert provider.calls == 3
     assert "999" not in result[0][3].visible_text
     assert result[0][1].is_valid
     assert [v["editor_outcome"] for v in observer.outcomes] == [
         "accepted_change",
         "rejected_editorial_no_progress",
+        "rejected_editorial_no_progress",
     ]
 
 
-def test_total_editor_calls_never_exceed_two():
+def test_total_editor_calls_never_exceed_three():
     provider = Provider("unsafe")
     _, result, observer = run_repair(provider)
-    assert provider.calls <= 2
-    assert len(observer.outcomes) <= 2
+    assert provider.calls <= 3
+    assert len(observer.outcomes) <= 3
     assert result[0][1].is_valid
     assert result[0][2].story_coverage == result[0][2].material_fact_coverage == 1.0
 
@@ -271,19 +272,47 @@ def test_production_thematic_findings_authorize_the_complete_block(monkeypatch):
 
 
 def test_thematic_editor_receives_the_same_reporting_navigation_as_writer():
+    from dataclasses import replace
+
+    from src.publication.digest_composition import (
+        DigestFactRelation,
+        DigestFactRelationKind,
+    )
     from src.publication.digest_narrative import (
         _reader_synthesis_groups,
         _related_reporting_sets,
+        _same_situation_groups,
+    )
+
+    values, draft = assessment_inputs()
+    first_block = values["plan"].blocks[0]
+    fact_ids = [str(fact.fact_id) for fact in first_block.required_facts]
+    assert len(fact_ids) >= 2
+    relation = DigestFactRelation(
+        left_fact_id=fact_ids[0],
+        right_fact_id=fact_ids[1],
+        kind=DigestFactRelationKind.SAME_SITUATION,
+        reason="same resolved service state",
+    )
+    values["plan"] = replace(
+        values["plan"],
+        blocks=(
+            replace(
+                first_block,
+                composition_relations=(*first_block.composition_relations, relation),
+            ),
+            *values["plan"].blocks[1:],
+        ),
     )
 
     provider = Provider()
-    initial, result, _ = run_repair(provider)
-    values, _ = assessment_inputs()
+    initial, result, _ = run_repair(provider, inputs=(values, draft))
     plan_blocks = {block.block_id: block for block in values["plan"].blocks}
     for block in provider.requests[0]["blocks"]:
         planned = plan_blocks[block["block_id"]]
         assert block["reader_synthesis_groups"] == _reader_synthesis_groups(planned)
         assert block["related_reporting_sets"] == _related_reporting_sets(planned)
+        assert block["same_situation_groups"] == _same_situation_groups(planned)
         assert all("observed_time" not in fact for item in block["items"] for fact in item["facts"])
         assert {row["body"] for row in block["prior_draft_context"]} == {
             item.body for item in initial.draft.blocks[0].items
@@ -345,7 +374,11 @@ def test_second_editor_call_recomposes_when_checkpoint_is_still_unsafe():
                                 "block_id": request["blocks"][0]["block_id"],
                                 "recomposed_items": [
                                     {
-                                        "covered_fact_ids": [fact_ids[0], fact_ids[0], *fact_ids[1:]],
+                                        "covered_fact_ids": [
+                                            fact_ids[0],
+                                            fact_ids[0],
+                                            *fact_ids[1:],
+                                        ],
                                         "body": "повтор факта",
                                         "claims": [],
                                     }
@@ -403,8 +436,8 @@ def test_second_editor_call_recomposes_when_checkpoint_is_still_unsafe():
 def test_second_editor_call_recomposes_remaining_structural_style_findings():
     from dataclasses import replace
 
-    from src.publication.digest_quality_diagnostics import DigestQualityWarning
     from src.publication.digest_narrative import DIGEST_ITEM_BODY_MAX_CHARS
+    from src.publication.digest_quality_diagnostics import DigestQualityWarning
 
     values, draft = assessment_inputs()
     context = DigestAssessmentContext(**values)
@@ -440,13 +473,7 @@ def test_second_editor_call_recomposes_remaining_structural_style_findings():
                     }
                 ]
             )
-            return json.dumps(
-                {
-                    "blocks": [
-                        {"block_id": block_id, "recomposed_items": items}
-                    ]
-                }
-            )
+            return json.dumps({"blocks": [{"block_id": block_id, "recomposed_items": items}]})
 
     provider = RepackingProvider()
     observer = ReplayObserver()
@@ -591,17 +618,20 @@ def test_existing_fare_advisory_does_not_prevent_recovery_from_unsafe_writer():
     assert result[0][1].is_valid
     assert result[0][4].is_publishable
     assert result[0][0] != original.draft
-    assert provider.calls == 2
+    assert provider.calls == 3
     assert observer.outcomes[0]["editor_outcome"] == "accepted_change"
 
 
-def test_second_pass_is_local_and_has_no_block_recomposition():
+def test_final_editor_passes_are_local_and_do_not_recompose():
     provider = Provider("safe_then_unsafe")
     run_repair(provider)
-    assert provider.calls == 2
+    assert provider.calls == 3
     second = provider.requests[1]
     assert second["target_recomposition_fact_ids"] == []
     assert second["target_recomposition_summary_unit_ids"] == []
+    third = provider.requests[2]
+    assert third["target_recomposition_fact_ids"] == []
+    assert third["target_recomposition_summary_unit_ids"] == []
 
 
 def test_editor_cannot_duplicate_one_supported_voltage_in_safe_checkpoint():
@@ -644,8 +674,9 @@ def test_local_second_pass_preserves_untargeted_items_exactly():
 def test_local_edit_with_unresolved_targeted_issue_does_not_replace_checkpoint():
     provider = Provider("no_progress")
     _, result, observer = run_repair(provider)
-    assert provider.calls == 2
+    assert provider.calls == 3
     assert observer.outcomes[1]["editor_outcome"] == "rejected_editorial_no_progress"
+    assert observer.outcomes[2]["editor_outcome"] == "rejected_editorial_no_progress"
     assert not any(
         item.body.startswith("Также ") for block in result[0][0].blocks for item in block.items
     )

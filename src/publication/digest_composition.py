@@ -16,11 +16,14 @@ from src.publication.digest_presentation import (
     validate_digest_fact_ids,
 )
 
-COMPOSITION_POLICY_VERSION = "digest_composition_v8"
+COMPOSITION_POLICY_VERSION = "digest_composition_v9-same-situation-navigation"
 
 
 class DigestFactRelationKind(str, Enum):
     SAME_FACT = "SAME_FACT"
+    # Editorial grouping only: separate evidence records describe the same
+    # resolved local service state, but remain distinct facts and Stories.
+    SAME_SITUATION = "SAME_SITUATION"
     UPDATE_OF = "UPDATE_OF"
     LOCAL_CONTRAST = "LOCAL_CONTRAST"
     RELATED_ONLY = "RELATED_ONLY"
@@ -772,6 +775,16 @@ def _classify(left: DigestFactRecord, right: DigestFactRecord) -> DigestFactRela
         and match
     ):
         return DigestFactRelationKind.SAME_FACT
+    if (
+        same_topic
+        and same_area
+        and same_physical_place
+        and left.canonical_subject.strip() not in {"", "unknown", "unspecified", "unresolved"}
+        and left.canonical_service.strip() not in {"", "unknown", "unspecified", "unresolved"}
+        and left.service_state.upper() not in {"", "UNKNOWN", "UNSPECIFIED", "UNRESOLVED"}
+        and left.service_state == right.service_state
+    ):
+        return DigestFactRelationKind.SAME_SITUATION
     if same_topic and same_area and left.service_state != right.service_state:
         if time_ordered and left.effective_time != right.effective_time:
             return DigestFactRelationKind.UPDATE_OF
@@ -1145,9 +1158,13 @@ def build_digest_composition(
                     left.fact_id,
                     right.fact_id,
                     kind,
-                    "compatible fact metadata"
-                    if kind == DigestFactRelationKind.SAME_FACT
-                    else "preserve distinct claim",
+                    {
+                        DigestFactRelationKind.SAME_FACT: "compatible fact metadata",
+                        DigestFactRelationKind.SAME_SITUATION: (
+                            "same resolved place, service and state; preserve distinct "
+                            "evidence and time details"
+                        ),
+                    }.get(kind, "preserve distinct claim"),
                 )
             )
 

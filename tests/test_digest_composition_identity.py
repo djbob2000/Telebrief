@@ -2,6 +2,7 @@ from __future__ import annotations
 
 # ruff: noqa: S101
 import datetime as dt
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +13,8 @@ from src.publication.digest_composition import (
     DigestCompositionResult,
     DigestCompositionUnit,
     DigestFactRecord,
+    DigestFactRelationKind,
+    _classify,
     build_digest_composition,
 )
 from src.publication.digest_narrative import _composition_narrative_plan
@@ -78,6 +81,68 @@ def _record(
         source_publication_time=None,
         text=text,
     )
+
+
+def test_same_place_service_and_state_is_editorial_situation_not_fact_identity() -> None:
+    base = _record(
+        "fact:1",
+        "infrastructure",
+        "story:1",
+        "support:1",
+        "На РТС электричества нет уже неделю.",
+    )
+    left = replace(
+        base,
+        canonical_subject="electricity",
+        canonical_service="power",
+        canonical_area="berdyansk:rts",
+        canonical_place=("place:rts",),
+        service_state="UNAVAILABLE",
+        observed_time=dt.datetime(2026, 10, 3, 10, tzinfo=dt.timezone.utc),
+    )
+    right = replace(
+        left,
+        fact_id="fact:2",
+        story_ids=("story:2",),
+        support_ids=("support:2",),
+        text="Житель сообщает, что свет на РТС не дали.",
+        observed_time=dt.datetime(2026, 10, 3, 12, tzinfo=dt.timezone.utc),
+    )
+
+    assert _classify(left, right) is DigestFactRelationKind.SAME_SITUATION
+    assert left.fact_id != right.fact_id
+    assert left.story_ids != right.story_ids
+    assert left.support_ids != right.support_ids
+
+
+def test_same_situation_requires_same_resolved_place_service_and_state() -> None:
+    base = _record(
+        "fact:1",
+        "infrastructure",
+        "story:1",
+        "support:1",
+        "На РТС нет электричества.",
+    )
+    left = replace(
+        base,
+        canonical_subject="electricity",
+        canonical_service="power",
+        canonical_area="berdyansk:rts",
+        canonical_place=("place:rts",),
+        service_state="UNAVAILABLE",
+        observed_time=dt.datetime(2026, 10, 3, 10, tzinfo=dt.timezone.utc),
+    )
+    other_place = replace(left, fact_id="fact:2", canonical_place=("place:other",))
+    other_state = replace(left, fact_id="fact:3", service_state="AVAILABLE")
+    unknown_place = replace(left, fact_id="fact:4", canonical_place=())
+    unknown_service = replace(left, fact_id="fact:5", canonical_service="")
+    unknown_state = replace(left, fact_id="fact:6", service_state="UNKNOWN")
+
+    assert _classify(left, other_place) is DigestFactRelationKind.RELATED_ONLY
+    assert _classify(left, other_state) is DigestFactRelationKind.LOCAL_CONTRAST
+    assert _classify(left, unknown_place) is DigestFactRelationKind.RELATED_ONLY
+    assert _classify(left, unknown_service) is DigestFactRelationKind.RELATED_ONLY
+    assert _classify(left, unknown_state) is not DigestFactRelationKind.SAME_SITUATION
 
 
 def test_required_fact_location_prefix_does_not_duplicate_its_exact_evidence() -> None:

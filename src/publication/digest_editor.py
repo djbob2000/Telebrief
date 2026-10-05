@@ -21,6 +21,7 @@ from src.publication.digest_narrative import (
     _related_reporting_sets,
     _same_fact_group_merge_id,
     _same_fact_merge_id,
+    _same_situation_groups,
     sanitize_digest_narrative_draft,
 )
 from src.publication.digest_quality_diagnostics import (
@@ -409,6 +410,7 @@ class DigestEditor:
                     "rubric_id": plan_block.rubric_id,
                     "reader_synthesis_groups": _reader_synthesis_groups(plan_block),
                     "related_reporting_sets": _related_reporting_sets(plan_block),
+                    "same_situation_groups": _same_situation_groups(plan_block),
                     "items": raw_items,
                     "prior_draft_context": prior_draft_context,
                     "allowed_merges": approved_by_block.get(block.block_id, []),
@@ -493,7 +495,12 @@ class DigestEditor:
                 "In reports of bus prices distinguish the destination paid for from the final "
                 "destination of a passing bus; never turn the latter into the fare destination. "
                 "Use natural attribution such as 'по сообщениям жителей', not descriptions of chats. "
-                f"During a recomposition batch, include each authorized block in recomposed_items and leave its items/merges empty. You may omit untouched blocks; the program preserves them byte-for-byte. Aim for {MAX_POWER_REPORT_ITEMS_PER_BLOCK} cohesive power-report items with a clear subject and an evidence-supported relation. More developed or synthesized passages are allowed when needed to preserve the facts; do not leave multiple short isolated single-observation items or turn each street or Story into its own paragraph. The program restores only non-target items. If a targeted item also contains water, heating or another service fact, that exact fact remains required in your replacement; it may receive its own service paragraph. Do not repeat the same polyclinic or district observation in different items."
+                f"During a recomposition batch, include each authorized block in recomposed_items and leave its items/merges empty. You may omit untouched blocks; the program preserves them byte-for-byte. Aim for {MAX_POWER_REPORT_ITEMS_PER_BLOCK} cohesive power-report items with a clear subject and an evidence-supported relation. More developed or synthesized passages are allowed when needed to preserve the facts; do not leave multiple short isolated single-observation items or turn each street or Story into its own paragraph. The program restores only non-target items. If a targeted item also contains water, heating or another service fact, that exact fact remains required in your replacement; it may receive its own service paragraph. Do not repeat the same polyclinic or district observation in different items. "
+                "same_situation_groups are navigation only: they identify separate facts about "
+                "the same resolved place, service and known state. You may express the shared "
+                "condition once, but retain every fact ID and its distinct time, location detail, "
+                "attribution, scope and uncertainty. The relation proves no duration, chronology, "
+                "cause or source identity, and never authorizes deleting evidence."
             )
         if edit_scope is not None:
             system_prompt = (
@@ -508,6 +515,7 @@ class DigestEditor:
                 "A reported brief restoration and a reported prolonged outage in the same area belong in one passage with their supplied times and uncertainty preserved; do not infer their order when it is unknown. Short observations from different places may share a passage without implying proximity or a common cause. "
                 "Lead with the situation readers need to know. Combine repetitions into one passage; preserve distinct dates, durations, places, amounts and practical consequences. "
                 "reader_synthesis_groups and related_reporting_sets are navigation only: use them to connect overlapping subject matter, never as proof of geography, chronology or fact equivalence. "
+                "same_situation_groups are editorial navigation for separate facts about the same resolved place, service and known state. You may express that shared condition once, but retain every fact ID and each distinct time, location detail, attribution, scope and uncertainty. The relation does not establish duration, chronology, cause, or source identity, and never permits deleting evidence. "
                 "Leave headline empty by default. Use a short noun scan label only when it adds navigation; never restate the body as a headline. Do not narrate the collection of messages. "
                 "Use a natural attribution frame for each connected passage. Prefer a supplied resident or organization role; never invent a role or turn one report into several residents. "
                 "Keep that frame in scope across clauses instead of repeating it before each fact. Different unnamed locations remain different or unknown; never call them neighboring or another house without explicit evidence. "

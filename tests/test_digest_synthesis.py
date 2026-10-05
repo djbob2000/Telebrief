@@ -4,11 +4,16 @@ from __future__ import annotations
 
 # ruff: noqa: S101
 import datetime as dt
+from dataclasses import replace
 
 import pytest
 
 from src.editorial_models import StoryCard
-from src.publication.digest_composition import build_digest_composition
+from src.publication.digest_composition import (
+    DigestFactRelation,
+    DigestFactRelationKind,
+    build_digest_composition,
+)
 from src.publication.digest_coverage import build_digest_coverage_trace
 from src.publication.digest_narrative import (
     _composition_narrative_plan,
@@ -143,6 +148,37 @@ def test_overlapping_place_wording_is_navigation_and_preserves_different_facts()
     assert "same_fact" not in clinic
     facts = {f["fact_id"] for unit in block["composition_units"] for f in unit["facts"]}
     assert facts == {f"fact:{i}" for i in range(1, 8)}
+
+
+def test_same_situation_group_reaches_writer_without_dropping_fact_membership() -> None:
+    cards, evidence, presentation, plan = _fixture(
+        ("electricity", "РТС", "На РТС света нет уже неделю."),
+        ("electricity", "РТС", "Житель сообщает, что свет на РТС не дали."),
+    )
+    base_block = plan.blocks[0]
+    relation = DigestFactRelation(
+        "fact:5",
+        "fact:6",
+        DigestFactRelationKind.SAME_SITUATION,
+        "same resolved place, service and state",
+    )
+    plan = replace(
+        plan,
+        blocks=(replace(base_block, composition_relations=(relation,)),),
+    )
+
+    block = _composition_writer_payload(plan=plan, evidence=evidence, cards=cards)[0]
+
+    assert block["same_situation_groups"] == [
+        {
+            "navigation_only": True,
+            "relation": "same_situation",
+            "fact_ids": ["fact:5", "fact:6"],
+        }
+    ]
+    fact_ids = {fact["fact_id"] for unit in block["composition_units"] for fact in unit["facts"]}
+    assert fact_ids == {f"fact:{index}" for index in range(1, 7)}
+    assert presentation.story_ids == tuple(card.id for card in cards)
 
 
 def test_synthesis_of_separate_street_units_keeps_full_coverage_and_grounding() -> None:
@@ -328,9 +364,7 @@ def test_incomplete_writer_fact_coverage_can_be_parsed_only_for_editor_repair() 
     with pytest.raises(ValueError, match="fact partition mismatch"):
         _parse_composition_writer_output(raw, plan=plan)
 
-    draft = _parse_composition_writer_output(
-        raw, plan=plan, allow_incomplete_fact_coverage=True
-    )
+    draft = _parse_composition_writer_output(raw, plan=plan, allow_incomplete_fact_coverage=True)
     assert omitted_fact_id not in {
         fact_id for item in draft.blocks[0].items for fact_id in item.covered_fact_ids
     }
@@ -484,9 +518,7 @@ def test_writer_duplicate_fact_membership_can_reach_editor_but_is_not_finally_va
         allow_unmapped_writer_unit_ids=True,
         allow_duplicate_writer_fact_ids=True,
     )
-    scope = build_digest_block_edit_scope(
-        writer_draft, plan=plan, block_ids=[block.block_id]
-    )
+    scope = build_digest_block_edit_scope(writer_draft, plan=plan, block_ids=[block.block_id])
     validate_digest_block_replacement(
         writer_draft,
         writer_draft,
@@ -496,9 +528,7 @@ def test_writer_duplicate_fact_membership_can_reach_editor_but_is_not_finally_va
         allow_duplicate_fact_coverage=True,
     )
     with pytest.raises(DigestRecompositionError, match="MEMBERSHIP"):
-        validate_digest_block_replacement(
-            writer_draft, writer_draft, scope=scope, plan=plan
-        )
+        validate_digest_block_replacement(writer_draft, writer_draft, scope=scope, plan=plan)
 
 
 @pytest.mark.parametrize("invalid", [False, True])
@@ -1263,7 +1293,7 @@ def test_bounded_repair_polishes_new_items_and_keeps_last_safe_checkpoint(unsafe
                         ]
                     }
                 )
-            assert self.calls == 2
+            assert self.calls in {2, 3}
             body = (
                 revised_body.replace("15 минут", "99 минут") if unsafe_second_edit else revised_body
             )
@@ -1322,7 +1352,7 @@ def test_bounded_repair_polishes_new_items_and_keeps_last_safe_checkpoint(unsafe
         )
     )
     final, validation, coverage, _, audit = checkpoint
-    assert provider.calls == max_calls == 2
+    assert provider.calls == max_calls == (3 if unsafe_second_edit else 2)
     assert used and validation.is_valid
     assert coverage.story_coverage == coverage.material_fact_coverage == 1.0
     assert len(observed_targets[0]) == 4
@@ -1330,7 +1360,7 @@ def test_bounded_repair_polishes_new_items_and_keeps_last_safe_checkpoint(unsafe
     assert observed_targets[1][0] == final.blocks[0].items[0].item_id
     if unsafe_second_edit:
         assert final.blocks[0].items[0].body.startswith(source_meta_prefix)
-        assert observer.finished == [(1, "succeeded"), (2, "failed")]
+        assert observer.finished == [(1, "succeeded"), (2, "failed"), (3, "failed")]
         assert any(w.code == "SOURCE_META_NARRATION" for w in audit.prose_audit.warnings)
     else:
         assert final.blocks[0].items[0].body == revised_body

@@ -131,6 +131,7 @@ Rules:
 - A location-only clarification (for example, which district contains a street or where a landmark stands) is context, not a publishable Story or reader-facing item. Keep the location when it anchors a concrete event, service state, or practical access detail.
 - Narrow deterministic causal relation validation rejects unsupported mechanism/cause claims with `UNSUPPORTED_DIGEST_RELATION`.
 - Related stories may be grouped for presentation inside their deterministic rubric/block, but legitimate coverage must not silently disappear.
+- An internal `SAME_SITUATION` relation is editorial navigation only. It requires a shared resolved place, service, and known reported state; it does not merge or delete fact/Story/source identities, establish continuous duration or cause, or make separate source reports identical. State a supported shared condition once where natural, while preserving each fact's distinct time, location detail, attribution, uncertainty, and scope. Keep conflicting states distinct.
 - Commercial classifieds, private disputes, personal accusations, phone-number spam, repetitive ad copy, and directory-style payload must not dominate the digest.
 - Community reports must preserve their epistemic status through natural attribution without duplicating attribution phrases in both headline and body.
 - The digest should be compact and easy to scan, but not so aggressively compressed that meaningful local facts disappear.
