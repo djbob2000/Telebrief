@@ -261,6 +261,30 @@ def test_explicit_single_source_citywide_water_scope_remains_publishable():
     assert not any("DIGEST_FACT_BINDING_MISMATCH:service_extent" in v for v in result.violations)
 
 
+def test_citywide_local_report_can_own_scope_when_canonical_service_is_generic():
+    local_report = "По сообщению жительницы, в Бердянске пропал свет по всему городу."
+    result = validate_body(
+        "На РТС света нет неделю. По сообщению жительницы, в Бердянске пропал свет по всему городу.",
+        ["На РТС света нет неделю.", local_report],
+        locations=["РТС", "Бердянск"],
+        canonical_services=["power", "local_report"],
+    )
+    assert not any("DIGEST_FACT_BINDING_MISMATCH:service_extent" in v for v in result.violations)
+
+
+def test_ambiguous_local_report_cannot_own_another_service_extent():
+    result = validate_body(
+        "По словам жителя, в большей части Бердянска отключено электричество.",
+        [
+            "По словам жителя, у большей части города есть вода, но свет в Бердянске отключен.",
+            "На РТС света нет неделю.",
+        ],
+        locations=["Бердянск", "РТС"],
+        canonical_services=["local_report", "power"],
+    )
+    assert any("DIGEST_FACT_BINDING_MISMATCH:service_extent" in v for v in result.violations)
+
+
 def test_scope_before_short_attribution_still_binds_to_its_service():
     source = "У большей части города, по словам жителей, нет воды."
     result = validate_body(

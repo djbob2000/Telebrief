@@ -115,11 +115,20 @@ def _city_scope_level(text: str) -> int:
 
 
 def _entry_service_families(entry: DigestEvidenceEntry) -> frozenset[str]:
-    """Use the fact's canonical subject so a causal mention is not another fact's service."""
+    """Resolve the fact's service without treating causal mentions as ownership."""
     canonical_service = str(entry.record.canonical_service or "").strip()
-    if not canonical_service or canonical_service == "local_report":
+    if canonical_service and canonical_service != "local_report":
+        return detect_service_families(canonical_service)
+
+    # Some ordinary report facts have no service classification (or use the
+    # generic local_report label), even when their own text explicitly names
+    # one service. Let that fact own matching service-scope claims only when
+    # the text names exactly one family. Ambiguous multi-service text may
+    # mention a service causally and must not widen another fact's scope.
+    fact_services = detect_service_families(entry.record.text)
+    if len(fact_services) != 1:
         return frozenset()
-    return detect_service_families(canonical_service)
+    return fact_services
 
 
 def _city_scope_service_claims(text: str) -> tuple[tuple[int, frozenset[str]], ...]:
