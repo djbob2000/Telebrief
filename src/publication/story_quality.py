@@ -473,6 +473,23 @@ def _is_announcement_context_without_event(text: str) -> bool:
     return bool(_EMPTY_SIGNPOST_RESIDUAL_RE.fullmatch(residual))
 
 
+# A private lost/found document notice is personal payload, not city news:
+# require both the document and a return request or private contact, so a
+# civic explanation of how to replace a lost passport is not caught.
+_LOST_DOCUMENT_RE = re.compile(
+    r"\b(?:утерян\w*|утеря\w*|потерян\w*|потерял\w*|найден\w*|нашл\w*)\s+"
+    r"(?:[\w-]+\s+){0,3}"
+    r"(?:документ\w*|удостоверени\w*|паспорт\w*|свидетельств\w*|полис\w*|снилс\w*|"
+    r"пропуск\w*|водительск\w*\s+прав\w*|банковск\w*\s+карт\w*)",
+    re.IGNORECASE,
+)
+_PRIVATE_RETURN_RE = re.compile(
+    r"(?:(?:просьба|прошу|просим)\s+вернуть|верн(?:уть|ите)\s+за\s+вознагражд\w*|"
+    r"\bв\s+личк\w*|\bв\s+лс\b|\+?\d[\d\s()-]{8,}\d)",
+    re.IGNORECASE,
+)
+
+
 def is_non_editorial_fact(text: str) -> bool:
     """Recognize pure noise without vetoing factual reports on the same topic.
 
@@ -485,6 +502,7 @@ def is_non_editorial_fact(text: str) -> bool:
         return False
     if (
         _NON_EDITORIAL_PAYLOAD_RE.search(text)
+        or (_LOST_DOCUMENT_RE.search(text) and _PRIVATE_RETURN_RE.search(text))
         or _is_location_context_without_event(text)
         or _is_announcement_context_without_event(text)
     ):

@@ -123,15 +123,22 @@ def _digest_repair_request(
             if warning.code in structural_codes and warning.block_id
         )
     )
+    # A hard blocker names its fact or item; that item must stay editable even
+    # when style warnings elsewhere narrow the request.
     targets = tuple(
         dict.fromkeys(
-            item.item_id
-            for warning in audit.prose_audit.warnings
-            if not recompose_ids or warning.code in structural_codes
-            for block in draft.blocks
-            if block.block_id == warning.block_id
-            for index, item in enumerate(block.items)
-            if index == warning.item_index and item.item_id
+            (
+                *_digest_violation_item_ids(draft, validation.violations),
+                *(
+                    item.item_id
+                    for warning in audit.prose_audit.warnings
+                    if not recompose_ids or warning.code in structural_codes
+                    for block in draft.blocks
+                    if block.block_id == warning.block_id
+                    for index, item in enumerate(block.items)
+                    if index == warning.item_index and item.item_id
+                ),
+            )
         )
     )
     if not targets:
@@ -139,6 +146,24 @@ def _digest_repair_request(
             item.item_id for block in draft.blocks for item in block.items if item.item_id
         )
     return findings, targets, recompose_ids
+
+
+def _digest_violation_item_ids(draft: Any, violations: Sequence[str]) -> tuple[str, ...]:
+    """Return items whose ID or covered fact ID is named by a hard violation."""
+
+    def named(identifier: str) -> bool:
+        pattern = rf"(?<![\w-]){re.escape(identifier)}(?![\w-])"
+        return any(re.search(pattern, str(violation)) for violation in violations)
+
+    return tuple(
+        dict.fromkeys(
+            item.item_id
+            for block in draft.blocks
+            for item in block.items
+            if item.item_id
+            and (named(item.item_id) or any(named(fact) for fact in item.covered_fact_ids))
+        )
+    )
 
 
 def _digest_warning_item_id(draft: Any, warning: Any) -> str:
@@ -467,8 +492,17 @@ async def _repair_digest_candidate(
                 sum(w.code == "REPEATED_SUPPORTED_MEASUREMENT" for w in audit.prose_audit.warnings)
                 > previous_repetition
             )
+            # A safe rewrite that leaves the reader with more diagnosed problems
+            # (e.g. one overlong roster split into near-duplicate items) is not
+            # an improvement; retain the exact previous safe checkpoint. Thematic
+            # recomposition has its own staged no-progress policy.
+            more_reader_findings = not thematic and len(audit.prose_audit.warnings) > len(
+                checkpoint[4].prose_audit.warnings
+            )
             editorial_regression = (
-                safe and checkpoint_safe and (bool(new_fare_ambiguities) or new_repetition)
+                safe
+                and checkpoint_safe
+                and (bool(new_fare_ambiguities) or new_repetition or more_reader_findings)
             )
             local_issues = {
                 issue for issue in _digest_local_issue_keys(checkpoint) if issue[1] in targets

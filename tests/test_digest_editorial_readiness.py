@@ -3,6 +3,8 @@
 # ruff: noqa: S101
 from dataclasses import replace
 
+import pytest
+
 from digest_evaluation_helpers import assessment_inputs
 
 
@@ -167,4 +169,37 @@ def test_large_power_synthesis_group_split_over_three_items_requests_recompositi
     )
     warnings = [w for w in audit.warnings if w.code == "FRAGMENTED_SERVICE_REPORTS"]
     assert {warning.item_index for warning in warnings} == set(range(len(grouped_items)))
+    assert audit.is_publishable
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "По историческому сообщению жителя, возле «Грации» свет отключили накануне.",
+        "Житель сообщает, что у него нет света; газа в этом сообщении он не называет отключённым.",
+        "Житель пишет, что нет света и воды; его шутливое замечание о газе не означает отключения.",
+    ],
+)
+def test_message_commentary_requests_local_repair_without_blocking(body):
+    from src.publication.digest_quality_diagnostics import audit_digest_prose_quality
+
+    values, draft = assessment_inputs()
+    block = draft.blocks[0]
+    draft = replace(
+        draft,
+        blocks=(
+            replace(
+                block,
+                items=(
+                    replace(
+                        block.items[0],
+                        body=body,
+                    ),
+                    *block.items[1:],
+                ),
+            ),
+        ),
+    )
+    audit = audit_digest_prose_quality(draft, values["evidence"])
+    assert "SOURCE_META_NARRATION" in {w.code for w in audit.warnings}
     assert audit.is_publishable

@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from src.publication.article_length import ArticleLengthProfile
 
 ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v14-reply-locator-only"
-DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v22-frequency-scope"
+DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v23-past-report-wording"
 
 DIGEST_REPLY_CONTEXT_GUIDE = (
     "In reporting metadata, reply-parent, parent message and «родительское сообщение» "
@@ -188,6 +188,10 @@ DIGEST_ITEM_COMPOSITION_GUIDE = """Digest item composition:
   Concrete coping details may share a passage with the reported disruption when that
   makes reading clearer; a price mentioned in that report need not become its own item.
   This grouping establishes no causal link or common time/location beyond the evidence.
+- Chat irony, jokes and wishes are not service reports: 'теперь и газ осталось
+  подрубить' means gas has not been cut yet. Report only the plainly stated parts
+  of such a message. Do not mention the joked-about service from it at all: no
+  state, no 'шутливое замечание', no explanation.
 - Connections must be supported. A price is not evidence of a price increase. Do not
   invent causality, chronology, geographic proximity or shared witnesses to smooth prose.
   Preserve a source's partial/poor service separately from a complete outage; a coarse
@@ -196,6 +200,9 @@ DIGEST_ITEM_COMPOSITION_GUIDE = """Digest item composition:
 - A support's reporting_window_role describes when the source was observed, not when
   an event occurred. historical_source must remain a past attributed report; its
   'сейчас/сегодня' and stored service state do not establish today's availability.
+  These role names are internal metadata: never print them or calques such as
+  'историческое сообщение'. Mark the past report naturally, e.g. 'ранее житель
+  сообщал, что…', in the past tense, without inventing a date.
   current_window_source also does not prove persistence until publication. Preserve
   explicit source times and scheduled dates; never invent an event date from provenance.
   unknown means temporal scope is unresolved. Retain selected material with honest

@@ -181,3 +181,56 @@ def test_noise_only_evidence_cannot_be_rescued_by_generated_event() -> None:
     payload.headline = "В Бердянске произошла авария электросети у памятника"
     payload.digest_summary = payload.headline
     assert not validate_story_publication_eligibility(payload)[0]
+
+
+def test_private_lost_document_notice_is_not_city_news() -> None:
+    """Run 311: a lost-documents notice with names and a phone reached the plan."""
+    text = (
+        "Утеряны 2 детских пенсионных удостоверения на имя Клима Д. и Иванова К. "
+        "Просьба вернуть по телефону +79902338089 или в личку"
+    )
+    # Real sealed BRIEF payload shape: its summary passes the predicate check.
+    payload = SimpleNamespace(
+        headline="В Бердянске утеряны два детских пенсионных удостоверения",
+        digest_summary=(
+            "В Бердянске утеряны два детских пенсионных удостоверения. "
+            "Владельцы просят вернуть их за вознаграждение."
+        ),
+        category="",
+        evidence_items=[
+            SimpleNamespace(text=text, kind="community_report", publication_use="PUBLISH")
+        ],
+    )
+    eligible, reason = validate_story_publication_eligibility(payload)
+    assert not eligible
+    assert reason == "non_editorial_payload"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "В МФЦ Бердянска объяснили, как восстановить утерянный паспорт: "
+        "приём ведётся по будням с 9:00 до 17:00.",
+        "В соцзащите на улице Шевченко начали принимать заявления на восстановление "
+        "утерянных пенсионных удостоверений.",
+    ],
+)
+def test_civic_lost_document_guidance_stays_eligible(text: str) -> None:
+    eligible, _ = validate_story_publication_eligibility(_payload(text))
+    assert eligible
+
+
+def test_lost_document_reply_does_not_suppress_mixed_story() -> None:
+    notice = "Потерял паспорт на Шевченко, просьба вернуть по телефону +79900000000"
+    report = "По сообщениям жителей, на АКЗ нет света третьи сутки."
+    payload = SimpleNamespace(
+        headline=report,
+        digest_summary=report,
+        category="",
+        evidence_items=[
+            SimpleNamespace(text=report, kind="community_report", publication_use="PUBLISH"),
+            SimpleNamespace(text=notice, kind="community_report", publication_use="PUBLISH"),
+        ],
+    )
+    eligible, _ = validate_story_publication_eligibility(payload)
+    assert eligible

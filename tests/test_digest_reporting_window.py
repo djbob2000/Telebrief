@@ -4,6 +4,8 @@ from __future__ import annotations
 import datetime as dt
 from dataclasses import replace
 
+import pytest
+
 from test_digest_source_material import _evidence
 
 from src.publication import digest_reporting_context
@@ -56,3 +58,68 @@ def test_frozen_window_length_is_used_instead_of_fixed_one_day():
         mark({source.evidence_id: source}, hours=48)[source.evidence_id].reporting_window_role
         == "current_window_source"
     )
+
+
+def _grace_evidence(role: str):
+    import datetime as dt
+
+    from src.publication.evidence import PublicationEvidence
+
+    text = "По сообщению жителя Бердянска, возле Грации свет отключили вчера в 12, а сегодня уже включили."
+    return PublicationEvidence(
+        evidence_id="ev:grace",
+        story_id=37604,
+        text=text,
+        source_text="Возле Грации вчера в 12 выключили, сегодня уже дали",
+        kind="community_report",
+        publication_use="PUBLISH",
+        fragment_id=102277,
+        source_ref="ev:grace",
+        source_id=1,
+        source_item_id=1,
+        source_role="community",
+        observed_at=dt.datetime(2026, 10, 4, 5, 58, tzinfo=dt.UTC),
+        reporting_window_role=role,
+    )
+
+
+def _grace_draft(body: str):
+    from src.publication.digest_narrative import (
+        DigestEditorialItemDraft,
+        DigestNarrativeBlockDraft,
+        DigestNarrativeDraft,
+    )
+
+    item = DigestEditorialItemDraft(item_id="item:grace", body=body, cited_support_ids=("ev:grace",))
+    return DigestNarrativeDraft(blocks=(DigestNarrativeBlockDraft(block_id="b", items=(item,)),))
+
+
+def test_relative_day_from_pre_window_report_requests_repair_without_blocking():
+    """Run 309: a 04.10 report's «вчера/сегодня» was dated to the 05.10 digest."""
+    from src.publication.digest_quality_diagnostics import audit_digest_prose_quality
+
+    body = "Возле Грации, по более раннему сообщению жителя, свет отключили вчера в 12, а сегодня уже включили."
+    audit = audit_digest_prose_quality(_grace_draft(body), {"ev:grace": _grace_evidence("historical_source")})
+    assert "HISTORICAL_RELATIVE_DAY" in {w.code for w in audit.warnings}
+    assert audit.is_publishable
+
+
+@pytest.mark.parametrize(
+    ("role", "body"),
+    [
+        (
+            "current_window_source",
+            "Возле Грации свет отключили вчера в 12, а сегодня уже включили.",
+        ),
+        (
+            "historical_source",
+            "Возле «Грации», по более раннему сообщению жителя, свет отключили накануне в 12, "
+            "а на следующий день включили.",
+        ),
+    ],
+)
+def test_relative_day_is_allowed_for_current_or_rephrased_reports(role, body):
+    from src.publication.digest_quality_diagnostics import audit_digest_prose_quality
+
+    audit = audit_digest_prose_quality(_grace_draft(body), {"ev:grace": _grace_evidence(role)})
+    assert "HISTORICAL_RELATIVE_DAY" not in {w.code for w in audit.warnings}

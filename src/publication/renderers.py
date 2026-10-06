@@ -535,8 +535,12 @@ class PublicationDigestRenderer:
                     item_emoji = getattr(item, "emoji", "") or rubric_emoji
                     prefix = f"{item_emoji} " if item_emoji else ""
                     if h_text and b_text:
+                        # Run-in head: «**Мобильная связь.** Текст…», not a
+                        # colon followed by a capitalised sentence.
                         clean_h = h_text.strip("*").rstrip(".:;, ")
-                        item_lines.append(f"{prefix}**{clean_h}**: {b_text}")
+                        if not clean_h.endswith(("?", "!", "…")):
+                            clean_h += "."
+                        item_lines.append(f"{prefix}**{clean_h}** {b_text}")
                     elif h_text:
                         clean_h = h_text.strip("*").rstrip(".:;, ")
                         item_lines.append(f"{prefix}**{clean_h}**")

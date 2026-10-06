@@ -10,7 +10,7 @@ from typing import Any, Literal, Mapping, Sequence
 from src.publication.digest_narrative import DigestNarrativeDraft
 from src.publication.evidence import PublicationEvidence
 
-DIGEST_DIAGNOSTICS_VERSION = "digest-diagnostics-v16-reader-group-fragmentation"
+DIGEST_DIAGNOSTICS_VERSION = "digest-diagnostics-v17-metadata-calque"
 
 _NAMED_CHAT_META = re.compile(r"\b(?:в|из)\s+(?:[а-яё-]+\s+){0,2}чат[аеу]\b", re.IGNORECASE)
 
@@ -97,7 +97,12 @@ _SOURCE_META_NARRATION_RE = re.compile(
     r"отдельно\s+(?:(?:жители|горожане)\s+)?(?:сообща\w*|писа\w*)|"
     r"в\s+сообщениях\s+(?:упомина\w*|говор\w*|сообща\w*|отмеча\w*)|"
     r"сообщения\s+[^.!?\n]{0,100}\bрасходятся|"
-    r"опубликовано\s+объявление\s+о\b)\b",
+    r"опубликовано\s+объявление\s+о\b|"
+    # Calque of the internal historical_source role label.
+    r"историческ\w*\s+(?:сообщени\w*|публикаци\w*|пост\w*)|"
+    # Commentary on a message instead of the city fact it reports.
+    r"в\s+(?:этом|том\s+же)\s+сообщени\w*|"
+    r"шутлив\w*\s+(?:замечани\w*|реплик\w*|сообщени\w*))\b",
     re.IGNORECASE,
 )
 _CLASSIFIED_AD_RE = re.compile(
@@ -467,6 +472,30 @@ def _repeated_measurement_warnings(
     return warnings
 
 
+_RELATIVE_DAY_RE = re.compile(r"\b(?:сегодня|вчера|завтра|сейчас)\b", re.IGNORECASE)
+
+
+def _historical_relative_day(item: Any, evidence: Mapping[str, PublicationEvidence]) -> str:
+    """Find a relative day copied from a pre-window report into item prose."""
+    for support_id in item.cited_support_ids:
+        source = evidence.get(support_id)
+        if source is None or source.reporting_window_role != "historical_source":
+            continue
+        source_text = f"{source.text} {source.source_text or ''}".casefold()
+        words = set(_RELATIVE_DAY_RE.findall(source_text))
+        if not words:
+            continue
+        source_stems = {token[:5] for token in re.findall(r"\w{4,}", source_text)}
+        for sentence in re.split(r"(?<=[.!?;])\s+", item.body):
+            found = words.intersection(_RELATIVE_DAY_RE.findall(sentence.casefold()))
+            shared = source_stems.intersection(
+                token[:5] for token in re.findall(r"\w{4,}", sentence.casefold())
+            )
+            if found and len(shared) >= 2:
+                return sorted(found)[0]
+    return ""
+
+
 def audit_digest_prose_quality(
     draft: DigestNarrativeDraft,
     evidence: Mapping[str, PublicationEvidence],
@@ -557,14 +586,37 @@ def audit_digest_prose_quality(
                 )
 
             if len(item.body) > 650 and len(item.covered_fact_ids) >= 4:
+                # A split must fit the same per-block power limit that the
+                # fragmentation finding enforces; state the remaining room.
+                power_indexes = [
+                    other
+                    for other, candidate in enumerate(block.items)
+                    if _POWER_REPORT_RE.search(f"{candidate.headline} {candidate.body}")
+                ]
+                if idx in power_indexes:
+                    room = MAX_POWER_REPORT_ITEMS_PER_BLOCK - (len(power_indexes) - 1)
+                    split_advice = (
+                        f"regroup it into at most {room} cohesive passages with distinct "
+                        "subjects (for example outage durations versus intermittent supply); "
+                        f"the block already has {len(power_indexes) - 1} other electricity item(s)"
+                        if room >= 2
+                        else "tighten it into one cohesive passage that groups places by shared "
+                        "status or duration; do not split it, because the block already has "
+                        f"{len(power_indexes) - 1} other electricity items"
+                    )
+                else:
+                    split_advice = (
+                        "regroup it into two or three cohesive passages by service or locality"
+                    )
                 warnings.append(
                     DigestQualityWarning(
                         code="OVERLONG_SYNTHESIS",
                         message=(
                             f"This {len(item.body)}-character item covers "
                             f"{len(item.covered_fact_ids)} required facts. If the evidence supports "
-                            "it, regroup it into two or three cohesive passages by service or "
-                            "locality. Keep every fact exactly once and avoid a street-by-street list."
+                            f"it, {split_advice}. Do not add single-report items or headings that "
+                            "rephrase another item's subject. Keep every fact exactly once and "
+                            "avoid a street-by-street list."
                         ),
                         block_id=block.block_id,
                         item_index=idx,
@@ -616,6 +668,23 @@ def audit_digest_prose_quality(
                             "State the supported city fact directly and keep only the attribution "
                             "needed to preserve its source or uncertainty. Do not infer that an "
                             "unnamed location is different from another place."
+                        ),
+                        block_id=block.block_id,
+                        item_index=idx,
+                        headline=item.headline,
+                    )
+                )
+
+            relative_day = _historical_relative_day(item, evidence)
+            if relative_day:
+                warnings.append(
+                    DigestQualityWarning(
+                        code="HISTORICAL_RELATIVE_DAY",
+                        message=(
+                            f"«{relative_day}» is copied from a report observed before this "
+                            "digest's window, so it does not mean the digest date. Keep the "
+                            "report's own sequence without dating it to today, e.g. «накануне … "
+                            "на следующий день», or omit the relative day."
                         ),
                         block_id=block.block_id,
                         item_index=idx,

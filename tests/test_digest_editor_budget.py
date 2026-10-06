@@ -681,3 +681,95 @@ def test_local_edit_with_unresolved_targeted_issue_does_not_replace_checkpoint()
         item.body.startswith("Также ") for block in result[0][0].blocks for item in block.items
     )
     assert result[0][4].is_publishable
+
+
+def test_editor_cannot_add_reader_findings_to_safe_checkpoint():
+    """Run 311: an overlong roster was split into near-duplicate power items."""
+    from dataclasses import replace
+
+    from src.publication.digest_quality_diagnostics import DigestQualityWarning
+
+    values, base = assessment_inputs()
+    context = DigestAssessmentContext(**values)
+    block_id = base.blocks[0].block_id
+
+    def with_warnings(assessment, codes):
+        extra = tuple(
+            DigestQualityWarning(code=code, message=code, block_id=block_id, item_index=0)
+            for code in codes
+        )
+        return replace(
+            assessment,
+            audit=replace(
+                assessment.audit,
+                prose_audit=replace(
+                    assessment.audit.prose_audit,
+                    warnings=assessment.audit.prose_audit.warnings + extra,
+                ),
+            ),
+        )
+
+    original = with_warnings(assess_digest_candidate(base, context=context), ("OVERLONG_SYNTHESIS",))
+
+    def evaluate(candidate):
+        assessment = assess_digest_candidate(candidate, context=context)
+        if candidate == original.draft:
+            return with_warnings(assessment, ("OVERLONG_SYNTHESIS",)).checks()
+        return with_warnings(
+            assessment, ("FRAGMENTED_SERVICE_REPORTS", "FRAGMENTED_SERVICE_REPORTS")
+        ).checks()
+
+    provider = Provider("local")
+    observer = ReplayObserver()
+    result = asyncio.run(
+        _repair_digest_candidate(
+            checkpoint=original.checkpoint(),
+            plan=context.plan,
+            evidence=context.evidence,
+            editor=DigestEditor(provider),
+            observer=observer,
+            evaluate_candidate=evaluate,
+            model="test",
+            timeout_seconds=10,
+            implementation_versions={},
+            editor_scope="targeted_items",
+        )
+    )
+    assert provider.calls >= 1
+    assert result[0][0] == original.draft
+    assert result[0][4].is_publishable
+    assert observer.outcomes[0]["editor_outcome"] == "rejected_editorial_regression"
+
+
+def test_targeted_recomposition_can_restore_fact_dropped_by_writer():
+    """Run 309: a dropped fact was outside every item-scoped checklist."""
+    from dataclasses import replace
+
+    values, draft = assessment_inputs()
+    context = DigestAssessmentContext(**values)
+    block = draft.blocks[0]
+    assert len(block.items) >= 2
+    dropped = block.items[-1]
+    kept = block.items[:-1]
+    lossy = replace(draft, blocks=(replace(block, items=kept),))
+
+    provider = Provider()
+    asyncio.run(
+        DigestEditor(provider).polish_and_compress(
+            lossy,
+            plan=context.plan,
+            evidence=context.evidence,
+            max_chars=3600,
+            model="test",
+            violations=["DIGEST_FACT_COVERAGE_MISSING"],
+            target_item_ids=[kept[0].item_id],
+            recompose_block_ids=[block.block_id],
+            support_text_by_id=context.support_text_by_id,
+        )
+    )
+
+    request = provider.requests[0]
+    assert set(dropped.covered_fact_ids) <= set(request["target_recomposition_fact_ids"])
+    assert set(dropped.covered_fact_ids) <= {
+        fact["fact_id"] for fact in request["required_recomposition_facts"]
+    }

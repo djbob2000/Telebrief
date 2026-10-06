@@ -68,3 +68,14 @@ def test_excluded_mixed_claim_is_not_promoted_to_publish() -> None:
     payload = _payload([_item("Свет будет? На улице Морозова нет электричества.", use="EXCLUDE")])
 
     assert decompose_mixed_outage_evidence(payload) == payload
+
+
+def test_quoted_question_in_reported_exchange_is_not_split() -> None:
+    """Run 311: «На вопрос «Акз что со светом?» …» became «» дан ответ …»."""
+    claim = "На вопрос «Акз что со светом?» дан ответ «Как обычно — нет»."
+    payload = _payload([_item(claim, "service_access")])
+
+    result = decompose_mixed_outage_evidence(payload, {109062: "Как обычно- нет."})
+
+    assert result == payload
+    assert not any(item.text.startswith("»") for item in result.evidence_items)

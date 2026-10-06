@@ -299,6 +299,19 @@ class DigestEditor:
                     recompose_target_ids.add(item.item_id)
         if recompose_ids and not recompose_target_ids and edit_scope is None:
             return draft
+        # A required fact the draft lost belongs to no item, so it would never
+        # enter an item-scoped checklist. Restore it through the block being
+        # recomposed rather than leaving the coverage failure unrepairable.
+        uncovered_fact_ids: dict[str, set[str]] = {}
+        for block in draft.blocks:
+            if block.block_id not in recompose_ids or not any(
+                item.item_id in recompose_target_ids for item in block.items
+            ):
+                continue
+            covered = {str(fid) for item in block.items for fid in item.covered_fact_ids}
+            uncovered_fact_ids[block.block_id] = {
+                str(fact.fact_id) for fact in plan_blocks[block.block_id].required_facts
+            } - covered
 
         editor_blocks: list[dict[str, Any]] = []
         for block in draft.blocks:
@@ -604,6 +617,7 @@ class DigestEditor:
                     if item.item_id in recompose_target_ids
                     for fact_id in item.covered_fact_ids
                 }
+                | {fid for fact_ids in uncovered_fact_ids.values() for fid in fact_ids}
             )
             target_recomposition_summary_unit_ids = sorted(
                 {
@@ -760,6 +774,7 @@ class DigestEditor:
                                 if item.item_id in recompose_target_ids
                                 for fact_id in item.covered_fact_ids
                             }
+                            | uncovered_fact_ids.get(block.block_id, set())
                         )
                         returned_fact_ids = [
                             str(fact_id)

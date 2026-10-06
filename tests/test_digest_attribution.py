@@ -389,3 +389,124 @@ def test_overlong_warning_gives_size_and_safe_regrouping_instruction() -> None:
     assert "701-character item covers 4 required facts" in warning.message
     assert "two or three cohesive passages" in warning.message
     assert "every fact exactly once" in warning.message
+
+
+def test_hard_blocker_item_stays_targeted_when_style_warning_is_elsewhere() -> None:
+    """Run 311: a structural warning on a power item hid the gas-extent blocker."""
+    from types import SimpleNamespace
+
+    from src.publication.digest_quality_diagnostics import DigestQualityWarning
+    from src.publication.generation import _digest_repair_request
+
+    draft = DigestNarrativeDraft(
+        blocks=(
+            DigestNarrativeBlockDraft(
+                block_id="block:infrastructure:composition",
+                items=(
+                    DigestEditorialItemDraft(
+                        item_id="item:power",
+                        body="power roster",
+                        covered_fact_ids=("infrastructure_electricity_aaa",),
+                    ),
+                    DigestEditorialItemDraft(
+                        item_id="item:gas",
+                        body="gas and water",
+                        covered_fact_ids=("evidence-item:story:1:0:bbb", "infrastructure_gas_ccc"),
+                    ),
+                ),
+            ),
+        ),
+    )
+    warning = DigestQualityWarning(
+        code="OVERLONG_SYNTHESIS",
+        message="Overlong item",
+        block_id="block:infrastructure:composition",
+        item_index=0,
+    )
+    checkpoint = (
+        draft,
+        SimpleNamespace(
+            violations=(
+                "DIGEST_FACT_BINDING_MISMATCH:service_extent:infrastructure_gas_ccc: "
+                "The source does not state this citywide extent for the named service.",
+            )
+        ),
+        None,
+        None,
+        SimpleNamespace(checks=(), prose_audit=SimpleNamespace(warnings=(warning,))),
+    )
+
+    _, targets, recompose_blocks = _digest_repair_request(checkpoint)
+
+    assert targets == ("item:gas", "item:power")
+    assert recompose_blocks == ("block:infrastructure:composition",)
+
+
+def test_fact_id_prefix_does_not_target_unrelated_item() -> None:
+    from types import SimpleNamespace
+
+    from src.publication.generation import _digest_repair_request
+
+    draft = DigestNarrativeDraft(
+        blocks=(
+            DigestNarrativeBlockDraft(
+                block_id="b",
+                items=(
+                    DigestEditorialItemDraft(
+                        item_id="item:a", body="a", covered_fact_ids=("infrastructure_gas_c",)
+                    ),
+                    DigestEditorialItemDraft(
+                        item_id="item:b", body="b", covered_fact_ids=("infrastructure_gas_cc",)
+                    ),
+                ),
+            ),
+        ),
+    )
+    checkpoint = (
+        draft,
+        SimpleNamespace(violations=("DIGEST_FACT_BINDING_MISMATCH:service_extent:infrastructure_gas_cc: x",)),
+        None,
+        None,
+        SimpleNamespace(checks=(), prose_audit=SimpleNamespace(warnings=())),
+    )
+
+    _, targets, _ = _digest_repair_request(checkpoint)
+
+    assert targets == ("item:b",)
+
+
+@pytest.mark.parametrize(
+    ("other_power_items", "expected"),
+    [(1, "at most 2 cohesive passages"), (2, "do not split it")],
+)
+def test_overlong_power_split_advice_respects_block_power_limit(
+    other_power_items: int, expected: str
+) -> None:
+    """Run 311: «split into two or three» guaranteed a fragmentation finding."""
+    from src.publication.digest_quality_diagnostics import audit_digest_prose_quality
+
+    roster = DigestEditorialItemDraft(
+        item_id="item:roster",
+        headline="Длительные отключения",
+        body="По сообщениям жителей, света нет. " * 25,
+        covered_fact_ids=("f1", "f2", "f3", "f4"),
+    )
+    others = tuple(
+        DigestEditorialItemDraft(
+            item_id=f"item:other-{index}",
+            headline=f"Перебои {index}",
+            body="Свет давали на три часа, затем он пропал.",
+            covered_fact_ids=(f"g{index}",),
+        )
+        for index in range(other_power_items)
+    )
+    draft = DigestNarrativeDraft(
+        blocks=(DigestNarrativeBlockDraft(block_id="utilities", items=(roster, *others)),)
+    )
+
+    audit = audit_digest_prose_quality(draft, {})
+
+    overlong = [w for w in audit.warnings if w.code == "OVERLONG_SYNTHESIS"]
+    assert len(overlong) == 1
+    assert expected in overlong[0].message
+    assert audit.is_publishable

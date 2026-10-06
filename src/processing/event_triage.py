@@ -78,6 +78,16 @@ def _extract_mixed_question_and_outage(text: str) -> tuple[str, str, str, str] |
     """Detect if text contains both a question and a grounded factual outage clause."""
     if "?" not in text:
         return None
+    # A question quoted inside a reported exchange («На вопрос «…?» дан ответ
+    # «…»») is not a separate clause; splitting it leaves «» дан ответ…».
+    depth = 0
+    for index, char in enumerate(text):
+        if char in "«“":
+            depth += 1
+        elif char in "»”":
+            depth = max(depth - 1, 0)
+        elif char == "?" and (depth or re.match(r"\s*[»”\"']", text[index + 1 :])):
+            return None
 
     clauses = re.split(r"([?])", text)
     if len(clauses) < 3:
