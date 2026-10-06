@@ -37,6 +37,11 @@ SAME_SITUATION_WRITER_GUIDANCE = (
     "attribution, uncertainty, and scope. The link does not establish continuous duration, "
     "cause, or identical sources; preserve different times and qualifications explicitly."
 )
+DIGEST_FREQUENCY_SCOPE_GUIDANCE = (
+    "When combining reports with different frequency or duration, keep each scope attached to "
+    "the fact that supports it. Do not add a once-only frequency such as 'однажды' unless that "
+    "fact's support states it; never transfer a recurring frequency from one fact to another."
+)
 
 DIGEST_COMPOSITION_MEMBERSHIP_VERSION = "digest_membership_v3"
 DIGEST_NARRATIVE_SANITIZER_VERSION = "digest_sanitizer_v1_attribution_agreement"
@@ -4600,6 +4605,7 @@ class DigestNarrativeWriter:
             "- Every item names one or more exact composition_unit_ids from this block; units in an item must belong to this same rubric. Do not invent, shorten, or infer IDs. The units define which material an item may represent; they do not require one visible item each.\n"
             "- Across the whole block, every allowed fact ID must occur in exactly one item's covered_fact_ids. Items may weave compatible same-rubric units together or split a unit when that makes its places or situations clearer. No fact may be omitted, duplicated, or moved outside its unit.\n"
             "- Fact IDs are coverage metadata, not a one-sentence-per-ID quota. When two IDs restate the same supported condition, one clear sentence may cover both IDs in the same item; retain complementary details such as a date plus elapsed duration in that one passage instead of repeating the condition. Preserve every distinct place, time, measurement, consequence and uncertainty.\n"
+            f"- {DIGEST_FREQUENCY_SCOPE_GUIDANCE}\n"
             "- Every summary-only unit must appear in exactly one item's composition_unit_ids and exactly one claim's summary_unit_ids. Summary-only units may be woven together when that reads naturally; keep each distinct report recognizable.\n"
             "- Fact-bearing Claim Atoms are derived by Python from the exact covered_fact_ids; return claims: [] for a fact-only item instead of paraphrasing facts again as metadata. Supply a claim only for a summary-only unit, with covered_fact_ids: [] and its exact summary_unit_ids. All visible prose must faithfully represent the listed facts and authorized summary supports.\n"
             "- Do not output covered_story_ids or cited_support_ids. Python derives both from the frozen fact-to-evidence map.\n"
@@ -4630,7 +4636,11 @@ class DigestNarrativeWriter:
                 material = build_compact_digest_material(plan=plan, evidence=evidence, cards=cards)
                 writer_brief = COMPACT_DIGEST_BRIEF
             user_prompt = encode_digest_material(material)
-            system_prompt = writer_brief + f"\nOutput language: {language}\nSchema: {schema_desc}"
+            system_prompt = (
+                writer_brief
+                + f"\n{DIGEST_FREQUENCY_SCOPE_GUIDANCE}\n"
+                + f"Output language: {language}\nSchema: {schema_desc}"
+            )
         else:
             user_prompt = json.dumps({"blocks": blocks_payload}, ensure_ascii=False, indent=2)
         chat_kwargs: dict[str, Any] = {

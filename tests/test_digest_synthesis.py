@@ -169,6 +169,48 @@ def test_related_reporting_sets_ignore_generic_service_status_overlap() -> None:
     assert not any({"fact:5", "fact:6"}.issubset(item["fact_ids"]) for item in related)
 
 
+@pytest.mark.parametrize("writer_material_format", ["legacy", "compact_v1", "source_grouped_v1"])
+def test_writer_prompt_keeps_individual_and_recurring_report_scopes_separate(
+    writer_material_format: str,
+) -> None:
+    import asyncio
+
+    from src.publication.digest_narrative import DigestNarrativeWriter
+
+    class CapturedPrompt(Exception):
+        pass
+
+    class Provider:
+        system_prompt = ""
+
+        async def chat_completion(self, **kwargs):
+            self.system_prompt = kwargs["messages"][0]["content"]
+            raise CapturedPrompt
+
+    cards, evidence, _, plan = _fixture()
+    provider = Provider()
+    writer = DigestNarrativeWriter(provider, writer_material_format=writer_material_format)
+
+    with pytest.raises(CapturedPrompt):
+        asyncio.run(
+            writer._generate_composition_draft(
+                plan=plan,
+                cards=cards,
+                evidence=evidence,
+                language="Russian",
+                max_output_tokens=512,
+                model="test-model",
+            )
+        )
+
+    prompt = provider.system_prompt.casefold()
+    assert (
+        "do not add a once-only frequency such as 'однажды' unless that fact's support states it"
+        in prompt
+    )
+    assert "never transfer a recurring frequency from one fact to another" in prompt
+
+
 def test_overlapping_place_wording_is_navigation_and_preserves_different_facts() -> None:
     cards, evidence, _, plan = _fixture(
         (

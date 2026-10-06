@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from src.publication.article_length import ArticleLengthProfile
 
 ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v14-reply-locator-only"
-DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v21-item-cohesion"
+DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v22-frequency-scope"
 
 DIGEST_REPLY_CONTEXT_GUIDE = (
     "In reporting metadata, reply-parent, parent message and «родительское сообщение» "
