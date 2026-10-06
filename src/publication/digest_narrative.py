@@ -21,6 +21,7 @@ from src.publication.digest_presentation import (
 )
 from src.publication.digest_reporting_context import (
     fare_comparison_context,
+    find_unsupported_digest_claims,
     publish_support_metadata,
     writer_citable_text,
 )
@@ -38,6 +39,7 @@ SAME_SITUATION_WRITER_GUIDANCE = (
 )
 
 DIGEST_COMPOSITION_MEMBERSHIP_VERSION = "digest_membership_v3"
+DIGEST_NARRATIVE_SANITIZER_VERSION = "digest_sanitizer_v1_attribution_agreement"
 
 _INTERNAL_LEAKAGE_RE = re.compile(r"\[(?:story:\d+|SUPPORT\s+\d+|ref-\d+|tg:\S+)\]", re.IGNORECASE)
 _DIGEST_ATTRIBUTION_RE = re.compile(
@@ -436,6 +438,57 @@ def _fix_chat_leaks(text: str) -> str:
     return normalized
 
 
+_ATTRIBUTION_AGREEMENT_FIX_RE = re.compile(
+    r"\b(?P<plural>жители|горожане|очевидцы)\s+"
+    r"(?P<plural_subject_verb>сообщает|пишет|говорит|жалуется|отмечает)\b|"
+    r"\b(?P<singular>житель|жительница|горожанин|очевидец)\s+"
+    r"(?P<singular_subject_verb>сообщают|пишут|говорят|жалуются|отмечают)\b",
+    re.IGNORECASE,
+)
+_ATTRIBUTION_AGREEMENT_VERBS = {
+    "сообщает": "сообщают",
+    "пишет": "пишут",
+    "говорит": "говорят",
+    "жалуется": "жалуются",
+    "отмечает": "отмечают",
+    "сообщают": "сообщает",
+    "пишут": "пишет",
+    "говорят": "говорит",
+    "жалуются": "жалуется",
+    "отмечают": "отмечает",
+}
+
+
+def _fix_attribution_agreement(text: str) -> str:
+    """Repair clear singular/plural agreement errors outside immutable quotes."""
+    marker = "\ue002"
+    while marker in text:
+        marker += "\ue002"
+    quoted: dict[str, str] = {}
+
+    def protect(match: re.Match[str]) -> str:
+        token = f"{marker}{len(quoted)}\ue003"
+        quoted[token] = match.group()
+        return token
+
+    protected = _HEADLINE_QUOTED_SPAN_RE.sub(protect, text)
+
+    def correct(match: re.Match[str]) -> str:
+        subject = match.group("plural") or match.group("singular") or ""
+        verb = match.group("plural_subject_verb") or match.group("singular_subject_verb") or ""
+        replacement = _ATTRIBUTION_AGREEMENT_VERBS[verb.casefold()]
+        if verb.isupper():
+            replacement = replacement.upper()
+        elif verb[:1].isupper():
+            replacement = replacement[:1].upper() + replacement[1:]
+        return f"{subject} {replacement}"
+
+    corrected = _ATTRIBUTION_AGREEMENT_FIX_RE.sub(correct, protected)
+    for token, original in quoted.items():
+        corrected = corrected.replace(token, original)
+    return corrected
+
+
 def sanitize_digest_narrative_draft(draft: DigestNarrativeDraft) -> DigestNarrativeDraft:
     """Sanitize all items in a narrative digest draft before quality audit and rendering."""
     new_blocks = []
@@ -443,9 +496,11 @@ def sanitize_digest_narrative_draft(draft: DigestNarrativeDraft) -> DigestNarrat
         new_items = []
         for it in b.items:
             clean_hl = _fix_chat_leaks(it.headline)
+            clean_hl = _fix_attribution_agreement(clean_hl)
             clean_hl = re.sub(r"\s{2,}", " ", clean_hl).strip()
 
             clean_body = _fix_chat_leaks(it.body)
+            clean_body = _fix_attribution_agreement(clean_body)
             clean_body = re.sub(r"\s{2,}", " ", clean_body).strip()
 
             clean_hl, clean_body = _fix_redundant_headline_and_body(clean_hl, clean_body)
@@ -2395,9 +2450,10 @@ def validate_digest_narrative(
                     c_claim_supports = [
                         support_map[s] for s in claim.cited_support_ids if s in support_map
                     ]
-                    for unc in find_unsupported_claims(
+                    for unc in find_unsupported_digest_claims(
                         claim.text,
                         c_claim_supports,
+                        edition_slug=plan.edition_slug,
                         allowed_context_terms=factual_context_terms,
                         all_known_draft_supports=factual_known_supports,
                     ):
@@ -3902,7 +3958,22 @@ def _reader_synthesis_groups(block: DigestNarrativeBlock) -> list[dict[str, Any]
 
 
 def _related_reporting_sets(block: DigestNarrativeBlock) -> list[dict[str, Any]]:
-    """Flag literal reporting overlap, without declaring facts/places equivalent."""
+    """Flag literal and shared-source overlap without declaring facts equivalent."""
+    generic_uppercase_terms = {
+        "БЕЗ",
+        "ВОДА",
+        "ВОДЫ",
+        "ГАЗ",
+        "ГАЗА",
+        "ЕСТЬ",
+        "ИНТЕРНЕТ",
+        "НЕТ",
+        "ОТКЛЮЧЕНИЕ",
+        "ОТКЛЮЧИЛИ",
+        "СВЕТ",
+        "СВЕТА",
+        "ТЕПЛО",
+    }
     records = block.composition_fact_records
     anchors: set[str] = set()
     for record in records:
@@ -3912,21 +3983,48 @@ def _related_reporting_sets(block: DigestNarrativeBlock) -> list[dict[str, Any]]
             tokens = re.findall(r"\w+", clause.casefold())
             if len(tokens) >= 2:
                 anchors.add(" ".join(tokens))
-        anchors.update(word.casefold() for word in re.findall(r"\b[А-ЯЁA-Z]{3,}\b", record.text))
+        anchors.update(
+            word.casefold()
+            for word in re.findall(r"\b[А-ЯЁA-Z]{3,}\b", record.text)
+            if word not in generic_uppercase_terms
+        )
     normalized = {
         record.fact_id: " ".join(re.findall(r"\w+", record.text.casefold())) for record in records
     }
     result = []
-    seen_sets: set[tuple[str, ...]] = set()
+    seen_anchor_sets: set[tuple[str, ...]] = set()
+    shared_support_facts: dict[str, list[str]] = {}
+    for record in records:
+        for support_id in record.support_ids:
+            shared_support_facts.setdefault(str(support_id), []).append(str(record.fact_id))
+    for shared_fact_id_list in shared_support_facts.values():
+        distinct_fact_ids = tuple(dict.fromkeys(shared_fact_id_list))
+        if len(distinct_fact_ids) < 2 or distinct_fact_ids in seen_anchor_sets:
+            continue
+        seen_anchor_sets.add(distinct_fact_ids)
+        result.append(
+            {
+                "navigation_only": True,
+                "overlap_kind": "shared_source",
+                "fact_ids": list(distinct_fact_ids),
+            }
+        )
     for anchor in sorted(anchors, key=lambda value: (-len(value), value)):
         pattern = re.compile(rf"(?:^|\s){re.escape(anchor)}(?:\s|$)")
-        fact_ids = tuple(
+        anchor_fact_ids = tuple(
             record.fact_id for record in records if pattern.search(normalized[record.fact_id])
         )
-        if len(fact_ids) < 2 or fact_ids in seen_sets:
+        if len(anchor_fact_ids) < 2 or anchor_fact_ids in seen_anchor_sets:
             continue
-        seen_sets.add(fact_ids)
-        result.append({"navigation_only": True, "text_anchor": anchor, "fact_ids": list(fact_ids)})
+        seen_anchor_sets.add(anchor_fact_ids)
+        result.append(
+            {
+                "navigation_only": True,
+                "overlap_kind": "literal_anchor",
+                "text_anchor": anchor,
+                "fact_ids": list(anchor_fact_ids),
+            }
+        )
     return result
 
 
@@ -4367,7 +4465,7 @@ class DigestNarrativeWriter:
     """Single-call narrative digest writer synthesizing flowing prose across rubric blocks."""
 
     def __init__(self, provider: Any, *, writer_material_format: str = "legacy") -> None:
-        if writer_material_format not in ("legacy", "compact_v1"):
+        if writer_material_format not in ("legacy", "compact_v1", "source_grouped_v1"):
             raise ValueError("digest_writer_material_format is unsupported")
         self._provider = provider
         self._writer_material_format = writer_material_format
@@ -4397,7 +4495,7 @@ class DigestNarrativeWriter:
             '"composition_unit_ids":["one or more exact unit IDs from this same-rubric block"],'
             '"covered_fact_ids":["exact facts this item covers; empty only when all named units are summary-only"],'
             '"emoji":"optional short semantic emoji",'
-            '"headline":"empty by default; optional short noun scan label only when it adds navigation",'
+            '"headline":"optional informative short headline naming the development; empty for a small update",'
             '"body":"cohesive concise prose",'
             '"claims":[{"text":"summary-only proposition; use an empty claims list for fact-only items",'
             '"covered_fact_ids":[],'
@@ -4414,6 +4512,7 @@ class DigestNarrativeWriter:
             "COMPOSITION CONTRACT:\n"
             "- Every item names one or more exact composition_unit_ids from this block; units in an item must belong to this same rubric. Do not invent, shorten, or infer IDs. The units define which material an item may represent; they do not require one visible item each.\n"
             "- Across the whole block, every allowed fact ID must occur in exactly one item's covered_fact_ids. Items may weave compatible same-rubric units together or split a unit when that makes its places or situations clearer. No fact may be omitted, duplicated, or moved outside its unit.\n"
+            "- Fact IDs are coverage metadata, not a one-sentence-per-ID quota. When two IDs restate the same supported condition, one clear sentence may cover both IDs in the same item; retain complementary details such as a date plus elapsed duration in that one passage instead of repeating the condition. Preserve every distinct place, time, measurement, consequence and uncertainty.\n"
             "- Every summary-only unit must appear in exactly one item's composition_unit_ids and exactly one claim's summary_unit_ids. Summary-only units may be woven together when that reads naturally; keep each distinct report recognizable.\n"
             "- Fact-bearing Claim Atoms are derived by Python from the exact covered_fact_ids; return claims: [] for a fact-only item instead of paraphrasing facts again as metadata. Supply a claim only for a summary-only unit, with covered_fact_ids: [] and its exact summary_unit_ids. All visible prose must faithfully represent the listed facts and authorized summary supports.\n"
             "- Do not output covered_story_ids or cited_support_ids. Python derives both from the frozen fact-to-evidence map.\n"
@@ -4424,18 +4523,27 @@ class DigestNarrativeWriter:
             "Return only valid JSON matching this schema; include every input block in the same order:\n"
             f"{schema_desc}"
         )
-        if self._writer_material_format == "compact_v1":
+        if self._writer_material_format in ("compact_v1", "source_grouped_v1"):
             from src.publication.digest_writer_material import (
                 COMPACT_DIGEST_BRIEF,
+                SOURCE_GROUPED_DIGEST_BRIEF,
                 build_compact_digest_material,
+                build_source_grouped_digest_material,
                 encode_digest_material,
             )
 
-            material = build_compact_digest_material(plan=plan, evidence=evidence, cards=cards)
+            if self._writer_material_format == "source_grouped_v1":
+                material = build_source_grouped_digest_material(
+                    plan=plan,
+                    evidence=evidence,
+                    cards=cards,
+                )
+                writer_brief = SOURCE_GROUPED_DIGEST_BRIEF
+            else:
+                material = build_compact_digest_material(plan=plan, evidence=evidence, cards=cards)
+                writer_brief = COMPACT_DIGEST_BRIEF
             user_prompt = encode_digest_material(material)
-            system_prompt = (
-                COMPACT_DIGEST_BRIEF + f"\nOutput language: {language}\nSchema: {schema_desc}"
-            )
+            system_prompt = writer_brief + f"\nOutput language: {language}\nSchema: {schema_desc}"
         else:
             user_prompt = json.dumps({"blocks": blocks_payload}, ensure_ascii=False, indent=2)
         chat_kwargs: dict[str, Any] = {

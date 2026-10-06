@@ -306,7 +306,7 @@ async def _repair_digest_candidate(
             targets = edit_scope.item_ids
             recompose_ids = edit_scope.block_ids
             findings.append(
-                "EDITORIAL_CONSTRAINT: Recompose the authorized full themes for natural hierarchy, cohesion, precise detail and honest attribution. Reconcile the complete required fact inventory and represent every fact exactly once. Keep unchanged themes when already clear; do not invent context or remove selected facts."
+                "EDITORIAL_CONSTRAINT: Recompose the authorized full themes for natural hierarchy, cohesion, precise detail and honest attribution. Reconcile the complete required fact inventory and assign every fact ID exactly once. IDs are a coverage checklist, not a sentence quota: state a repeated supported condition once while assigning all IDs that restate it to the same item. Keep unchanged themes when already clear; do not invent context or remove selected facts."
             )
         if call == 2:
             if size_only_failure:
@@ -318,7 +318,7 @@ async def _repair_digest_candidate(
                 )
             else:
                 findings.append(
-                    "EDITORIAL_CONSTRAINT: FINAL_EDITORIAL_PASS. This is the final bounded style pass. Resolve the remaining listed prose warnings with the smallest clear edits. Preserve every selected story and fact exactly once, with its evidence, attribution, uncertainty, place, time and scope unchanged."
+                    "EDITORIAL_CONSTRAINT: FINAL_EDITORIAL_PASS. This is the final bounded style pass. Resolve the remaining listed prose warnings with the smallest clear edits. Assign every selected fact ID exactly once; do not repeat the same supported condition merely to echo multiple IDs. Preserve its evidence, attribution, uncertainty, place, time and scope."
                 )
         if call > 0 and thematic:
             findings.append(
@@ -381,7 +381,7 @@ async def _repair_digest_candidate(
                         "supported event itself, without implying an unknown place is a different "
                         "district. For an overlong item, regroup the facts into two or three clear "
                         "service or locality passages when evidence supports that split. Preserve "
-                        "each exact fact once and keep its time, place, uncertainty, and source scope."
+                        "each exact fact ID once, state any repeated supported condition only once, and keep every distinct time, place, uncertainty, and source scope."
                     )
         if feedback:
             findings.append(
@@ -665,7 +665,10 @@ class PublicationGenerationService:
             if run.publication_type in DIGEST_PUBLICATION_TYPES:
                 from src.publication.digest_composition import COMPOSITION_POLICY_VERSION
                 from src.publication.digest_contracts import DIGEST_ELIGIBILITY_VERSION
-                from src.publication.digest_narrative import DIGEST_COMPOSITION_MEMBERSHIP_VERSION
+                from src.publication.digest_narrative import (
+                    DIGEST_COMPOSITION_MEMBERSHIP_VERSION,
+                    DIGEST_NARRATIVE_SANITIZER_VERSION,
+                )
                 from src.publication.digest_quality_diagnostics import DIGEST_DIAGNOSTICS_VERSION
                 from src.publication.narrative_contract import DIGEST_NARRATIVE_PROMPT_VERSION
                 from src.publication.policies import (
@@ -723,6 +726,7 @@ class PublicationGenerationService:
                     ),
                     "composition_policy_version": COMPOSITION_POLICY_VERSION,
                     "composition_membership_version": DIGEST_COMPOSITION_MEMBERSHIP_VERSION,
+                    "narrative_sanitizer_version": DIGEST_NARRATIVE_SANITIZER_VERSION,
                     "diagnostics_version": DIGEST_DIAGNOSTICS_VERSION,
                 }
 

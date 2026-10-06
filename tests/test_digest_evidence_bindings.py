@@ -5,6 +5,7 @@
 import pytest
 from test_digest_composition_identity import _story
 
+from src.domain.service_taxonomy import detect_service_families
 from src.publication.digest_composition import (
     DigestCompositionResult,
     DigestCompositionUnit,
@@ -23,11 +24,18 @@ FARE = (
 )
 
 
-def binding_inputs(sources, *, locations=None, states=None):
+def binding_inputs(sources, *, locations=None, states=None, canonical_services=None):
     locations = locations or [""] * len(sources)
     states = states or [""] * len(sources)
+    canonical_services = canonical_services or [""] * len(sources)
     stories, facts, records, units, supports = [], [], [], [], {}
-    for index, (text, location, state) in enumerate(zip(sources, locations, states, strict=True)):
+    for index, (text, location, state, canonical_service) in enumerate(
+        zip(sources, locations, states, canonical_services, strict=True)
+    ):
+        services = detect_service_families(text)
+        canonical_service = canonical_service or (
+            next(iter(services)) if len(services) == 1 else ""
+        )
         story = _story(f"story:{index}", "infrastructure", f"source:{index}")
         fact = RequiredDigestFact(
             fact_id=f"fact:{index}",
@@ -45,7 +53,7 @@ def binding_inputs(sources, *, locations=None, states=None):
             support_ids=fact.support_ids,
             rubric_id=fact.rubric_id,
             canonical_subject="service",
-            canonical_service="",
+            canonical_service=canonical_service,
             canonical_area="",
             canonical_place=(),
             original_location=location,
@@ -93,8 +101,12 @@ def binding_inputs(sources, *, locations=None, states=None):
     return plan, supports
 
 
-def validate_body(body, sources, *, locations=None, states=None, missing_support=False):
-    plan, supports = binding_inputs(sources, locations=locations, states=states)
+def validate_body(
+    body, sources, *, locations=None, states=None, canonical_services=None, missing_support=False
+):
+    plan, supports = binding_inputs(
+        sources, locations=locations, states=states, canonical_services=canonical_services
+    )
     block = plan.blocks[0]
     draft = _parse_composition_writer_output(
         {
@@ -190,6 +202,73 @@ def test_area_and_street_reports_do_not_prove_a_rest_of_area_partition():
         locations=["улица Хмельницкого", "Азмол"],
     )
     assert any("UNSUPPORTED_DIGEST_RELATION:area_partition" in v for v in result.violations)
+
+
+def test_citywide_extent_cannot_transfer_between_service_facts():
+    result = validate_body(
+        "По сообщению жителя, у большей части Бердянска нет газа с субботы "
+        "и электричества с 9 августа. У большей части Бердянска нет воды.",
+        [
+            "По сообщению жителя, газа нет с субботы.",
+            "По сообщению жителя, электричества нет с 9 августа.",
+            "По сообщению жителя, у большей части города нет воды.",
+        ],
+        locations=["Бердянск", "Бердянск", "большая часть Бердянска"],
+    )
+    assert any("DIGEST_FACT_BINDING_MISMATCH:service_extent" in v for v in result.violations)
+
+
+def test_citywide_extent_stays_with_its_service_in_a_shared_source_message():
+    source = "С субботы нет газа, с 9 августа света, у большей части города воды."
+    result = validate_body(
+        "У большей части Бердянска нет газа с субботы и электричества с 9 августа. "
+        "У большей части Бердянска нет воды.",
+        [source, source, source],
+        locations=["Бердянск", "Бердянск", "большая часть Бердянска"],
+        canonical_services=["gas", "power", "water"],
+    )
+    assert any(
+        "DIGEST_FACT_BINDING_MISMATCH:service_extent" in violation and "fact:0" in violation
+        for violation in result.violations
+    )
+    assert any(
+        "DIGEST_FACT_BINDING_MISMATCH:service_extent" in violation and "fact:1" in violation
+        for violation in result.violations
+    )
+    assert not any(
+        "DIGEST_FACT_BINDING_MISMATCH:service_extent" in violation and "fact:2" in violation
+        for violation in result.violations
+    )
+
+
+def test_explicit_extent_can_cover_a_compound_service_list_in_one_clause():
+    source = "У большей части города нет газа, света и воды."
+    result = validate_body(
+        source,
+        [source, source, source],
+        canonical_services=["gas", "power", "water"],
+    )
+    assert not any("DIGEST_FACT_BINDING_MISMATCH:service_extent" in v for v in result.violations)
+
+
+def test_explicit_single_source_citywide_water_scope_remains_publishable():
+    source = "По сообщению жителя, у большей части города нет воды."
+    result = validate_body(
+        "По сообщению жителя, у большей части Бердянска нет воды.",
+        [source],
+        locations=["большая часть Бердянска"],
+    )
+    assert not any("DIGEST_FACT_BINDING_MISMATCH:service_extent" in v for v in result.violations)
+
+
+def test_scope_before_short_attribution_still_binds_to_its_service():
+    source = "У большей части города, по словам жителей, нет воды."
+    result = validate_body(
+        source,
+        [source],
+        locations=["большая часть Бердянска"],
+    )
+    assert result.is_valid, result.violations
 
 
 def test_explicit_partition_in_single_source_is_allowed():

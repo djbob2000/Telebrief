@@ -6,6 +6,8 @@ import datetime as dt
 from dataclasses import dataclass
 from typing import Literal
 
+ReportingWindowRole = Literal["current_window_source", "historical_source", "unknown"]
+
 SERVICE_SUBJECT_FAMILY_BY_KEY: dict[str, str] = {
     "water_supply": "water",
     "power_supply": "power",
@@ -51,3 +53,6 @@ class PublicationEvidence:
     source_item_revision_id: int | None = None
     source_item_context_text: str = ""
     source_scope: Literal["fragment", "source_item_revision"] = "fragment"
+    # Publication-window membership is provenance, not an event date or proof
+    # that a service state persisted until publication.
+    reporting_window_role: ReportingWindowRole = "unknown"

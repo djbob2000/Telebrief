@@ -148,6 +148,10 @@ stable_context:
         aliases:
         - 8 Березня
         - 8 Марта
+        - восьмуха
+        - восьмухе
+        - 8ха
+        - 8хе
       - id: military_town
         name: Військове містечко
         aliases:

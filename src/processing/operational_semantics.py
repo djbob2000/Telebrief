@@ -158,7 +158,7 @@ def _is_high_confidence_private_coping(text: str) -> bool:
 
 @dataclass(frozen=True)
 class ServiceStateAudit:
-    """Audit metadata from service-state evidence normalization."""
+    """Audit metadata from service-claim and service-state normalization."""
 
     accepted_count: int = 0
     rejected_count: int = 0
@@ -287,14 +287,34 @@ def _has_valid_schedule_grounding(text: str, effective_from: str | None = None) 
 def normalize_service_state_evidence(
     payload: EventPayload,
     fragment_texts: Mapping[int, str] | None = None,
+    *,
+    reply_parent_context_by_fragment_id: Mapping[int, str] | None = None,
+    edition_name: str | None = None,
 ) -> tuple[EventPayload, ServiceStateAudit]:
-    """Validate and normalize service_state projections on EvidenceItemPayloads."""
+    """Validate service states against primary text while keeping reply context separate."""
     accepted = 0
     rejected_indexes: list[int] = []
     rejection_reasons: list[str] = []
     normalized_items: list[EvidenceItemPayload] = []
 
     for index, item in enumerate(payload.evidence_items):
+        raw_texts: list[str] = []
+        if fragment_texts is not None:
+            raw_texts = [
+                fragment_texts[fid] for fid in item.source_fragment_ids if fid in fragment_texts
+            ]
+            item, ungrounded_reason = _normalize_unstructured_service_claim(
+                item,
+                fragment_texts=fragment_texts,
+                reply_parent_context_by_fragment_id=reply_parent_context_by_fragment_id,
+                edition_name=edition_name,
+            )
+            if ungrounded_reason is not None:
+                normalized_items.append(item)
+                rejected_indexes.append(index)
+                rejection_reasons.append(ungrounded_reason)
+                continue
+
         if item.service_state is None:
             normalized_items.append(item)
             continue
@@ -310,11 +330,6 @@ def normalize_service_state_evidence(
         # When fragment_texts is provided, missing fragment IDs fail-closed.
         # Legacy fallback to item.text is only permitted when fragment_texts is None.
         if fragment_texts is not None:
-            raw_texts: list[str] = []
-            if item.source_fragment_ids:
-                for fid in item.source_fragment_ids:
-                    if fid in fragment_texts:
-                        raw_texts.append(fragment_texts[fid])
             if not raw_texts:
                 normalized_items.append(
                     replace(
@@ -375,7 +390,36 @@ def normalize_service_state_evidence(
         subject_families = _detect_service_families(f"{state.subject_key} {state.subject_label}")
         evidence_families = _detect_service_families(grounding_text)
         if subject_families:
+            family_mismatch_reason = None
             if not evidence_families:
+                family_mismatch_reason = "ungrounded_service_family"
+            elif subject_families.isdisjoint(evidence_families):
+                family_mismatch_reason = "subject_family_conflict"
+
+            if family_mismatch_reason is not None:
+                # A dependent answer/report may inherit the service referent
+                # from its parent. Retain only the child's exact words; never
+                # carry the parent's place, status, or duration into PUBLISH.
+                direct_reply_text = _direct_service_reply_text(
+                    item=item,
+                    raw_texts=raw_texts,
+                    subject_families=subject_families,
+                    reply_parent_context_by_fragment_id=reply_parent_context_by_fragment_id,
+                    edition_name=edition_name,
+                )
+                if direct_reply_text is not None:
+                    normalized_items.append(
+                        replace(
+                            item,
+                            text=direct_reply_text,
+                            kind="community_report",
+                            publication_use="PUBLISH",
+                            service_state=None,
+                        )
+                    )
+                    rejected_indexes.append(index)
+                    rejection_reasons.append("reply_context_only_subject")
+                    continue
                 normalized_items.append(
                     replace(
                         item,
@@ -385,19 +429,7 @@ def normalize_service_state_evidence(
                     )
                 )
                 rejected_indexes.append(index)
-                rejection_reasons.append("ungrounded_service_family")
-                continue
-            if subject_families.isdisjoint(evidence_families):
-                normalized_items.append(
-                    replace(
-                        item,
-                        kind="community_report",
-                        publication_use="CONTEXT",
-                        service_state=None,
-                    )
-                )
-                rejected_indexes.append(index)
-                rejection_reasons.append("subject_family_conflict")
+                rejection_reasons.append(family_mismatch_reason)
                 continue
 
         # Check 3-part proof for SCHEDULED:
@@ -459,6 +491,350 @@ def normalize_service_state_evidence(
         rejection_reasons=tuple(rejection_reasons),
     )
     return normalized_payload, audit
+
+
+def _normalize_unstructured_service_claim(
+    item: EvidenceItemPayload,
+    *,
+    fragment_texts: Mapping[int, str],
+    reply_parent_context_by_fragment_id: Mapping[int, str] | None,
+    edition_name: str | None,
+) -> tuple[EvidenceItemPayload, str | None]:
+    """Require each cited support to name its claimed service or answer its parent."""
+    if item.publication_use != "PUBLISH" or item.kind not in {"community_report", "service_access"}:
+        return item, None
+
+    claimed_families = _detect_service_families(item.text)
+    if not claimed_families:
+        return item, None
+    if not item.source_fragment_ids:
+        return replace(item, publication_use="CONTEXT", service_state=None), "missing_raw_grounding"
+
+    for fragment_id in item.source_fragment_ids:
+        source_text = fragment_texts.get(fragment_id)
+        if source_text is None:
+            return replace(
+                item, publication_use="CONTEXT", service_state=None
+            ), "missing_raw_grounding"
+
+        relation_conflict = _source_claim_relation_conflict(
+            source_text,
+            item.text,
+            parent_text=(reply_parent_context_by_fragment_id or {}).get(fragment_id, ""),
+        )
+        if relation_conflict is not None:
+            return replace(item, publication_use="CONTEXT", service_state=None), relation_conflict
+
+        unsupported_families = claimed_families - _detect_service_families(source_text)
+        if not unsupported_families:
+            continue
+
+        parent_text = (reply_parent_context_by_fragment_id or {}).get(fragment_id, "")
+        parent_families = _detect_service_families(parent_text)
+        if not unsupported_families.issubset(parent_families):
+            return (
+                replace(item, publication_use="CONTEXT", service_state=None),
+                "ungrounded_service_family",
+            )
+
+        fragment_item = replace(item, source_fragment_ids=(fragment_id,))
+        direct_reply = _direct_service_reply_text(
+            item=fragment_item,
+            raw_texts=[source_text],
+            subject_families=unsupported_families,
+            reply_parent_context_by_fragment_id=reply_parent_context_by_fragment_id,
+            edition_name=edition_name,
+        )
+        if direct_reply is None:
+            return (
+                replace(item, publication_use="CONTEXT", service_state=None),
+                "ungrounded_service_family",
+            )
+
+    return item, None
+
+
+_POSITIVE_CONTINUITY_RE = re.compile(
+    r"\bкак\s+был(?:а|о|и)?\s*[,—–-]?\s*так\s+и\s+остал(?:ся|ась|ось|ись)\b",
+    re.IGNORECASE,
+)
+_EXPLICIT_ABSENCE_CLAIM_RE = re.compile(
+    r"\b(?:отключение|отсутствие)\s+(?:света|воды|электричества|интернета)\s+"
+    r"(?:сохраня\w*|продолжа\w*)\b|"
+    r"\b(?:света|воды|электричества|интернета)\s+нет(?:у)?\b|"
+    r"\bнет(?:у)?\s+(?:света|воды|электричества|интернета)\b",
+    re.IGNORECASE,
+)
+_STAY_DURATION_RE = re.compile(
+    r"\b(?:побы|пробы)(?:л|ла|ло|ли)\s+"
+    r"(?:\d+|три|трое|два|двое|четыре|пять|шесть|семь)\s+"
+    r"(?:дня|дней|суток|часа|часов|минут)\b",
+    re.IGNORECASE,
+)
+_ONCE_WITHIN_PERIOD_RE = re.compile(r"\bодин\s+раз\s+в\s+течение\b", re.IGNORECASE)
+
+
+def _source_claim_relation_conflict(source: str, claim: str, *, parent_text: str) -> str | None:
+    """Detect two explicit relation inversions, not general semantic equivalence.
+
+    Absence of these forms proves nothing. Restrict the check to one service
+    and a short primary assertion; the parent supplies only its referent.
+    Rejected extraction stays recoverable in Gate, never a noise verdict.
+    """
+    source_families = _detect_service_families(source)
+    resolved_families = source_families or _detect_service_families(parent_text)
+    if (
+        len(resolved_families) != 1
+        or resolved_families != _detect_service_families(claim)
+        or len(source.split()) > 24
+        or "?" in source
+    ):
+        return None
+    if (
+        _POSITIVE_CONTINUITY_RE.search(source)
+        and not re.search(r"\b(?:не|нет|нету|без)\b", source, re.IGNORECASE)
+        and _EXPLICIT_ABSENCE_CLAIM_RE.search(claim)
+    ):
+        return "source_availability_conflict"
+    if (
+        source_families
+        and _STAY_DURATION_RE.search(source)
+        and _ONCE_WITHIN_PERIOD_RE.search(claim)
+        and not re.search(r"\b(?:в\s+течение|за)\b", source, re.IGNORECASE)
+    ):
+        return "source_duration_relation_conflict"
+    return None
+
+
+_SHORT_DIRECT_REPLY_RE = re.compile(
+    r"^\s*(?:да|ага|угу|нет|неа)\b.{0,120}$", re.IGNORECASE | re.DOTALL
+)
+_DIRECT_SERVICE_REPORT_RE = re.compile(
+    r"\b(?:нет(?:у)?|был(?:а|о|и)?|офф(?:лайн)?|не\s+(?:было|будет|работает|подают|включают)|"
+    r"перестал[аио]сь?|появил[аои]сь?|включил[аи]?|отключил[аи]?|"
+    r"дают|дали|есть|работает)\b",
+    re.IGNORECASE,
+)
+_ELLIPTICAL_SUPPLY_INTERVAL_RE = re.compile(
+    r"\b(?:один|\d+)\s+раз(?:а|ов)?\s+в\s+(?:неделю|день|сутки|месяц)\s+"
+    r"на\s+(?:сутки|(?:\d+|один|два|три)\s+час(?:а|ов)?)\b",
+    re.IGNORECASE,
+)
+_DIRECT_DURATION_NUMBER_RE = (
+    r"(?:\d{1,2}(?:[-‐‑‒–—]?(?:го|й|е|ий|ая|ое|ого|ому))?|"
+    r"один\w*|одна|одно|два|две|три|четыре|пять|шесть|семь|восемь|девять|десять|"
+    r"перв\w*|втор\w*|трет\w*|четверт\w*|пят\w*|шест\w*|седьм\w*|"
+    r"восьм\w*|девят\w*|десят\w*)"
+)
+_DIRECT_DURATION_UNIT_RE = r"(?:минут\w*|час\w*|дн\w*|день|дня|дней|сутк\w*|недел\w*|месяц\w*)"
+_DIRECT_REPLY_DURATION_RE = re.compile(
+    rf"\b(?P<number>{_DIRECT_DURATION_NUMBER_RE})\s*(?P<unit>{_DIRECT_DURATION_UNIT_RE})\b",
+    re.IGNORECASE,
+)
+_DIRECT_REPLY_DETAIL_RE = re.compile(
+    r"\b(?:сегодня|вчера|недавно|утром|дн[её]м|вечером|ночью|"
+    r"с\s+(?:понедельника|вторника|среды|четверга|пятницы|субботы|воскресенья)|"
+    rf"{_DIRECT_REPLY_DURATION_RE.pattern})\b",
+    re.IGNORECASE,
+)
+_LOCAL_PLACE_AFTER_PREPOSITION_RE = re.compile(
+    r"\b(?:[Нн]а|[Вв]|[Уу]|[Пп]о)\s+"
+    r"(?P<place>(?:(?:улиц[аеу]|ул\.?)\s+)?"
+    r"(?:\d+\s+[а-яё]+|[А-ЯЁ][а-яё-]+(?:\s+[А-ЯЁ]?[а-яё-]+){0,2}))\b"
+)
+_CITYWIDE_SCOPE_RE = re.compile(
+    r"\b(?:весь\s+город|во\s+вс[её]м\s+городе|по\s+всему\s+городу|"
+    r"на\s+весь\s+город|везде)\b",
+    re.IGNORECASE,
+)
+_CITYWIDE_NAMED_PLACE_RE = re.compile(
+    r"\b(?:во\s+вс[её]м|по\s+всему|на\s+всей)\s+"
+    r"(?P<place>[а-яё][а-яё-]+(?:\s+[а-яё][а-яё-]+){0,2})\b",
+    re.IGNORECASE,
+)
+
+
+def _direct_service_reply_text(
+    *,
+    item: EvidenceItemPayload,
+    raw_texts: list[str],
+    subject_families: set[str] | frozenset[str],
+    reply_parent_context_by_fragment_id: Mapping[int, str] | None,
+    edition_name: str | None,
+) -> str | None:
+    """Preserve a direct dependent reply while refusing to borrow parent claims."""
+    if len(item.source_fragment_ids) != 1 or len(raw_texts) != 1:
+        return None
+    fragment_id = item.source_fragment_ids[0]
+    parent_text = (reply_parent_context_by_fragment_id or {}).get(fragment_id, "")
+    reply_text = raw_texts[0].strip()
+    if not parent_text.strip():
+        return None
+    parent_families = _detect_service_families(parent_text)
+    if not subject_families.intersection(parent_families):
+        return None
+
+    if "?" in parent_text and len(reply_text.split()) <= 12:
+        if _SHORT_DIRECT_REPLY_RE.fullmatch(reply_text):
+            return reply_text
+
+    elliptical_interval = (
+        len(parent_families) == 1
+        and _LOCAL_PLACE_AFTER_PREPOSITION_RE.search(reply_text)
+        and _ELLIPTICAL_SUPPLY_INTERVAL_RE.search(reply_text)
+        and _elliptical_interval_action_matches(parent_text, item.text)
+    )
+    if len(reply_text.split()) > 24 or not (
+        _DIRECT_SERVICE_REPORT_RE.search(reply_text) or elliptical_interval
+    ):
+        return None
+    has_own_detail = (
+        _DIRECT_REPLY_DETAIL_RE.search(reply_text)
+        or (_LOCAL_PLACE_AFTER_PREPOSITION_RE.search(reply_text))
+        or (_CITYWIDE_SCOPE_RE.search(reply_text))
+    )
+    if not has_own_detail or not _reply_detail_preserved(
+        reply_text, item.text, edition_name=edition_name
+    ):
+        return None
+
+    return reply_text
+
+
+def _elliptical_interval_action_matches(parent: str, claim: str) -> bool:
+    """An interval answer inherits only a uniquely asked action, not a status.
+
+    A parent comparing a house with power and a house without power does not
+    say whether 'once a week for a day' describes supply or an interruption.
+    """
+    if "?" not in parent:
+        return False
+    positive = re.compile(
+        r"\b(?:дают|дали|давал\w*|включа\w*|включил\w*|подают|подавал\w*)\b", re.IGNORECASE
+    )
+    negative = re.compile(r"\b(?:отключ\w*|выключ\w*|нет(?:у)?|без|не)\b", re.IGNORECASE)
+    parent_positive = bool(positive.search(parent))
+    parent_negative = bool(negative.search(parent))
+    if parent_positive == parent_negative:
+        return False
+    return not (negative.search(claim) if parent_positive else positive.search(claim))
+
+
+def _reply_detail_preserved(
+    source_text: str, claim_text: str, *, edition_name: str | None = None
+) -> bool:
+    """Require the generated claim to retain a concrete detail from the reply."""
+    claim_folded = claim_text.casefold().replace("ё", "е")
+    for match in _DIRECT_REPLY_DETAIL_RE.finditer(source_text):
+        detail = match.group(0).casefold().replace("ё", "е")
+        if detail in claim_folded:
+            return True
+
+    source_durations = {
+        _normalized_duration(match.group("number"), match.group("unit"))
+        for match in _DIRECT_REPLY_DURATION_RE.finditer(source_text)
+    }
+    claim_durations = {
+        _normalized_duration(match.group("number"), match.group("unit"))
+        for match in _DIRECT_REPLY_DURATION_RE.finditer(claim_text)
+    }
+    if source_durations & claim_durations:
+        return True
+
+    # A citywide reply such as "Весь город офф" may be expanded to the
+    # configured edition name, but never to another city or a smaller area.
+    if _CITYWIDE_SCOPE_RE.search(source_text):
+        if _CITYWIDE_SCOPE_RE.search(claim_text):
+            return True
+        named_place = _CITYWIDE_NAMED_PLACE_RE.search(claim_text)
+        if named_place is None or not edition_name:
+            return False
+        return _place_matches_edition(named_place.group("place"), edition_name)
+
+    source_place = _LOCAL_PLACE_AFTER_PREPOSITION_RE.search(source_text)
+    claim_place = _LOCAL_PLACE_AFTER_PREPOSITION_RE.search(claim_text)
+    if source_place is None or claim_place is None:
+        return False
+
+    ignored = {"на", "в", "у", "по", "улица", "улице", "ул", "3", "третий", "третьем"}
+    source_tokens = set(_semantic_tokens(source_place.group("place"))) - ignored
+    claim_tokens = set(_semantic_tokens(claim_place.group("place"))) - ignored
+    return bool(source_tokens & claim_tokens)
+
+
+def _place_matches_edition(place: str, edition_name: str) -> bool:
+    """Match a named city in a grammatical case to the configured edition."""
+
+    def canonicalize(token: str) -> str:
+        folded = token.casefold().replace("ё", "е")
+        if len(folded) > 4 and folded[-2:] in {"ом", "ой"}:
+            folded = folded[:-2]
+        elif len(folded) > 4 and folded[-1:] in {"е", "а", "у", "ы", "и"}:
+            folded = folded[:-1]
+        return folded.removesuffix("ь")
+
+    place_tokens = [canonicalize(token) for token in _semantic_tokens(place)]
+    edition_tokens = [canonicalize(token) for token in _semantic_tokens(edition_name)]
+    if not place_tokens or not edition_tokens or len(place_tokens) != len(edition_tokens):
+        return False
+    return all(
+        place_token == edition_token
+        or (len(place_token) >= 5 and place_token.startswith(edition_token))
+        or (len(edition_token) >= 5 and edition_token.startswith(place_token))
+        for place_token, edition_token in zip(place_tokens, edition_tokens, strict=True)
+    )
+
+
+def _normalized_duration(number: str, unit: str) -> tuple[int | str, str]:
+    """Normalize simple Russian digit/word durations for reply-detail matching."""
+    folded_number = number.casefold().replace("ё", "е")
+    numeric_match = re.search(r"\d+", folded_number)
+    if numeric_match:
+        quantity: int | str = int(numeric_match.group(0))
+    else:
+        quantity = folded_number
+        if not re.search(r"(?:надцат|дцать)", folded_number):
+            for stem, value in (
+                ("один", 1),
+                ("одна", 1),
+                ("одно", 1),
+                ("перв", 1),
+                ("два", 2),
+                ("две", 2),
+                ("втор", 2),
+                ("три", 3),
+                ("трет", 3),
+                ("четыр", 4),
+                ("четверт", 4),
+                ("пять", 5),
+                ("пят", 5),
+                ("шесть", 6),
+                ("шест", 6),
+                ("семь", 7),
+                ("седьм", 7),
+                ("восемь", 8),
+                ("восьм", 8),
+                ("девять", 9),
+                ("девят", 9),
+                ("десять", 10),
+                ("десят", 10),
+            ):
+                if folded_number.startswith(stem):
+                    quantity = value
+                    break
+
+    folded_unit = unit.casefold().replace("ё", "е")
+    if folded_unit.startswith(("минут",)):
+        unit_key = "minute"
+    elif folded_unit.startswith("час"):
+        unit_key = "hour"
+    elif folded_unit.startswith(("д", "сутк")):
+        unit_key = "day"
+    elif folded_unit.startswith("недел"):
+        unit_key = "week"
+    else:
+        unit_key = "month"
+    return quantity, unit_key
 
 
 _PROFANITY_RE = re.compile(

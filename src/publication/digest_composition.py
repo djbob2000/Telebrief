@@ -801,9 +801,12 @@ _CORE_SERVICE_FACT_CATEGORIES = frozenset(
         "communications",
         "connectivity",
         "electricity",
+        "electricity_supply",
         "gas",
+        "gas_supply",
         "health",
         "heating",
+        "heating_supply",
         "mobility",
         "municipal_service",
         "municipal_services",
@@ -813,6 +816,7 @@ _CORE_SERVICE_FACT_CATEGORIES = frozenset(
         "telecom",
         "transport",
         "water",
+        "water_supply",
     }
 )
 _CORE_SERVICE_FACT_TERMS = (
@@ -997,7 +1001,13 @@ def _core_service_domains(fact: DigestFactRecord) -> set[str]:
     domain_signals = {
         "power": (
             ("power", "electricity", "свет", "света", "свете", "свету", "светом"),
-            ("electric", "электричество", "электроснабж", "электросет", "электроэнерг"),
+            (
+                "electric",
+                "электрич",
+                "электроснабж",
+                "электросет",
+                "электроэнерг",
+            ),
         ),
         "water": (
             ("water", "вода", "воды", "воде", "воду", "водой", "водою"),

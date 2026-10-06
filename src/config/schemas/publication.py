@@ -197,7 +197,7 @@ class PublicationEditorialConfig:
     digest_editor_scope: str = "targeted_items"
     digest_narrative_max_cards_per_block: int = 6
 
-    digest_narrative_max_output_tokens: int = 4096
+    digest_narrative_max_output_tokens: int = 2800
     digest_narrative_timeout_seconds: int = 120
     selection_max_output_tokens: int = 4096
     selection_reasoning_effort: str | None = "low"
@@ -229,14 +229,18 @@ class PublicationEditorialConfig:
             raise ValueError(
                 f"digest_narrative_mode must be 'deterministic', 'single_call', or 'journalistic', got {self.digest_narrative_mode!r}"
             )
-        if self.digest_writer_material_format not in ("legacy", "compact_v1"):
-            raise ValueError("digest_writer_material_format must be legacy or compact_v1")
+        if self.digest_writer_material_format not in ("legacy", "compact_v1", "source_grouped_v1"):
+            raise ValueError(
+                "digest_writer_material_format must be legacy, compact_v1, or source_grouped_v1"
+            )
         if self.digest_editor_scope not in ("targeted_items", "thematic_blocks"):
             raise ValueError("digest_editor_scope must be targeted_items or thematic_blocks")
         if self.digest_narrative_max_cards_per_block <= 0:
             raise ValueError("digest_narrative_max_cards_per_block must be a positive integer")
         if self.digest_narrative_max_output_tokens <= 0:
             raise ValueError("digest_narrative_max_output_tokens must be a positive integer")
+        if self.digest_narrative_max_output_tokens > 4096:
+            raise ValueError("digest_narrative_max_output_tokens must be at most 4096")
         if self.digest_narrative_timeout_seconds <= 0:
             raise ValueError("digest_narrative_timeout_seconds must be a positive integer")
         if self.selection_max_output_tokens <= 0:

@@ -3177,6 +3177,9 @@ class ArticleEditor:
     ) -> set[tuple[Any, ...]]:
         # Message wording can contain positional IDs; compare factual content
         # and stable origins, rather than a heading/paragraph's shifted number.
+        def replace_origin(match: re.Match[str]) -> str:
+            return origins.get(match.group(0), match.group(0))
+
         return {
             (
                 "evidence",
@@ -3196,7 +3199,7 @@ class ArticleEditor:
                 tuple(sorted(finding.support_ids)),
                 re.sub(
                     r"\b[PH][0-9]{3,}\b",
-                    lambda match: origins.get(match.group(0), match.group(0)),
+                    replace_origin,
                     finding.message,
                 ),
             )

@@ -11,7 +11,12 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from src.domain.service_taxonomy import detect_service_families
+from src.domain.service_taxonomy import (
+    SERVICE_FAMILY_STEMS,
+    detect_service_families,
+    matches_any_stem,
+    semantic_tokens,
+)
 from src.publication.article_claims import _stem, extract_concrete_claims
 from src.publication.digest_composition import DigestFactRecord
 from src.publication.digest_reporting_context import (
@@ -54,6 +59,31 @@ _SUPPLY_DURATION = re.compile(
     re.IGNORECASE,
 )
 _AMOUNT = re.compile(r"(?<!\d)(\d[\d\s]*?)\s+рубл(?:ей|я|ь)\b", re.IGNORECASE)
+_MAJORITY_CITY_SCOPE = re.compile(
+    r"\b(?:у\s+)?(?:большей\s+части|большая\s+часть|большую\s+часть)\s+"
+    r"(?P<target>[А-Яа-яЁё-]+)\b",
+    re.IGNORECASE,
+)
+_WHOLE_CITY_SCOPE = re.compile(
+    r"\b(?:весь|всего|всей|всем|во\s+всём|во\s+всем|по\s+всему)\s+"
+    r"(?P<target>[А-Яа-яЁё-]+)\b",
+    re.IGNORECASE,
+)
+_GEOGRAPHIC_SCOPE_TARGET_STEMS = (
+    "город",
+    "район",
+    "област",
+    "регион",
+    "территори",
+    "микрорайон",
+    "посел",
+    "село",
+)
+_SCOPE_ATTRIBUTION_BRIDGE = re.compile(
+    r"(?:по\s+(?:словам|сообщению|данным)\s+(?:его|ее|их|[А-Яа-яЁё-]+(?:\s+[А-Яа-яЁё-]+){0,2})"
+    r"|как\s+(?:сообщает|сообщают|пишет|пишут|говорит|уточняет)\s+[А-Яа-яЁё-]+)",
+    re.IGNORECASE,
+)
 
 
 def _clocks(text: str) -> tuple[str, ...]:
@@ -68,6 +98,82 @@ def _clocks(text: str) -> tuple[str, ...]:
 
 def _amount(value: str) -> str:
     return re.sub(r"\D", "", value)
+
+
+def _city_scope_level(text: str) -> int:
+    """Return only explicit majority/whole-city scope stated in the text."""
+    for pattern, level in ((_WHOLE_CITY_SCOPE, 2), (_MAJORITY_CITY_SCOPE, 1)):
+        match = pattern.search(text)
+        if match is None:
+            continue
+        target = match.group("target")
+        if target[:1].isupper() or any(
+            target.casefold().startswith(stem) for stem in _GEOGRAPHIC_SCOPE_TARGET_STEMS
+        ):
+            return level
+    return 0
+
+
+def _entry_service_families(entry: DigestEvidenceEntry) -> frozenset[str]:
+    """Use the fact's canonical subject so a causal mention is not another fact's service."""
+    canonical_service = str(entry.record.canonical_service or "").strip()
+    if not canonical_service or canonical_service == "local_report":
+        return frozenset()
+    return detect_service_families(canonical_service)
+
+
+def _city_scope_service_claims(text: str) -> tuple[tuple[int, frozenset[str]], ...]:
+    """Bind explicit citywide scope to services in its local clause.
+
+    A single chat message can mention several services while qualifying only
+    one of them, e.g. ``нет газа, света, у большей части города воды``. A
+    scope phrase must not be applied to every service found in the whole
+    message. Simple comma-separated service lists remain connected.
+    """
+    claims: list[tuple[int, frozenset[str]]] = []
+    for sentence in re.split(r"(?<=[.!?;])\s+", text):
+        pending_scope = 0
+        list_scope = 0
+        for clause in re.split(r",\s+", sentence):
+            if re.match(r"\s*(?:а|но|однако|зато)\b", clause, re.IGNORECASE):
+                pending_scope = 0
+                list_scope = 0
+            local_scope = _city_scope_level(clause)
+            if local_scope:
+                pending_scope = max(pending_scope, local_scope)
+            services = detect_service_families(clause)
+            if services:
+                is_list_continuation = _is_service_enumeration(clause)
+                scope_level = max(
+                    pending_scope,
+                    list_scope if is_list_continuation and not local_scope else 0,
+                )
+                if scope_level:
+                    claims.append((scope_level, services))
+                pending_scope = 0
+                list_scope = scope_level
+            elif pending_scope:
+                if not _SCOPE_ATTRIBUTION_BRIDGE.fullmatch(clause.strip()):
+                    pending_scope = 0
+                    list_scope = 0
+            else:
+                # Keep a just-stated extent only through a bare service list;
+                # dates, new predicates, locations, and other prose start a
+                # separate clause and cannot inherit it.
+                if not _is_service_enumeration(clause):
+                    list_scope = 0
+    return tuple(claims)
+
+
+def _is_service_enumeration(text: str) -> bool:
+    tokens = semantic_tokens(text)
+    if not tokens:
+        return False
+    return all(
+        token in {"и", "или"}
+        or any(matches_any_stem([token], stems) for stems in SERVICE_FAMILY_STEMS.values())
+        for token in tokens
+    )
 
 
 @dataclass(frozen=True)
@@ -316,6 +422,34 @@ class DigestEvidenceLedger:
         # Closed relation cases only: incomplete context never proves absence.
         if self.entries and len(complete) == len(self.entries):
             texts = [source for entry in complete for source in entry.source_texts]
+
+            # Scope words belong to a service-specific report. A citywide
+            # water statement cannot widen a separate gas or power observation
+            # merely because both facts share one reader-facing item.
+            for sentence in re.split(r"(?<=[.!?;])\s+", text):
+                for claim_scope, services in _city_scope_service_claims(sentence):
+                    for service in services:
+                        owners = [
+                            entry for entry in complete if service in _entry_service_families(entry)
+                        ]
+                        if not owners:
+                            unresolved.append(
+                                f"DIGEST_LEDGER_SERVICE_SCOPE_NOT_EVALUATED:{service}"
+                            )
+                            continue
+                        source_scope_supported = any(
+                            service in source_services and source_scope >= claim_scope
+                            for entry in owners
+                            for source in entry.source_texts
+                            for source_scope, source_services in _city_scope_service_claims(source)
+                        )
+                        if not source_scope_supported:
+                            add(
+                                "service_extent",
+                                owners,
+                                "The source does not state this citywide extent for the named service.",
+                            )
+
             for sentence in re.split(r"(?<=[.!?;])\s+", text):
                 if not _PARTITION.search(sentence):
                     continue

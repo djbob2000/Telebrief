@@ -43,7 +43,16 @@ from src.repositories.event_clusters import EventClusterRepository
 
 logger = logging.getLogger(__name__)
 
-TRIAGE_VERSION = "v10"
+TRIAGE_VERSION = "v17"
+
+# An explicit claim that the supplied input is absent is a response failure,
+# not a geographic or editorial judgment. Keep this narrow: uncertainty about
+# locality or evidence is still a legitimate classification.
+_MISSING_GATE_INPUT_RE = re.compile(
+    r"^\s*(?:нет\s+текста\s+(?:фрагмента|сообщения|источника)|"
+    r"no\s+(?:story\s+(?:content|text)|source\s+text)\s+(?:was\s+)?provided)\b",
+    re.IGNORECASE,
+)
 
 _SERVICE_KEYWORDS: tuple[tuple[tuple[str, ...], str, str], ...] = (
     (("вод", "водопостач", "водоснабж"), "water_supply", "Водоснабжение"),
@@ -114,6 +123,24 @@ def _extract_mixed_question_and_outage(text: str) -> tuple[str, str, str, str] |
     return q_combined, statement_combined, subject_key, subject_label
 
 
+def format_gate_fragment_excerpt(
+    fragment: Mapping[str, Any], parent_text: str | None = None
+) -> str:
+    """Render a citable fragment separately from its non-citable reply context."""
+    fragment_id = fragment["fragment_id"]
+    observed_at = fragment["observed_at"]
+    timestamp = observed_at.isoformat() if hasattr(observed_at, "isoformat") else str(observed_at)
+    own_text = " ".join(str(fragment.get("text") or "").split())
+    line = (
+        f"- [frag={fragment_id} time={timestamp} role={fragment['source_role']} "
+        f"source={fragment['source_name']}] PRIMARY SOURCE TEXT: {own_text}"
+    )
+    if parent_text and parent_text.strip():
+        clean_parent = " ".join(parent_text.split())
+        line += f"\n  [REPLY-PARENT CONTEXT ONLY — NOT CITABLE]: {clean_parent}"
+    return line
+
+
 def decompose_mixed_outage_evidence(
     payload: EventPayload,
     fragment_texts: Mapping[int, str] | None = None,
@@ -121,10 +148,28 @@ def decompose_mixed_outage_evidence(
     """Deterministic decomposition of mixed question + factual outage evidence."""
     new_evidence: list[EvidenceItemPayload] = []
     mutated = False
+    represented_fragments = {
+        fid
+        for item in payload.evidence_items
+        if item.kind != "resident_question" and item.publication_use == "PUBLISH"
+        for fid in item.source_fragment_ids
+    }
 
     for item in payload.evidence_items:
+        if item.publication_use == "EXCLUDE":
+            new_evidence.append(item)
+            continue
         candidates_to_check = [item.text]
-        if fragment_texts:
+        # Atomic claims already extracted from a mixed source stay atomic.
+        # Recover a missed statement only from a question-only extraction,
+        # under its single owning fragment; never replace every claim with
+        # the entire source or turn coping behavior into a service state.
+        if (
+            fragment_texts
+            and item.kind == "resident_question"
+            and len(item.source_fragment_ids) == 1
+            and not represented_fragments.intersection(item.source_fragment_ids)
+        ):
             for fid in item.source_fragment_ids:
                 if fid in fragment_texts:
                     candidates_to_check.append(fragment_texts[fid])
@@ -163,6 +208,7 @@ def decompose_mixed_outage_evidence(
                 )
             )
             mutated = True
+            represented_fragments.update(item.source_fragment_ids)
         else:
             new_evidence.append(item)
 
@@ -194,17 +240,25 @@ Same-region, national importance, front-line direction names, and broad strategi
 Mentions of places, districts, neighborhoods, or streets listed in the configured Focus Places or GEOGRAPHIC CONTEXT establish LOCAL scope.
 OUT_OF_SCOPE or UNCERTAIN is normalized to DROP+NONE without requiring a brief.
 
+EDITION-LOCAL DEICTIC CITY REFERENCES:
+- If a PRIMARY SOURCE TEXT itself contains an explicit generic city-level locator such as "в городе", "по городу", "по всему городу", or "во всём городе", and that fragment's source metadata name exactly matches the configured Target Edition name, resolve the generic city reference to that edition and allow LOCAL scope when no competing city/place is mentioned. Cite that primary fragment as the scope basis.
+- This rule requires both the source's own city-level wording and the exact edition-name match. Source membership or source name alone does not establish locality.
+- This establishes only city-level scope. Do not infer a district, street, neighborhood, or more specific service area.
+- A source name alone, or a primary fragment saying only "у меня", "да", or an unlocated pronoun, does not establish locality under this rule.
+
 For LOCAL or DIRECT_IMPACT content:
 - Lack of corroboration, a single community source, or lack of official confirmation is NOT by itself a reason to DROP an otherwise legitimate LOCAL or DIRECT_IMPACT report.
 - Represent source uncertainty through evidence kind, wording, and confidence; do not erase the event.
 - For retention=KEEP, brief_payload.publishability must be "news" or "brief". Do not use "internal_only" or "noise" merely because evidence is community, conversational, single-source, or unverified.
 - DROP is only for high-confidence hard noise/commercial-only content and must use enrichment=NONE with exclusion_reason in ('commercial_classified', 'private_classified', 'directory_payload', 'obvious_noise').
+- The request supplies the minimum confidence for a hard DROP. Never inflate your confidence to meet it. If a DROP is less certain, provide a faithful brief so normalization can retain useful material. Pure background, nostalgia without a new development, or context-only conversation belongs in CONTEXT evidence, never invented PUBLISH evidence.
 - In-scope KEEP uses BRIEF for simple useful local information, and ANALYZE only when rich synthesis is justified.
 - Publication use is semantic, not topic-based.
 - Evidence kind describes semantic content, not source trust.
 - Use service_access for a concrete current or scheduled resident-facing service availability/access state even when reported by a community source.
 - Use community_report for useful community facts that are not themselves service availability/access states.
 - A sales offer, discount, product listing, seller phone number, or promotional price is EXCLUDE.
+- A resident describing the price they paid or the cost of coping with an outage is not a sales offer. Preserve the supported amount as community_report when it explains local lived experience; one price or price range does not establish a price increase.
 - Do not convert EXCLUDE commercial details into useful_details merely to preserve them.
 - Resident questions, resident answers, service availability, outage reports, and operational workarounds are not noise merely because they are conversational. Preserve current local actionable information about everyday civilian access to services.
 - Use resident_question for a resident asking whether/where/when/how something works when the excerpt itself does not provide the answer.
@@ -212,12 +266,24 @@ For LOCAL or DIRECT_IMPACT content:
 - A question alone MUST NOT create a service state.
 - If another fragment answers the question, represent the answer separately as service_access/community_report/official_statement as appropriate.
 - Do not infer trends such as "повышенный спрос" or "участились вопросы" from one question.
+- A reply that only locates a street/building or explains a neighborhood's name is CONTEXT, not a new event. Preserve that location when it anchors a separately supported development or concrete service/access detail. Do not manufacture a digest item from a location clarification or an unanchored discussion about an institution.
 
 CONTEXT VS EVIDENCE & REPLY INHERITANCE:
-- Fragments may contain (in_reply_to: "...") annotations showing the immediate parent message in a chat.
-- A short dependent reply (e.g. "Да, минут десять назад") may inherit subject or local geography ONLY from its explicit in_reply_to parent.
+- source_fragment_ids must identify the exact source fragments whose own text directly supports the material claims in that evidence item. Never cite a reply fragment for a separate claim stated only by its parent.
+- Reply-parent text is supplied separately as unnumbered context, not as part of the reply's source text and not as citable support. It may clarify the referent, service, or local place in a clearly dependent reply (for example, "Да, минут десять назад").
+- A direct short answer may support the answer it gives. It does not support separate status, duration, cause, or other details stated only by the parent. If a parent-only fact has its own separately listed source fragment, cite that fragment; otherwise do not turn the parent-only fact into a PUBLISH claim for the reply.
 - Chronologically adjacent messages without an explicit reply link are CONTEXT_ONLY for interpreting tone and flow, and must NEVER serve as factual grounding for a claim.
 - An unanchored conversational remark with no local place mentions and no explicit reply-parent anchor is UNCERTAIN scope (normalizes to DROP).
+
+EVIDENCE SOURCE OWNERSHIP:
+- Every factual clause in an evidence item's text must be supported by its cited source_fragment_ids. Cite multiple IDs only when their own source texts support the corresponding parts of the item.
+- Do not copy an independent parent statement into a reply's evidence text. A reply may inherit only the missing referent/location needed to understand its own direct answer; it may not inherit the parent's event, status, duration, number, cause, or chronology.
+- When only the unnumbered parent context contains a claim, keep that claim out of the reply's PUBLISH evidence. Preserve other directly supported useful content in the Story.
+- Do not mark a useful direct reply CONTEXT solely because it uses a pronoun when the explicit parent makes the referent unambiguous. If the reply's own text gives a concrete local place and current status or duration (for example, parent: "no lights in the center for three days"; reply: "at the Third Beach it has been absent for three months"), retain it as KEEP/BRIEF and PUBLISH as a community_report. Resolve only the pronoun naturally from the parent, cite only the reply fragment, and preserve only the reply's own place, status, and duration. Do not copy the parent's place, status, duration, number, cause, or chronology. Use CONTEXT when the referent is genuinely ambiguous or the reply has no publishable detail of its own.
+- For this concrete exchange — parent: "В центре в другой половине, света уже нет 3 суток"; reply: "На 3 пляже его уже нету третий месяц" — output a PUBLISH community_report such as "По сообщению жителя, на 3-м пляже света нет уже третий месяц." The parent supplies only the referent "свет"; the reply supplies the place, current absence, and duration. Do not call the object unknown or use CONTEXT solely because the child wrote "его".
+- Preserve polarity from the primary reply. Parent: "На восьмухе свет не появился?"; reply: "По Павлова вроде как был так и остался и ещё где то появился" reports continued availability on Pavlova, with the author's uncertainty. It does not report a continuing outage. The question's negative wording is not the reply's status.
+- Preserve the role of a duration, not just its number. "Слободка 1 раз кажется тоже со светом побыла 3 дня" means an episode of availability lasting three days, reported tentatively. It does not mean one switch-on within a three-day observation period. Do not infer present availability from this past episode.
+- An interval-only reply such as "На Тверской один раз в неделю на сутки" may answer a unique explicit question about how often power is supplied or interrupted. Keep the question's action and the reply's own interval together. If the parent instead mixes a house with power and a house without power, the reply does not resolve which action the interval describes: preserve it as CONTEXT, without inventing supply or outage polarity.
 
 CHAT SARCASM, RUMORS, AND SCHEDULED OUTAGES:
 - Informal chat banter, sarcasm, emotional reactions, and ungrounded rumors/predictions about future outages (e.g. "после 20-го всё вырубят", "зимой тепла не будет", "завтра опять отключат") MUST NEVER be classified as service_access or SCHEDULED.
@@ -793,22 +859,13 @@ class StoryTriageService:
             selected_frags.sort(key=lambda x: x["fragment_id"])
             excerpt_lines: list[str] = []
             for sf in selected_frags:
-                iso_time = (
-                    sf["observed_at"].isoformat()
-                    if hasattr(sf["observed_at"], "isoformat")
-                    else str(sf["observed_at"])
-                )
-                line = f"- [frag={sf['fragment_id']} time={iso_time} role={sf['source_role']} source={sf['source_name']}] {sf['text']}"
                 parent_id = sf.get("parent_item_id")
                 p_text = (
                     parent_texts.get(int(parent_id))
                     if parent_id is not None and str(parent_id).isdigit()
                     else None
                 )
-                if p_text:
-                    clean_p = p_text.replace("\n", " ").strip()
-                    line += f'\n  (in_reply_to: "{clean_p}")'
-                excerpt_lines.append(line)
+                excerpt_lines.append(format_gate_fragment_excerpt(sf, p_text))
             story_sampled_excerpts[sid] = excerpt_lines
 
         hint_text = ""
@@ -827,6 +884,8 @@ class StoryTriageService:
         prompt_lines = [
             contract_text,
             "",
+            f"Minimum confidence for a hard DROP: {min_ignore_confidence:g}. "
+            "Below this threshold, supply a faithful brief; keep background-only evidence CONTEXT.",
             hint_text,
             "Stories for Gate V2 triage and brief synthesis:",
         ]
@@ -1060,6 +1119,16 @@ class StoryTriageService:
             confidence = float(conf)
 
             reason = str(item.get("reason", "")).strip()
+            if (
+                story_sampled_excerpts.get(s.story_id)
+                and any(sf["text"].strip() for sf in story_fragments_map.get(s.story_id, []))
+                and (
+                    _MISSING_GATE_INPUT_RE.search(scope_reason)
+                    or _MISSING_GATE_INPUT_RE.search(reason)
+                )
+            ):
+                mark_invalid(s.story_id, "delivered_input_reported_missing")
+                continue
             retention_raw = str(item.get("retention", "")).strip().upper()
             enrichment_raw = str(item.get("enrichment", "")).strip().upper()
             ex_reason_raw = item.get("exclusion_reason")
@@ -1123,7 +1192,8 @@ class StoryTriageService:
                     scope_reason = "Displaced persons (IDP) or relocated administration activity outside the focus area"
 
             # Hard exclusion audit on story fragments
-            story_frag_texts = {}
+            story_frag_texts: dict[int, str] = {}
+            story_reply_parent_contexts: dict[int, str] = {}
             for sf in story_frags:
                 fid = int(sf.get("fragment_id") or sf.get("id", 0))
                 txt = str(sf.get("text") or sf.get("text_content", ""))
@@ -1132,14 +1202,14 @@ class StoryTriageService:
                     int(parent_id) if parent_id is not None and str(parent_id).isdigit() else None
                 )
                 if p_id is not None and p_id in parent_texts:
-                    clean_p = parent_texts[p_id].replace("\n", " ").strip()
-                    txt = f'{txt} (in_reply_to: "{clean_p}")'
+                    story_reply_parent_contexts[fid] = parent_texts[p_id]
                 story_frag_texts[fid] = txt
             hard_audit = evaluate_story_hard_exclusion(story_frags)
 
             # Parse brief_payload if present
             raw_brief = item.get("brief_payload")
             brief_payload: EventPayload | None = None
+            rejected_publish_extraction = False
             if isinstance(raw_brief, dict):
                 try:
                     parsed_payload = parse_event_payload(
@@ -1147,12 +1217,21 @@ class StoryTriageService:
                     )
                     decomposed = decompose_mixed_outage_evidence(parsed_payload, story_frag_texts)
                     brief_payload = normalize_question_evidence(decomposed)
+                    pre_service_normalization = brief_payload
                     brief_payload, service_audit = normalize_service_state_evidence(
-                        brief_payload, story_frag_texts
+                        brief_payload,
+                        story_frag_texts,
+                        reply_parent_context_by_fragment_id=story_reply_parent_contexts,
+                        edition_name=scope_config.name,
+                    )
+                    rejected_publish_extraction = any(
+                        pre_service_normalization.evidence_items[index].publication_use == "PUBLISH"
+                        and brief_payload.evidence_items[index].publication_use != "PUBLISH"
+                        for index in service_audit.rejected_evidence_indexes
                     )
                     if service_audit.rejected_count > 0:
                         self.logger.debug(
-                            "Gate rejected %s invalid service states for story %s: %s",
+                            "Gate normalized %s unsupported service claims/states for story %s: %s",
                             service_audit.rejected_count,
                             s.story_id,
                             service_audit.rejection_reasons,
@@ -1201,7 +1280,10 @@ class StoryTriageService:
                             normalize_question_evidence(decomposed), default="brief"
                         )
                         brief_payload, _ = normalize_service_state_evidence(
-                            brief_payload, story_frag_texts
+                            brief_payload,
+                            story_frag_texts,
+                            reply_parent_context_by_fragment_id=story_reply_parent_contexts,
+                            edition_name=scope_config.name,
                         )
                     else:
                         # Unsafe drop without a valid brief must defer
@@ -1219,7 +1301,10 @@ class StoryTriageService:
                         normalize_question_evidence(decomposed), default="brief"
                     )
                     brief_payload, _ = normalize_service_state_evidence(
-                        brief_payload, story_frag_texts
+                        brief_payload,
+                        story_frag_texts,
+                        reply_parent_context_by_fragment_id=story_reply_parent_contexts,
+                        edition_name=scope_config.name,
                     )
                 else:
                     mark_invalid(s.story_id, "invalid_retention_or_enrichment")
@@ -1251,6 +1336,12 @@ class StoryTriageService:
                         evi.publication_use == "PUBLISH" for evi in brief_payload.evidence_items
                     )
                     if not has_publish:
+                        # Failed extraction says nothing about the source's
+                        # news value. Route it to existing bounded recovery,
+                        # rather than caching it as a genuine noise decision.
+                        if rejected_publish_extraction:
+                            mark_invalid(s.story_id, "unsupported_publish_extraction")
+                            continue
                         all_context_or_noise = all(
                             evi.kind in ("resident_question", "commercial_offer")
                             or evi.publication_use in ("CONTEXT", "EXCLUDE")

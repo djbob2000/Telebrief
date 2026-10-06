@@ -19,8 +19,8 @@ from src.publication.repository import PublicationPolicyRepository
 
 logger = logging.getLogger(__name__)
 
-DIGEST_EDITORIALIZER_PROMPT_VERSION = "digest-editorializer-v18-same-situation-guidance"
-DIGEST_EDITOR_PROMPT_VERSION = "digest-editor-v3-same-situation-navigation"
+DIGEST_EDITORIALIZER_PROMPT_VERSION = "digest-editorializer-v22-item-cohesion"
+DIGEST_EDITOR_PROMPT_VERSION = "digest-editor-v4-item-cohesion"
 
 ARTICLE_PUBLICATION_TYPES: frozenset[str] = frozenset(
     {"daily_article", "article", "weekly_article", "monthly_article"}

@@ -259,6 +259,10 @@ def detect_service_families(text: str) -> frozenset[str]:
     for family, stems in SERVICE_FAMILY_STEMS.items():
         if matches_any_stem(tokens, stems):
             detected.add(family)
+    # A numeric voltage measurement identifies electricity even when a
+    # resident omits "свет". Bare emotional "напряжение" does not.
+    if re.search(r"\bнапряжени[а-яё]*\s+(?:в\s+)?\d{2,3}(?:[.,]\d+)?\b", text, re.IGNORECASE):
+        detected.add("power")
     return frozenset(detected)
 
 

@@ -11,17 +11,18 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from src.publication.article_length import ArticleLengthProfile
 
-ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v13"
-DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v19-reply-evidence-boundary"
+ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v14-reply-locator-only"
+DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v21-item-cohesion"
 
 DIGEST_REPLY_CONTEXT_GUIDE = (
     "In reporting metadata, reply-parent, parent message and «родительское сообщение» "
     "mean the preceding message in a reply chain, not a person's parent. "
     "Support rows sharing canonical_evidence_ids are aliases of evidence, not additional witnesses. "
     "Source-item metadata identifies reports, not a count of distinct people. "
-    "Reply context is background only: keep supplied parent text in reply_parent_context with kind background_only_not_citable, never treat it as the current author's wording or copy it into facts, Claim Atoms, reader prose, quotes or the quote allowlist. "
-    "It does not by itself establish a service state, "
-    "source role or missing event detail. Report the supported update directly "
+    "Reply context is background only: keep supplied parent text in reply_parent_context with kind background_only_not_citable; it is not citable support, the current author's wording, a quote, or another witness. "
+    "Parent context may clarify the reply's referent or location only when the PUBLISH reply is the unique direct answer to its parent question; the writer may name that locator naturally without copying or quoting the parent's wording. "
+    "An ambiguous, adjacent, or non-question parent supplies no locator. The parent must never support or add the reply's status, duration, cause, number, completion, scope, source role, or any other event detail. "
+    "Report the supported update directly "
     "without describing reply mechanics. switch_clock_roles describes a time of day, never a duration: "
     "дали около 13 часов means an approximate 13:00 switch time, not 13 hours of supply. "
     "Do not infer a family relationship from "
@@ -161,6 +162,47 @@ Output ordinary Markdown only: one title, a lead, and thematic chapters with nor
 """
 
 
+DIGEST_ITEM_COMPOSITION_GUIDE = """Digest item composition:
+- Plan the reader-facing subjects within each rubric before writing. Related reports
+  normally share an item; source, Story and street boundaries are not paragraph boundaries.
+- A developed item may have a short informative headline naming the actual development
+  (for example, an interruption or a changed payment rule), not a generic service label.
+  Prefer a few words; avoid source-process headlines such as 'Reports of ...' and long
+  sentence headlines that the body immediately repeats.
+  The body adds concrete details rather than restating the headline. A small standalone
+  update can be one complete sentence without a headline. Do not force a headline quota.
+- Develop one subject within each item: lead with the supported update, then arrange
+  concrete details by their actual relation, such as location, duration, contrast or
+  practical consequence. Every sentence should develop that subject, not restart a
+  source-by-source account. Keep distinct source roles and uncertainty in scope.
+- Before returning, compare all items in each rubric. Combine overlapping subjects
+  such as 'Electricity' and 'Electricity in the city' when they fit one readable passage.
+  Separate genuinely different developments with informative labels; never compress
+  the entire service into a long address roster or discard a distinct fact.
+  When an electricity theme needs several items, make their distinction recognizable
+  (for example, outage durations versus intermittent supply/voltage versus coping).
+  Several headings that merely rephrase 'outages in the city/districts' do not provide
+  that distinction. Use these subjects only when the supplied facts support them.
+- Weave a general report about two interrupted services into the relevant developed
+  passage instead of adding a separate overview item that repeats both service themes.
+  Concrete coping details may share a passage with the reported disruption when that
+  makes reading clearer; a price mentioned in that report need not become its own item.
+  This grouping establishes no causal link or common time/location beyond the evidence.
+- Connections must be supported. A price is not evidence of a price increase. Do not
+  invent causality, chronology, geographic proximity or shared witnesses to smooth prose.
+  Preserve a source's partial/poor service separately from a complete outage; a coarse
+  status label or extracted summary does not authorize stronger wording than its source.
+  Regrouping preserves every required fact, its ownership, details and attribution.
+- A support's reporting_window_role describes when the source was observed, not when
+  an event occurred. historical_source must remain a past attributed report; its
+  'сейчас/сегодня' and stored service state do not establish today's availability.
+  current_window_source also does not prove persistence until publication. Preserve
+  explicit source times and scheduled dates; never invent an event date from provenance.
+  unknown means temporal scope is unresolved. Retain selected material with honest
+  framing rather than dropping it or presenting an old observation as a fresh update.
+"""
+
+
 def build_digest_narrative_contract(*, output_language: str = "Russian") -> str:
     """Give the writer editorial freedom inside the frozen evidence boundary."""
     return f"""### Local-news digest (Output Language: {output_language})
@@ -176,8 +218,8 @@ Editorial craft:
 - For a busy electricity theme, aim for 1–3 connected items organized by supported places
   or chronology. Item counts and lengths are editorial targets, not reasons to drop facts
   or add filler. Other services need their own clear place in the rubric.
-- Default to an empty headline and one complete natural paragraph, with an optional emoji.
-  Use a short noun scan label only when it adds navigation. Lead with the supported news
+- Use an informative short headline for a developed item when it helps scanning, or
+  one complete natural paragraph without a headline for a small update. Lead with the supported news
   or place, attach honest attribution naturally in scope, and develop the subject without
   restating a thesis headline.
   An isolated observation with no extra detail can be one complete attributed sentence.
@@ -201,6 +243,8 @@ Editorial craft:
   report different availability in that area; do not invent a later restoration or
   separate streets to resolve the discrepancy. Keep brief restorations distinct from
   current status. Do not claim city-wide conditions from an unspecified household.
+
+{DIGEST_ITEM_COMPOSITION_GUIDE}
 
 Frozen membership:
 - Rubrics and blocks are fixed. With composition_units, each item names exact unit IDs

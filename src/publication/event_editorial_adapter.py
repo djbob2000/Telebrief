@@ -686,8 +686,27 @@ class EventEditorialAdapter:
             article_context=article_ctx,
         )
         if run is not None and run.publication_type in DIGEST_PUBLICATION_TYPES:
+            from dataclasses import replace
+
+            from src.publication.digest_reporting_context import annotate_digest_reporting_window
             from src.publication.digest_source_material import project_digest_source_material
 
+            policy_id = getattr(run, "eligibility_policy_id", None)
+            eligibility = (
+                await self.repo.get_eligibility_policy_by_id(conn, policy_id)
+                if policy_id is not None
+                else None
+            )
+            raw_hours = eligibility.config.get("lookback_hours") if eligibility else None
+            hours = raw_hours if isinstance(raw_hours, (int, float)) else None
+            analysis = replace(
+                analysis,
+                evidence=annotate_digest_reporting_window(
+                    analysis.evidence,
+                    snapshot_at=run.snapshot_at,
+                    lookback_hours=hours,
+                ),
+            )
             analysis = project_digest_source_material(analysis)
         bundle = PreparedBundle(
             records=records,

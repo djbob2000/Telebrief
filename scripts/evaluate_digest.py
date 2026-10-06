@@ -21,7 +21,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fixture", type=Path, required=True)
     parser.add_argument(
-        "--variant", choices=("baseline", "compact", "thematic", "combined"), default="baseline"
+        "--variant",
+        choices=("baseline", "compact", "thematic", "combined", "source_grouped"),
+        default="baseline",
     )
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument(
@@ -41,12 +43,16 @@ async def main() -> int:
     case = load_digest_case(args.fixture)
     cfg = {
         **case.generation,
-        "writer_material_format": "compact_v1"
-        if args.variant in ("compact", "combined")
-        else "legacy",
+        "writer_material_format": (
+            "source_grouped_v1"
+            if args.variant == "source_grouped"
+            else "compact_v1"
+            if args.variant in ("compact", "combined")
+            else "legacy"
+        ),
         "review_without_findings": args.review_clean_text,
         "editor_scope": "thematic_blocks"
-        if args.variant in ("thematic", "combined")
+        if args.variant in ("thematic", "combined", "source_grouped")
         else "targeted_items",
     }
     # Explicitly configured credentials/models only; no infrastructure bootstrap.

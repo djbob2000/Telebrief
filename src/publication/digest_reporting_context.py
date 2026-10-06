@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import datetime as dt
+import math
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from typing import Any
 
-from src.publication.evidence import PublicationEvidence
+from src.publication.evidence import PublicationEvidence, ReportingWindowRole
 
 # Only the explicit same-journey comparison form is supported. Separate
 # destination fares and fragments without a paid leg stay unparsed.
@@ -78,7 +81,46 @@ def publish_support_metadata(
             values = {getattr(row, field) for row in rows}
             value = next(iter(values)) if len(values) == 1 else None
             metadata["evidence_kind" if field == "kind" else field] = value
+        temporal_roles = {row.reporting_window_role for row in rows}
+        if temporal_roles != {"unknown"}:
+            metadata["reporting_window_role"] = (
+                next(iter(temporal_roles)) if len(temporal_roles) == 1 else "unknown"
+            )
         output[alias] = metadata
+    return output
+
+
+def annotate_digest_reporting_window(
+    evidence: Mapping[str, PublicationEvidence],
+    *,
+    snapshot_at: dt.datetime,
+    lookback_hours: float | None,
+) -> dict[str, PublicationEvidence]:
+    """Preserve all source wording and eligibility while marking its window role."""
+    valid_window = (
+        isinstance(lookback_hours, (int, float))
+        and not isinstance(lookback_hours, bool)
+        and math.isfinite(lookback_hours)
+        and lookback_hours > 0
+        and snapshot_at.tzinfo is not None
+    )
+    since = (
+        snapshot_at - dt.timedelta(hours=lookback_hours)
+        if valid_window and lookback_hours is not None
+        else None
+    )
+    output = {}
+    for key, item in evidence.items():
+        role: ReportingWindowRole = "unknown"
+        observed = item.observed_at
+        if (
+            since is not None
+            and isinstance(observed, dt.datetime)
+            and observed.tzinfo is not None
+            and observed <= snapshot_at
+        ):
+            role = "historical_source" if observed < since else "current_window_source"
+        output[key] = replace(item, reporting_window_role=role)
     return output
 
 
@@ -141,3 +183,65 @@ _REPLY_PARENT_ANNOTATION = re.compile(
 def writer_citable_text(text: str) -> str:
     """Remove serialized parent-message context from citable writer material."""
     return _REPLY_PARENT_ANNOTATION.sub(" ", text or "").strip()
+
+
+def find_unsupported_digest_claims(
+    text: str,
+    support_texts: Sequence[str],
+    *,
+    edition_slug: str,
+    allowed_context_terms: Sequence[str] = (),
+    all_known_draft_supports: Sequence[str] = (),
+) -> tuple[Any, ...]:
+    """Disambiguate date-shaped area names against only the cited sources.
+
+    A place in the edition profile is not evidence it was reported. The
+    primary support must resolve to that same area, and every occurrence
+    of the date-shaped name in the claim must explicitly name an area.
+    """
+    from src.publication.article_claims import find_unsupported_claims
+    from src.publication.digest_presentation import _load_digest_geography_resolver
+
+    failures = find_unsupported_claims(
+        text,
+        support_texts,
+        allowed_context_terms=allowed_context_terms,
+        all_known_draft_supports=all_known_draft_supports,
+    )
+    if not any(failure.kind == "date" for failure in failures):
+        return failures
+    resolver = _load_digest_geography_resolver(edition_slug)
+    if resolver is None:
+        return failures
+
+    def area_ids(value: str) -> set[str]:
+        return {
+            entity.entity_id
+            for entity in resolver.resolve(value).entities
+            if entity.kind == "area" and entity.confidence == "high"
+        }
+
+    output = []
+    for failure in failures:
+        if failure.kind != "date":
+            output.append(failure)
+            continue
+        occurrences = list(re.finditer(re.escape(failure.raw), text, re.IGNORECASE))
+        area_prefix = re.compile(r"\b(?:район[а-яё]*|микрорайон[а-яё]*)\s*$", re.IGNORECASE)
+        if not occurrences or not all(area_prefix.search(text[: m.start()]) for m in occurrences):
+            output.append(failure)
+            continue
+        named_areas = area_ids(failure.raw)
+        supported = False
+        for support in support_texts:
+            # The identical calendar form alone is ambiguous. A distinct
+            # profile alias, or an explicit area locator, establishes place use.
+            identical = list(re.finditer(re.escape(failure.raw), support, re.IGNORECASE))
+            if identical and not all(area_prefix.search(support[: m.start()]) for m in identical):
+                continue
+            if named_areas & area_ids(support):
+                supported = True
+                break
+        if not supported:
+            output.append(failure)
+    return tuple(output)

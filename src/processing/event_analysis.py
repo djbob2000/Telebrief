@@ -6,6 +6,7 @@ import datetime as dt
 import hashlib
 import json
 import logging
+from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -24,8 +25,10 @@ from src.llm_telemetry import llm_call_context
 from src.processing.evidence_sampling import (
     FragmentWithContext,
     RepresentativeEvidenceSampler,
+    SampledFragment,
 )
 from src.processing.operational_semantics import (
+    ServiceStateAudit,
     has_unstructured_publish_service_access,
     normalize_service_state_evidence,
 )
@@ -36,11 +39,22 @@ from src.repositories.stories import StoryRepository
 
 logger = logging.getLogger(__name__)
 
-ANALYSIS_VERSION = "v6"
+ANALYSIS_VERSION = "v10"
 
 _EVENT_ANALYSIS_SYSTEM_PROMPT = """You are an expert investigative regional news editor.
 Analyze the following chronological source fragments from multiple channels regarding a single local event.
 Extract objective facts, distinguish official statements from community observations, highlight contradictions or uncertainties, and summarize the event.
+
+SOURCE FRAGMENT OWNERSHIP:
+- Each evidence_items.source_fragment_ids list must cite the exact input fragments whose own text directly supports every material part of that evidence item.
+- Do not assign a fact from one fragment to a different fragment because they discuss the same event. When an item combines separate supported claims, cite the fragments that support those respective claims.
+- Keep a reply's own statement separate from a parent or neighboring message. A line tagged REPLY-PARENT CONTEXT ONLY — NOT CITABLE may clarify the reply's subject or location only when it is the unique question the reply directly answers; it must never support the reply's status, duration, cause, number, or completion state.
+- For a short yes/no reply, use it only when its linked parent is an unambiguous question that explicitly names the service; derive the answer's polarity from the reply itself and cite only the reply's own fragment ID. If the parent does not make the referent clear, do not infer what the reply means.
+- Do not infer a fragment's service from its Story topic, headline, neighboring fragments, or message order. For every PUBLISH service_access or community_report item, each cited fragment must either name the service in its own text or be an elliptical reply directly linked to a parent that names the service; the reply itself must state the reported status or answer polarity and any claimed duration or concrete detail.
+- A direct, useful reply remains eligible for PUBLISH even when it is conversational, single-source, or elliptical. Use the unique parent question only to resolve its subject or location, cite only the reply, and preserve the reply's own status and details.
+- Parent context is never evidence that any event or status occurred. A direct reply's own words remain citable under its own fragment ID; do not borrow a parent's event, status, duration, cause, number, or completion state to fill gaps in the reply. Never use a neighboring message or source metadata to interpret a reply.
+- If the source does not support a detail, do not add that detail to evidence_items, key_facts, community_observations, digest_summary, or timeline_summary.
+- A quoted price or price range establishes the stated cost only. Do not infer an increase, decrease, shortage, trend or comparison from that number. Directional claims require explicit source wording or a supported comparison with the same item, unit and conditions; preserve a speaker's claim as attributed. Apply this rule to every evidence item and summary field.
 
 A Story reaches this rich-analysis stage only after Event-First retention has kept it. Rich analysis may express uncertainty through evidence kinds, community_observations, conflicts_or_uncertainties, and confidence_score, but must not reverse KEEP merely because the report is single-source, community-sourced, conversational, or unverified.
 
@@ -98,6 +112,50 @@ Respond ONLY with a valid JSON object with the exact keys:
 """
 
 EventAnalysisPayload = EventPayload
+
+
+def format_analysis_fragment_excerpt(
+    *,
+    fragment_id: int,
+    timestamp: str,
+    role_tag: str,
+    source_name: str,
+    text: str,
+    reply_parent_context_text: str | None = None,
+) -> str:
+    """Render one primary source fragment with an unambiguous evidence owner."""
+    excerpt = (
+        f"- [source_fragment_id={fragment_id} time={timestamp}] {role_tag} {source_name} "
+        f"PRIMARY SOURCE TEXT: {text}"
+    )
+    parent_text = " ".join(str(reply_parent_context_text or "").split())[:200]
+    if parent_text:
+        excerpt += f"\n  [REPLY-PARENT CONTEXT ONLY — NOT CITABLE]: {parent_text}"
+    return excerpt
+
+
+def _normalize_analysis_payload(
+    payload: EventPayload,
+    sampled: Sequence[SampledFragment],
+    *,
+    edition_name: str | None = None,
+) -> tuple[EventPayload, ServiceStateAudit]:
+    """Normalize analysis against citable primary text and separate reply context."""
+    primary_texts = {fragment.fragment_id: fragment.text_content for fragment in sampled}
+    parent_contexts = {
+        fragment.fragment_id: fragment.reply_parent_context_text
+        for fragment in sampled
+        if fragment.reply_parent_context_text.strip()
+    }
+    ready_payload = ensure_keep_publishability(
+        normalize_question_evidence(payload), default="brief"
+    )
+    return normalize_service_state_evidence(
+        ready_payload,
+        primary_texts,
+        reply_parent_context_by_fragment_id=parent_contexts,
+        edition_name=edition_name,
+    )
 
 
 @dataclass(frozen=True)
@@ -175,7 +233,7 @@ class EventAnalysisService:
                 SELECT f.id, f.source_item_revision_id, f.ordinal, f.text_content,
                        f.normalized_hash, f.fragmenter_version, f.is_candidate, f.drop_reason, f.created_at,
                        fev.embedding, s.id, s.name, COALESCE(s.role, s.kind, 'unknown'),
-                       COALESCE(si.first_collected_at, f.created_at)
+                       COALESCE(si.first_collected_at, f.created_at), reply_parent.text_content
                 FROM story_fragments sf
                 JOIN source_fragments f ON f.id = sf.fragment_id
                 JOIN source_fragment_embeddings sfe ON sfe.fragment_id = f.id
@@ -183,6 +241,14 @@ class EventAnalysisService:
                 JOIN source_item_revisions sir ON sir.id = f.source_item_revision_id
                 JOIN source_items si ON si.id = sir.source_item_id
                 JOIN sources s ON s.id = si.source_id
+                LEFT JOIN LATERAL (
+                    SELECT parent_revision.text_content
+                    FROM source_item_revisions parent_revision
+                    WHERE parent_revision.source_item_id = si.parent_item_id
+                      AND parent_revision.collected_at <= sir.collected_at
+                    ORDER BY parent_revision.collected_at DESC, parent_revision.revision_no DESC
+                    LIMIT 1
+                ) reply_parent ON si.parent_item_id IS NOT NULL
                 WHERE sf.story_id = %s
                 ORDER BY sf.id ASC
                 """,
@@ -210,6 +276,7 @@ class EventAnalysisService:
                     source_name=str(row[11]),
                     source_type=str(row[12]),
                     timestamp=row[13],
+                    reply_parent_context_text=" ".join(str(row[14] or "").split())[:200],
                 )
                 contexts.append(ctx)
 
@@ -262,7 +329,14 @@ class EventAnalysisService:
             role_tag = "[OFFICIAL]" if s.is_official else f"[{s.source_type.upper()}]"
             time_str = s.timestamp.strftime("%Y-%m-%d %H:%M UTC")
             prompt_lines.append(
-                f"- (ID {s.fragment_id}) {time_str} {role_tag} {s.source_name}: {s.text_content}"
+                format_analysis_fragment_excerpt(
+                    fragment_id=s.fragment_id,
+                    timestamp=time_str,
+                    role_tag=role_tag,
+                    source_name=s.source_name,
+                    text=s.text_content,
+                    reply_parent_context_text=s.reply_parent_context_text,
+                )
             )
 
         user_prompt = "\n".join(prompt_lines)
@@ -315,15 +389,13 @@ class EventAnalysisService:
                 raise ValueError("event analysis response must be a JSON object")
             parsed["analysis_version"] = ANALYSIS_VERSION
             parsed["representative_fragment_ids"] = [s.fragment_id for s in sampled]
-            parsed_payload = ensure_keep_publishability(
-                normalize_question_evidence(EventAnalysisPayload.from_dict(parsed)),
-                default="brief",
+            parsed_payload = EventAnalysisPayload.from_dict(parsed)
+            payload, service_audit = _normalize_analysis_payload(
+                parsed_payload, sampled, edition_name=ed_name
             )
-            sampled_map = {s.fragment_id: s.text_content for s in sampled}
-            payload, service_audit = normalize_service_state_evidence(parsed_payload, sampled_map)
             if service_audit.rejected_count > 0:
                 self.logger.debug(
-                    "Analysis rejected %s invalid service states for story %s: %s",
+                    "Analysis normalized %s unsupported service claims/states for story %s: %s",
                     service_audit.rejected_count,
                     story_id,
                     service_audit.rejection_reasons,

@@ -10,7 +10,7 @@ from typing import Any, Literal, Mapping, Sequence
 from src.publication.digest_narrative import DigestNarrativeDraft
 from src.publication.evidence import PublicationEvidence
 
-DIGEST_DIAGNOSTICS_VERSION = "digest-diagnostics-v13"
+DIGEST_DIAGNOSTICS_VERSION = "digest-diagnostics-v16-reader-group-fragmentation"
 
 _NAMED_CHAT_META = re.compile(r"\b(?:в|из)\s+(?:[а-яё-]+\s+){0,2}чат[аеу]\b", re.IGNORECASE)
 
@@ -54,6 +54,15 @@ _REPETITIVE_BODY_ATTRIBUTION_RE = re.compile(
     r"\b(?:жители|житель|жительница|горожане|горожанин|очевидцы|очевидец)\s+"
     r"(?:также\s+)?(?:сообща(?:ют|ет)|пиш(?:ут|ет)|говор(?:ят|ит)|делятся)\b)",
     re.IGNORECASE,
+)
+_ATTRIBUTION_AGREEMENT_RE = re.compile(
+    r"\b(?:жители|горожане|очевидцы)\s+(?:сообщает|пишет|говорит|жалуется|отмечает)\b|"
+    r"\b(?:житель|жительница|горожанин|очевидец)\s+"
+    r"(?:сообщают|пишут|говорят|жалуются|отмечают)\b",
+    re.IGNORECASE,
+)
+_ATTRIBUTION_QUOTED_SPAN_RE = re.compile(
+    r"«[^»]*»|“[^”]*”|„[^“]*“|‘[^’]*’|‹[^›]*›|\"[^\"]*\"|'[^']*'"
 )
 _PLURAL_RESIDENT_ATTRIBUTION_RE = re.compile(
     r"\b(?:жител(?:и|ей)|горожан(?:е|)|очевидц(?:ы|ев))\b|\bпо\s+их\s+словам\b",
@@ -336,6 +345,17 @@ def fragmented_power_report_item_indexes(items: Sequence[Any]) -> tuple[int, ...
         for index, item in enumerate(items)
         if _POWER_REPORT_RE.search(f"{item.headline} {item.body}")
     )
+    generic_labels = {"электричество", "электричество в городе", "электроснабжение", "свет"}
+    repeated_topic_indexes = tuple(
+        index
+        for index in power_indexes
+        if " ".join(items[index].headline.casefold().split()).strip(" :.!–—-") in generic_labels
+    )
+    # Broad labels flag a reader-navigation defect, not equivalent facts.
+    # Request recomposition of these items only; distinct developed subjects
+    # remain valid even when they concern the same service.
+    if len(repeated_topic_indexes) > 1:
+        return repeated_topic_indexes
     if len(power_indexes) <= MAX_POWER_REPORT_ITEMS_PER_BLOCK:
         return ()
     isolated_count = sum(
@@ -345,6 +365,44 @@ def fragmented_power_report_item_indexes(items: Sequence[Any]) -> tuple[int, ...
         for index in power_indexes
     )
     return power_indexes if isolated_count >= 2 else ()
+
+
+def fragmented_power_synthesis_item_indexes(
+    items: Sequence[Any],
+    presentation_plan: Any | None,
+) -> tuple[int, ...]:
+    """Find a reader-level power topic split beyond its existing three-item target."""
+    composition = getattr(presentation_plan, "composition", None)
+    records = tuple(getattr(composition, "fact_records", ()) or ())
+    required_fact_ids = {
+        str(fact.fact_id) for fact in (getattr(presentation_plan, "required_facts", ()) or ())
+    }
+    if not records or not required_fact_ids:
+        return ()
+
+    from src.publication.digest_composition import _core_service_domains
+
+    fact_groups: dict[tuple[str, ...], set[str]] = {}
+    for record in records:
+        fact_id = str(record.fact_id)
+        if fact_id not in required_fact_ids:
+            continue
+        domains = tuple(sorted(_core_service_domains(record)))
+        if "power" in domains:
+            fact_groups.setdefault(domains, set()).add(fact_id)
+
+    indexes: set[int] = set()
+    for fact_ids in fact_groups.values():
+        if len(fact_ids) < 4:
+            continue
+        assigned = {
+            index
+            for index, item in enumerate(items)
+            if fact_ids.intersection(str(fid) for fid in item.covered_fact_ids)
+        }
+        if len(assigned) > MAX_POWER_REPORT_ITEMS_PER_BLOCK:
+            indexes.update(assigned)
+    return tuple(sorted(indexes))
 
 
 _VOLTAGE_DETAIL_RE = re.compile(
@@ -423,16 +481,23 @@ def audit_digest_prose_quality(
     covered_stories_detail = 0
 
     for block in draft.blocks:
-        power_item_indexes = fragmented_power_report_item_indexes(block.items)
+        power_item_indexes = tuple(
+            sorted(
+                set(fragmented_power_report_item_indexes(block.items))
+                | set(fragmented_power_synthesis_item_indexes(block.items, presentation_plan))
+            )
+        )
         if power_item_indexes:
             for item_index in power_item_indexes:
                 warnings.append(
                     DigestQualityWarning(
                         code="FRAGMENTED_SERVICE_REPORTS",
                         message=(
-                            "Power observations include multiple short isolated items. "
-                            "Weave related locations and timelines into a few readable passages "
-                            "while preserving every distinct report."
+                            "Power observations include isolated items or repeated broad service labels. "
+                            "Review the overlapping subjects together: combine compatible reports, "
+                            "or give genuinely distinct developments informative labels. "
+                            "Preserve every distinct report, scope, uncertainty and detail; "
+                            "a shared service does not establish fact equivalence."
                         ),
                         block_id=block.block_id,
                         item_index=item_index,
@@ -440,6 +505,20 @@ def audit_digest_prose_quality(
                     )
                 )
         for idx, item in enumerate(block.items):
+            unquoted_text = _ATTRIBUTION_QUOTED_SPAN_RE.sub(" ", f"{item.headline} {item.body}")
+            if _ATTRIBUTION_AGREEMENT_RE.search(unquoted_text):
+                warnings.append(
+                    DigestQualityWarning(
+                        code="ATTRIBUTION_AGREEMENT",
+                        message=(
+                            "Correct the subject-verb number in the attribution while preserving "
+                            "the supported source role; for example, «жители сообщают» is plural."
+                        ),
+                        block_id=block.block_id,
+                        item_index=idx,
+                        headline=item.headline,
+                    )
+                )
             if _NAMED_CHAT_META.search(f"{item.headline} {item.body}"):
                 warnings.append(
                     DigestQualityWarning(

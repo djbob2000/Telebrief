@@ -60,7 +60,19 @@ def test_street_aliases_do_not_create_new_geographic_relations():
         next(f for f in data["facts"] if f["fact_id"] == "fact:6")["original_location"]
         == "Карла Маркса"
     )
-    assert len(data["relations"]) == sum(len(b.composition_relations) for b in plan.blocks)
+    assert any(
+        {relation.left_fact_id, relation.right_fact_id} == {"fact:5", "fact:6"}
+        and relation.kind.value == "RELATED_ONLY"
+        for block in plan.blocks
+        for relation in block.composition_relations
+    )
+    assert all(
+        relation["kind"] in {"SAME_FACT", "SAME_SITUATION"} for relation in data["relations"]
+    )
+    assert not any(
+        {relation["left_fact_id"], relation["right_fact_id"]} == {"fact:5", "fact:6"}
+        for relation in data["relations"]
+    )
 
 
 def test_quotes_reply_context_and_precise_tariff_commands_survive():
@@ -97,6 +109,7 @@ def test_material_format_default_and_unknown_value():
 
 def test_observation_timestamp_is_not_exposed_as_a_citable_event_date():
     import datetime as dt
+
     from src.publication.digest_narrative import _composition_writer_payload
     from src.publication.digest_writer_material import build_compact_digest_material
 
@@ -186,3 +199,14 @@ def test_reply_parent_text_is_not_citable_writer_material():
     assert all(parent not in text for text in validation_index.values())
     assert "(in_reply_to:" not in legacy_text + compact_text
     assert evidence[eid].source_text.endswith(f'(in_reply_to: "{parent}")')
+
+
+def test_digest_contract_allows_unique_reply_parent_to_resolve_location_only():
+    from src.publication.narrative_contract import DIGEST_REPLY_CONTEXT_GUIDE
+
+    guide = DIGEST_REPLY_CONTEXT_GUIDE.casefold()
+
+    assert "may clarify the reply's referent or location only when" in guide
+    assert "unique direct answer to its parent question" in guide
+    assert "parent must never support or add the reply's status" in guide
+    assert "source role, or any other event detail" in guide

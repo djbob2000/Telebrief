@@ -20,6 +20,7 @@ class FragmentWithContext:
     source_name: str
     source_type: str  # "official", "news", "community", etc.
     timestamp: dt.datetime
+    reply_parent_context_text: str = ""
 
     @property
     def is_official(self) -> bool:
@@ -38,6 +39,7 @@ class SampledFragment:
     timestamp: dt.datetime
     similarity_to_centroid: float
     is_official: bool
+    reply_parent_context_text: str = ""
 
 
 def _cosine_similarity(v1: Sequence[float], v2: Sequence[float]) -> float:
@@ -76,6 +78,7 @@ class RepresentativeEvidenceSampler:
                     timestamp=c.timestamp,
                     similarity_to_centroid=_cosine_similarity(c.vector, centroid),
                     is_official=c.is_official,
+                    reply_parent_context_text=c.reply_parent_context_text,
                 )
                 for c in candidates
             ]
@@ -142,6 +145,7 @@ class RepresentativeEvidenceSampler:
                 timestamp=s.timestamp,
                 similarity_to_centroid=sim_to_centroid[s.fragment.id],
                 is_official=s.is_official,
+                reply_parent_context_text=s.reply_parent_context_text,
             )
             for s in selected
         ]
