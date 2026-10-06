@@ -610,7 +610,7 @@ _SHORT_DIRECT_REPLY_RE = re.compile(
     r"^\s*(?:да|ага|угу|нет|неа)\b.{0,120}$", re.IGNORECASE | re.DOTALL
 )
 _DIRECT_SERVICE_REPORT_RE = re.compile(
-    r"\b(?:нет(?:у)?|был(?:а|о|и)?|офф(?:лайн)?|не\s+(?:было|будет|работает|подают|включают)|"
+    r"\b(?:нет(?:у)?|был(?:а|о|и)?|офф(?:лайн)?|не\s+(?:было|будет|работа[лт](?:а|о|и)?|подают|включают)|"
     r"перестал[аио]сь?|появил[аои]сь?|включил[аи]?|отключил[аи]?|"
     r"дают|дали|есть|работает)\b",
     re.IGNORECASE,
@@ -632,15 +632,21 @@ _DIRECT_REPLY_DURATION_RE = re.compile(
     re.IGNORECASE,
 )
 _DIRECT_REPLY_DETAIL_RE = re.compile(
-    r"\b(?:сегодня|вчера|недавно|утром|дн[её]м|вечером|ночью|"
+    r"\b(?:сегодня|вчера|недавно|раньше|утром|дн[её]м|вечером|ночью|"
     r"с\s+(?:понедельника|вторника|среды|четверга|пятницы|субботы|воскресенья)|"
     rf"{_DIRECT_REPLY_DURATION_RE.pattern})\b",
     re.IGNORECASE,
 )
+_RUSSIAN_WEEKDAY_RE = re.compile(
+    r"\b(?:понедельник\w*|вторник\w*|сред\w*|четверг\w*|пятниц\w*|суббот\w*|воскресень\w*)\b",
+    re.IGNORECASE,
+)
 _LOCAL_PLACE_AFTER_PREPOSITION_RE = re.compile(
     r"\b(?:[Нн]а|[Вв]|[Уу]|[Пп]о)\s+"
+    r"(?!(?:сообщению|словам|данным|информации|версии|источникам)\b)"
     r"(?P<place>(?:(?:улиц[аеу]|ул\.?)\s+)?"
-    r"(?:\d+\s+[а-яё]+|[А-ЯЁ][а-яё-]+(?:\s+[А-ЯЁ]?[а-яё-]+){0,2}))\b"
+    r"(?:\d+\s+[а-яё]+|[а-яё-]+(?:\s+[а-яё-]+){0,2}))\b",
+    re.IGNORECASE,
 )
 _CITYWIDE_SCOPE_RE = re.compile(
     r"\b(?:весь\s+город|во\s+вс[её]м\s+городе|по\s+всему\s+городу|"
@@ -725,6 +731,17 @@ def _reply_detail_preserved(
 ) -> bool:
     """Require the generated claim to retain a concrete detail from the reply."""
     claim_folded = claim_text.casefold().replace("ё", "е")
+    source_weekdays = {
+        match.group(0).casefold().replace("ё", "е")
+        for match in _RUSSIAN_WEEKDAY_RE.finditer(source_text)
+    }
+    claim_weekdays = {
+        match.group(0).casefold().replace("ё", "е")
+        for match in _RUSSIAN_WEEKDAY_RE.finditer(claim_text)
+    }
+    if claim_weekdays and not claim_weekdays.issubset(source_weekdays):
+        return False
+
     for match in _DIRECT_REPLY_DETAIL_RE.finditer(source_text):
         detail = match.group(0).casefold().replace("ё", "е")
         if detail in claim_folded:
@@ -756,7 +773,48 @@ def _reply_detail_preserved(
     if source_place is None or claim_place is None:
         return False
 
-    ignored = {"на", "в", "у", "по", "улица", "улице", "ул", "3", "третий", "третьем"}
+    ignored = {
+        "на",
+        "в",
+        "у",
+        "по",
+        "улица",
+        "улице",
+        "ул",
+        "3",
+        "третий",
+        "третьем",
+        "нет",
+        "нету",
+        "свет",
+        "света",
+        "светом",
+        "электричество",
+        "электричества",
+        "вода",
+        "воды",
+        "интернет",
+        "связь",
+        "связи",
+        "отключение",
+        "отключили",
+        "работает",
+        "работал",
+        "работала",
+        "работают",
+        "день",
+        "дней",
+        "неделя",
+        "неделю",
+        "сутки",
+        "часов",
+        "сегодня",
+        "вчера",
+        "раньше",
+        "тоже",
+        "уже",
+        "первый",
+    }
     source_tokens = set(_semantic_tokens(source_place.group("place"))) - ignored
     claim_tokens = set(_semantic_tokens(claim_place.group("place"))) - ignored
     return bool(source_tokens & claim_tokens)

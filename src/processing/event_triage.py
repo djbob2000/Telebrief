@@ -43,7 +43,7 @@ from src.repositories.event_clusters import EventClusterRepository
 
 logger = logging.getLogger(__name__)
 
-TRIAGE_VERSION = "v17"
+TRIAGE_VERSION = "v18"
 
 # An explicit claim that the supplied input is absent is a response failure,
 # not a geographic or editorial judgment. Keep this narrow: uncertainty about
@@ -267,6 +267,9 @@ For LOCAL or DIRECT_IMPACT content:
 - If another fragment answers the question, represent the answer separately as service_access/community_report/official_statement as appropriate.
 - Do not infer trends such as "повышенный спрос" or "участились вопросы" from one question.
 - A reply that only locates a street/building or explains a neighborhood's name is CONTEXT, not a new event. Preserve that location when it anchors a separately supported development or concrete service/access detail. Do not manufacture a digest item from a location clarification or an unanchored discussion about an institution.
+- A private location answer stays context even when it names street numbering or nearby shops/landmarks. For example, explaining which residential "line" a relative's home belongs to, in answer to where that home is, is not a city update; the parent's concern about whether the relative has power does not establish a power state. Keep it publishable only if the reply itself also reports a concrete current service state/change or public access detail.
+- A bare personal ranking such as "MTS is the best provider" is opinion/context, not evidence that the service is available, superior, or broadly useful. Keep a service recommendation only when the message adds concrete first-hand access details, prices, coverage, or a current change; do not create sales copy from an endorsement.
+- A greeting, wish, or vague city mood such as "город спит, и пусть так будет всегда" is not a report of a safety condition or city event. A casual historical anecdote/correction about the city's origin is context unless it is tied to a current public event, anniversary, or concrete present-day consequence.
 
 CONTEXT VS EVIDENCE & REPLY INHERITANCE:
 - source_fragment_ids must identify the exact source fragments whose own text directly supports the material claims in that evidence item. Never cite a reply fragment for a separate claim stated only by its parent.

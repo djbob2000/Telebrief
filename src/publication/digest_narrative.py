@@ -3976,20 +3976,107 @@ def _related_reporting_sets(block: DigestNarrativeBlock) -> list[dict[str, Any]]
     }
     records = block.composition_fact_records
     anchors: set[str] = set()
+    location_prepositions = {"в", "на", "у", "из", "около", "возле", "по"}
+    generic_anchor_words = {
+        "а",
+        "без",
+        "быть",
+        "в",
+        "во",
+        "есть",
+        "для",
+        "до",
+        "житель",
+        "жителя",
+        "жительница",
+        "жители",
+        "жителей",
+        "и",
+        "из",
+        "как",
+        "к",
+        "местный",
+        "местная",
+        "местные",
+        "на",
+        "над",
+        "не",
+        "о",
+        "об",
+        "около",
+        "по",
+        "под",
+        "после",
+        "при",
+        "проблема",
+        "проблемы",
+        "перебой",
+        "перебои",
+        "сообщает",
+        "сообщают",
+        "сообщению",
+        "сообщениям",
+        "словам",
+        "у",
+        "через",
+        "что",
+        "город",
+        "города",
+        "городе",
+        "бердянск",
+        "бердянска",
+        "бердянске",
+        "район",
+        "района",
+        "районе",
+        "нет",
+        "нету",
+        "свет",
+        "света",
+        "вода",
+        "воды",
+        "связь",
+        "связи",
+        "интернет",
+        "электричество",
+        "электричества",
+        "отключение",
+        "отключили",
+        "работает",
+        "работают",
+    }
     for record in records:
         # Multiword location clauses and literal acronyms are useful pointers.
         # Never infer a district, resolve a new alias or borrow reply context.
         for clause in re.split(r"[,;]", record.original_location):
-            tokens = re.findall(r"\w+", clause.casefold())
+            tokens = re.findall(r"\w+", clause.casefold().replace("ё", "е"))
             if len(tokens) >= 2:
                 anchors.add(" ".join(tokens))
+        # Some useful localities are present in the citable text even when the
+        # geographic resolver leaves original_location empty. Expose only an
+        # exact repeated phrase after a location preposition, and only as a
+        # navigation hint; this does not resolve the place or join the facts.
+        text_tokens = re.findall(r"\b[а-яёa-z0-9-]+\b", record.text.casefold().replace("ё", "е"))
+        for index, token in enumerate(text_tokens):
+            if token not in location_prepositions:
+                continue
+            for width in range(3, 6):
+                phrase_tokens = text_tokens[index : index + width]
+                if len(phrase_tokens) != width:
+                    continue
+                informative_count = sum(
+                    phrase_token not in generic_anchor_words for phrase_token in phrase_tokens
+                )
+                if informative_count >= 2:
+                    anchors.add(" ".join(phrase_tokens))
         anchors.update(
             word.casefold()
             for word in re.findall(r"\b[А-ЯЁA-Z]{3,}\b", record.text)
             if word not in generic_uppercase_terms
         )
     normalized = {
-        record.fact_id: " ".join(re.findall(r"\w+", record.text.casefold())) for record in records
+        record.fact_id: " ".join(re.findall(r"\w+", record.text.casefold().replace("ё", "е")))
+        for record in records
     }
     result = []
     seen_anchor_sets: set[tuple[str, ...]] = set()

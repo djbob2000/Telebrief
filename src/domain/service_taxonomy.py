@@ -263,6 +263,10 @@ def detect_service_families(text: str) -> frozenset[str]:
     # resident omits "свет". Bare emotional "напряжение" does not.
     if re.search(r"\bнапряжени[а-яё]*\s+(?:в\s+)?\d{2,3}(?:[.,]\d+)?\b", text, re.IGNORECASE):
         detected.add("power")
+    # Resolve a dependent pronoun only when the parent explicitly says it is
+    # being used to write, a narrow connectivity cue rather than generic use.
+    if re.search(r"\bчерез\s+него\s+пишу\b", text, re.IGNORECASE):
+        detected.add("telecom")
     return frozenset(detected)
 
 

@@ -128,6 +128,47 @@ def test_writer_receives_service_synthesis_navigation_without_merging_geography(
     assert all(r.observed_time == _NOW for b in plan.blocks for r in b.composition_fact_records)
 
 
+def test_related_reporting_sets_flag_repeated_specific_phrase_without_resolved_place() -> None:
+    from src.publication.digest_narrative import _related_reporting_sets
+
+    _, _, _, plan = _fixture(
+        (
+            "sound_report",
+            "",
+            "По сообщению жителя, в нагорной части Бердянска пролетел объект и слышна стрельба.",
+        ),
+        (
+            "sound_report",
+            "",
+            "По сообщению жителя, каждую ночь в нагорной части Бердянска слышны полёты и стрельба.",
+        ),
+    )
+    block = plan.blocks[0]
+
+    related = _related_reporting_sets(block)
+
+    assert any(
+        item.get("overlap_kind") == "literal_anchor"
+        and item.get("text_anchor") == "в нагорной части бердянска"
+        and set(item["fact_ids"]) == {"fact:5", "fact:6"}
+        for item in related
+    )
+
+
+def test_related_reporting_sets_ignore_generic_service_status_overlap() -> None:
+    from src.publication.digest_narrative import _related_reporting_sets
+
+    _, _, _, plan = _fixture(
+        ("electricity", "", "По сообщению жителя, в городе есть проблемы с электричеством на РТС."),
+        ("water", "", "По сообщению жителя, в городе есть проблемы с водой на Азмоле."),
+    )
+    block = plan.blocks[0]
+
+    related = _related_reporting_sets(block)
+
+    assert not any({"fact:5", "fact:6"}.issubset(item["fact_ids"]) for item in related)
+
+
 def test_overlapping_place_wording_is_navigation_and_preserves_different_facts() -> None:
     cards, evidence, _, plan = _fixture(
         (

@@ -92,6 +92,26 @@ def test_emotional_tension_does_not_establish_electricity_supply():
     assert audit.rejected_count == 1
 
 
+def test_dependent_place_report_can_inherit_connectivity_from_explicit_parent_reply():
+    payload, audit = normalize(
+        "Тоже самое, на гайдара сижу где он раньше вообще не работал",
+        "По сообщению жителя, на Гайдара интернет раньше не работал.",
+        "На горе работает,сейчас через него пишу",
+    )
+    assert payload.evidence_items[0].publication_use == "PUBLISH"
+    assert audit.rejected_count == 0
+
+
+def test_locality_is_read_after_attribution_not_from_attribution_phrase():
+    payload, audit = normalize(
+        "На Димитрова тоже нет😞",
+        "По сообщению жителя, на улице Димитрова света нет.",
+        "Нет света на Морозова",
+    )
+    assert payload.evidence_items[0].publication_use == "PUBLISH"
+    assert audit.rejected_count == 0
+
+
 def test_duration_of_availability_cannot_be_changed_to_frequency_within_period():
     payload, audit = normalize(
         "Слободка 1 раз кажется тоже со светом побыла 3 дня",
