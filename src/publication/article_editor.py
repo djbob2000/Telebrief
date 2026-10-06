@@ -910,7 +910,7 @@ class ArticleEditor:
                         current_val,
                         current_quality,
                     )
-                    if attempt < max_attempts and deferred_count:
+                    if attempt < max_attempts and (deferred_count or not current_val.is_valid):
                         continue
                     break
 
@@ -1436,7 +1436,7 @@ class ArticleEditor:
 
                 if not (actually_changed or structure_changed) or not made_progress:
                     logger.info("ArticleEditor stopped after no measurable targeted progress")
-                    if attempt < max_attempts and deferred_count:
+                    if attempt < max_attempts and (deferred_count or not current_val.is_valid):
                         continue
                     break
                 if current_val.is_valid and not current_quality.needs_edit:
@@ -2025,6 +2025,18 @@ class ArticleEditor:
                         issues_by_unit[p_id],
                     )
                     p_sups = [sid for sid in raw_sups if support_text(sid)]
+                    if not p_sups:
+                        # An uncited paragraph may describe evidence cited
+                        # nowhere in its section. Offer eligible supports
+                        # lexically anchored in its own text first; the patch
+                        # is still re-grounded against this exact allowlist.
+                        p_sups = [
+                            sid
+                            for sid in _reground_support_ids(
+                                p.text, context, minimum_shared_stems=3
+                            )
+                            if support_text(sid)
+                        ][:_MAX_EDITOR_SUPPORTS]
                     if not p_sups:
                         sec_sups: list[str] = []
                         for other_p in sec.paragraphs:
