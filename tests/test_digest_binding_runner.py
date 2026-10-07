@@ -101,7 +101,7 @@ def test_binder_returns_full_valid_fact_and_story_coverage() -> None:
             context(),
             draft,
             provider=provider,
-            model="openai/gpt-6-luna",
+            model="anthropic/claude-haiku-5.5",
             variant="paragraph_first",
         )
     )
@@ -112,7 +112,7 @@ def test_binder_returns_full_valid_fact_and_story_coverage() -> None:
     assert result.binding_result is not None
     assert result.binding_result["paragraphs"][0]["fact_bindings"][0]["fact_id"] == "power"
     assert result.max_output_tokens > 1800
-    assert provider.calls[0]["model"] == "openai/gpt-6-luna"
+    assert provider.calls[0]["model"] == "anthropic/claude-haiku-5.5"
     assert provider.calls[0]["response_format"] == {"type": "json_object"}
 
 
@@ -155,7 +155,7 @@ def test_unknown_short_id_is_not_repaired_or_counted_as_coverage() -> None:
             context(),
             "Power is unavailable.",
             provider=provider,
-            model="openai/gpt-6-luna",
+            model="anthropic/claude-haiku-5.5",
             variant="fact_first",
         )
     )
@@ -174,7 +174,7 @@ def test_truncated_or_unparseable_binder_response_is_not_repaired() -> None:
             context(),
             "Power is unavailable.",
             provider=provider,
-            model="openai/gpt-6-luna",
+            model="anthropic/claude-haiku-5.5",
             variant="fact_first",
         )
     )

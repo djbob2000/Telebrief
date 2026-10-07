@@ -48,11 +48,11 @@ def test_parse_publication_editorial_config_reasoning_effort() -> None:
 def test_article_editor_init_default_reasoning_effort() -> None:
     mock_provider = MagicMock()
     # Default is "none"
-    editor = ArticleEditor(provider=mock_provider, model="openai/gpt-6-luna")
+    editor = ArticleEditor(provider=mock_provider, model="anthropic/claude-haiku-5.5")
     assert editor.reasoning_effort == "none"
 
     # Explicit value passes through
     editor_custom = ArticleEditor(
-        provider=mock_provider, model="openai/gpt-6-luna", reasoning_effort="high"
+        provider=mock_provider, model="anthropic/claude-haiku-5.5", reasoning_effort="high"
     )
     assert editor_custom.reasoning_effort == "high"

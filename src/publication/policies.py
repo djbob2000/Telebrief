@@ -221,7 +221,12 @@ class PublicationPolicyService:
                     excluded_platforms.append("facebook")
 
         if triage_version is None:
-            triage_version = "v10"
+            # Candidates are matched to Gate decisions of exactly this version.
+            # A stale hardcoded "v10" left article run 317 with zero candidates
+            # once production Gate moved to v18.
+            from src.processing.event_triage import TRIAGE_VERSION
+
+            triage_version = TRIAGE_VERSION
         if scope_version is None:
             scope_version = "v1"
         if scope_config_hash is None and config is not None:

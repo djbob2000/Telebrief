@@ -188,7 +188,7 @@ def test_article_editor_retains_paragraphs_with_missing_supports() -> None:
     )
     issues_by_unit = {"P002": [issue]}
 
-    editor = ArticleEditor(provider=MagicMock(), model="openai/gpt-6-luna")
+    editor = ArticleEditor(provider=MagicMock(), model="anthropic/claude-haiku-5.5")
     unit_data = editor._build_unit_contexts(
         draft,
         issues_by_unit,
@@ -263,7 +263,7 @@ def test_article_editor_fallback_to_body_repair_supports_when_section_has_no_sup
     )
     issues_by_unit = {"P001": [issue]}
 
-    editor = ArticleEditor(provider=MagicMock(), model="openai/gpt-6-luna")
+    editor = ArticleEditor(provider=MagicMock(), model="anthropic/claude-haiku-5.5")
     unit_data = editor._build_unit_contexts(
         draft,
         issues_by_unit,

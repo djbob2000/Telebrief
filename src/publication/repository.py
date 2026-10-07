@@ -828,7 +828,10 @@ class PublicationRepository:
                 )
         else:
             effective_scope_hash = scope_config_hash or policy_scope_hash
-            triage_version = triage_version or "v10"
+            if not triage_version:
+                from src.processing.event_triage import TRIAGE_VERSION
+
+                triage_version = TRIAGE_VERSION
             scope_version = scope_version or "v1"
 
         effective_source_cutoff_at = source_cutoff_at or snapshot_at

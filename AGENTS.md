@@ -1164,8 +1164,7 @@ Use deterministic validation and traceable evidence instead.
 Model declarations are configured exclusively via `.env`, NEVER in `config.yaml`.
 `config.yaml` must not declare `ai_model`.
 
-- **Primary Model**: `OPENROUTER_MODEL=minimax/minimax-m3:free:floor`
-- **Secondary Model**: `OPENROUTER_MODEL_2=minimax/minimax-m2.7:free:floor`
+- **Primary Model**: `OPENROUTER_MODEL=anthropic/claude-haiku-5.5,z-ai/glm-5.3-flash` (comma-separated slots: primary, then fallback)
 
 **STRICT MODEL ALLOWLIST**:
 - Telebrief strictly enforces a runtime allowlist in `src/ai_providers.py` (`validate_model_allowed`).
