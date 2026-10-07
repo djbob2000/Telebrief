@@ -550,3 +550,28 @@ def test_source_clock_preserves_hour_and_supplied_duration_is_allowed():
         "По словам жителя, свет был около 13 часов.", [source + " До этого свет был 13 часов."]
     )
     assert not any("clock_duration" in value for value in result.violations)
+
+
+def test_place_list_binds_each_value_to_its_own_place():
+    """Run 311: values from a place list were checked against one resolved place."""
+    sources = [
+        "В районе Химиков нет света 24 часа 30 минут.",
+        "На улице Морозова электроснабжение отсутствует пятые сутки.",
+        "На улице Шевченко нет электроснабжения с 20 сентября.",
+    ]
+    locations = ["Химиков", "улица Морозова", "улица Шевченко"]
+    correct = validate_body(
+        "По сообщениям жителей, в районе Химиков света нет 24 часа 30 минут, "
+        "на улице Морозова — пятые сутки, на улице Шевченко — с 20 сентября.",
+        sources,
+        locations=locations,
+    )
+    assert not any("UNSUPPORTED_CONCRETE_CLAIM" in v for v in correct.violations), correct.violations
+
+    swapped = validate_body(
+        "По сообщениям жителей, в районе Химиков света нет пятые сутки, "
+        "на улице Морозова — с 20 сентября, на улице Шевченко — 24 часа 30 минут.",
+        sources,
+        locations=locations,
+    )
+    assert any("UNSUPPORTED_CONCRETE_CLAIM" in v for v in swapped.violations)

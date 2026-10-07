@@ -1507,3 +1507,28 @@ def test_mixed_recomposition_returns_actionable_failure_without_partial_changes(
             )
         )
     assert asdict(draft) == before
+
+
+def test_busy_power_theme_gets_ordered_reader_passages():
+    """Run 311: fifteen power facts became one street-by-street roster."""
+    from src.publication.digest_narrative import _power_reader_passages
+
+    texts = {
+        "city": "Житель сообщает, что весь город остался без света.",
+        "brief": "На улице Гайдара пять дней нет света, сегодня свет дали на 20 минут.",
+        "present": "На Лисках есть свет, но житель не знает, надолго ли.",
+        "promise": "В Колонии нет света; обещали дать вчера, но не дали.",
+        "outage": "На АКЗ нет света третьи сутки.",
+    }
+
+    passages = _power_reader_passages(list(texts), texts)
+
+    assert [p["passage"] for p in passages] == [
+        "citywide_picture",
+        "supply_present_or_brief",
+        "outages_by_place",
+    ]
+    assert passages[0]["fact_ids"] == ["city"]
+    assert passages[1]["fact_ids"] == ["brief", "present"]
+    assert passages[2]["fact_ids"] == ["promise", "outage"]
+    assert sorted(fid for p in passages for fid in p["fact_ids"]) == sorted(texts)

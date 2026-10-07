@@ -2239,10 +2239,18 @@ def _composition_visible_risk_validation(
         for sentence in re.split(
             r"(?<=[.!?;])\s+", _clock_field_validation_text(visible_text or "")
         ):
-            for clause in re.split(
-                r"(?i)(?:,\s*|\s+)(?:тогда как|в то время как|при этом|зато|но|а)\s+",
-                sentence,
-            ):
+            # A comma list of places («в районе X — 24 часа, на улице Y — пятые
+            # сутки») binds each value to its own place, not to whichever single
+            # place the resolver happens to recognise in the whole list.
+            clauses = [
+                part
+                for contrast in re.split(
+                    r"(?i)(?:,\s*|\s+)(?:тогда как|в то время как|при этом|зато|но|а)\s+",
+                    sentence,
+                )
+                for part in re.split(r"(?i),\s+(?=(?:в|на|у|возле|около)\s)", contrast)
+            ]
+            for clause in clauses:
                 clause = clause.strip(" ,—-\t\n")
                 if not clause:
                     continue
@@ -3956,10 +3964,65 @@ def _reader_synthesis_groups(block: DigestNarrativeBlock) -> list[dict[str, Any]
         unit_id = fact_to_unit[str(record.fact_id)]
         if unit_id not in group["composition_unit_ids"]:
             group["composition_unit_ids"].append(unit_id)
+    text_by_fact = {str(record.fact_id): record.text for record in block.composition_fact_records}
     for group in grouped.values():
         count = len(group["fact_ids"])
         group["preferred_max_reader_items"] = 3 if count >= 9 else 2 if count >= 5 else 1
+        if group["service_topics"] == ["power"] and count >= 5:
+            passages = _power_reader_passages(group["fact_ids"], text_by_fact)
+            if len(passages) >= 2:
+                group["suggested_passages"] = passages
+                group["preferred_max_reader_items"] = len(passages)
     return list(grouped.values())
+
+
+_POWER_CITYWIDE_RE = re.compile(
+    r"\b(?:везде|весь\s+город|всему\s+городу|все\s+районы|город\s+без\s+света)\b",
+    re.IGNORECASE,
+)
+_POWER_SUPPLY_RE = re.compile(
+    r"(?<!не\s)(?<!обещали\s)\b(?:дали|дают|давали|включили|подали|подают)\b|"
+    r"\bесть\s+(?:свет|электричеств\w*)|"
+    r"\b(?:свет|электричеств\w*)\s+(?:(?:практически|только|ещё|еще)\s+)?"
+    r"(?:есть|был|появил\w*)\b",
+    re.IGNORECASE,
+)
+_POWER_PASSAGE_ROLES = {
+    "citywide_picture": "Reports about the whole city or most of it; lead the theme with them.",
+    "supply_present_or_brief": (
+        "Where power is present, partial, or returned briefly or intermittently."
+    ),
+    "outages_by_place": (
+        "Localized outages and their durations; group places by shared status, duration "
+        "or area instead of one clause per street."
+    ),
+}
+
+
+def _power_reader_passages(
+    fact_ids: Sequence[str], text_by_fact: Mapping[str, str]
+) -> list[dict[str, Any]]:
+    """Suggest a reader order for a busy power theme from each fact's own wording.
+
+    This is lexical navigation for prose structure only: it proves no scope,
+    state, chronology or relation, and the writer may move a misfiled fact.
+    """
+    from src.publication.digest_evidence_ledger import _city_scope_level
+
+    buckets: dict[str, list[str]] = {role: [] for role in _POWER_PASSAGE_ROLES}
+    for fact_id in fact_ids:
+        text = text_by_fact.get(fact_id, "")
+        if _city_scope_level(text) or _POWER_CITYWIDE_RE.search(text):
+            buckets["citywide_picture"].append(fact_id)
+        elif _POWER_SUPPLY_RE.search(text):
+            buckets["supply_present_or_brief"].append(fact_id)
+        else:
+            buckets["outages_by_place"].append(fact_id)
+    return [
+        {"passage": role, "reader_role": _POWER_PASSAGE_ROLES[role], "fact_ids": ids}
+        for role, ids in buckets.items()
+        if ids
+    ]
 
 
 def _related_reporting_sets(block: DigestNarrativeBlock) -> list[dict[str, Any]]:
@@ -4599,6 +4662,7 @@ class DigestNarrativeWriter:
             "Write fluent, natural prose from the supplied frozen composition plan.\n"
             "Use reader_synthesis_groups as your editorial roadmap before composing items. They group reporting about a service for readability; they are navigation, not evidence, fact equivalence, chronology, geography, or permission to omit material.\n"
             "Normally synthesize each service group into its preferred_max_reader_items or fewer cohesive items. Keep every exact fact ID and split for readability only when the material requires it. Do not create a separate item for every street or source message.\n"
+            "When a group has suggested_passages, write one item per passage in the listed order, each with a headline naming its distinct subject. The split is lexical navigation: move a fact to a better-fitting passage when its wording says so, never omit it. Inside a passage, establish the shared community attribution once and repeat it only when the source role or certainty changes; connect places by shared status or duration rather than listing one clause per street.\n"
             f"{SAME_SITUATION_WRITER_GUIDANCE}\n"
             "Compare related_reporting_sets before writing: their text anchors flag potential overlap across units and service groups. They do not prove SAME_FACT, shared geography or chronology. Integrate overlapping observations into the same item where supported, state a shared detail once, and retain every distinct fact and its unique detail. Do not mention the same outage/location in multiple items merely because separate Stories repeat it.\n"
             "COMPOSITION CONTRACT:\n"
