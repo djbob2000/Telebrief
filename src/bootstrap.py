@@ -38,7 +38,7 @@ if TYPE_CHECKING:
 # format lands version 37, article planner attempt tracking lands version 38,
 # and telegram_entities delivery payloads land version 39.
 SCHEMA_VERSION_MINIMUM = 7
-SCHEMA_VERSION_MAXIMUM = 39
+SCHEMA_VERSION_MAXIMUM = 40
 
 
 __all__ = ["ApplicationInfrastructure", "build_infrastructure"]

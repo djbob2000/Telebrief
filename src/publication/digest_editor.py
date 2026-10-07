@@ -648,11 +648,20 @@ class DigestEditor:
                 "target_recomposition_fact_ids": target_recomposition_fact_ids,
                 "required_recomposition_facts": required_recomposition_facts,
                 "target_recomposition_summary_unit_ids": target_recomposition_summary_unit_ids,
+                **(
+                    {"edition_background": list(plan.background)}
+                    if getattr(plan, "background", ())
+                    else {}
+                ),
                 "blocks": editor_blocks,
             },
             ensure_ascii=False,
             indent=2,
         )
+        if getattr(plan, "background", ()):
+            from src.publication.situation_memory import DIGEST_BACKGROUND_GUIDANCE
+
+            system_prompt += "\n" + DIGEST_BACKGROUND_GUIDANCE
         chat_kwargs: dict[str, Any] = {
             "messages": [
                 {"role": "system", "content": system_prompt},

@@ -89,3 +89,37 @@ async def retention_cleanup(timestamp: int) -> None:
     runtime = get_runtime()
     service = RetentionService(uow=runtime.uow)
     await service.cleanup(now=dt.datetime.fromtimestamp(timestamp, dt.timezone.utc))
+
+
+@procrastinate_app.periodic(cron="20 4,16 * * *", periodic_id="situation-memory-update")
+@procrastinate_app.task(queue="maintenance", queueing_lock="situation-memory-update")
+async def update_situation_memory_job(timestamp: int) -> None:
+    """Advance each edition's running-story memory before the scheduled publications."""
+    import datetime as dt
+    import logging
+
+    from src.article_generator import ArticleGenerator
+    from src.config_loader import load_config
+    from src.publication.situation_memory import update_situation_memory
+    from src.runtime import get_runtime
+
+    log = logging.getLogger(__name__)
+    runtime = get_runtime()
+    config = load_config()
+    generator = ArticleGenerator(config=config, logger=log)
+    model = getattr(config.settings, "openai_model", None) or getattr(
+        config.settings, "ai_model", None
+    )
+    as_of = dt.datetime.fromtimestamp(timestamp, dt.timezone.utc)
+    async with runtime.uow.transaction() as conn:
+        cursor = await conn.execute("SELECT id FROM editions ORDER BY id")
+        edition_ids = [int(row[0]) for row in await cursor.fetchall()]
+    for edition_id in edition_ids:
+        await update_situation_memory(
+            uow=runtime.uow,
+            provider=generator.provider,
+            model=model,
+            edition_id=edition_id,
+            as_of=as_of,
+            log=log,
+        )

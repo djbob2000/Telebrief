@@ -577,6 +577,8 @@ class DigestNarrativePlan:
 
     blocks: tuple[DigestNarrativeBlock, ...]
     edition_slug: str = ""
+    # Non-citable running-story memory (situation_memory.digest_background).
+    background: tuple[dict[str, Any], ...] = ()
 
 
 def _composition_narrative_plan(
@@ -4706,7 +4708,14 @@ class DigestNarrativeWriter:
                 + f"Output language: {language}\nSchema: {schema_desc}"
             )
         else:
-            user_prompt = json.dumps({"blocks": blocks_payload}, ensure_ascii=False, indent=2)
+            prompt_payload: dict[str, Any] = {"blocks": blocks_payload}
+            if plan.background:
+                prompt_payload = {"edition_background": list(plan.background), **prompt_payload}
+            user_prompt = json.dumps(prompt_payload, ensure_ascii=False, indent=2)
+        if plan.background:
+            from src.publication.situation_memory import DIGEST_BACKGROUND_GUIDANCE
+
+            system_prompt += "\n" + DIGEST_BACKGROUND_GUIDANCE
         chat_kwargs: dict[str, Any] = {
             "messages": [
                 {"role": "system", "content": system_prompt},

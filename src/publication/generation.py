@@ -683,6 +683,35 @@ class PublicationGenerationService:
                 logger.warning("Could not initialize rubric embedding provider: %s", exc)
                 self.rubric_classifier = DigestRubricClassifier()
 
+    async def _attach_situation_memory(
+        self, plan: Any, *, run: Any, implementation_versions: dict[str, Any]
+    ) -> Any:
+        """Attach the newest running-story memory available at the run snapshot.
+
+        Memory is advisory background: if it is unavailable, the digest is
+        generated exactly as before.
+        """
+        from src.publication.situation_memory import digest_background, load_latest_snapshot
+
+        snapshot_at = getattr(run, "snapshot_at", None)
+        edition_id = getattr(run, "edition_id", None)
+        if snapshot_at is None or edition_id is None:
+            return plan
+        try:
+            async with self.uow.transaction() as conn:
+                snapshot = await load_latest_snapshot(
+                    conn, edition_id=int(edition_id), as_of=snapshot_at
+                )
+        except Exception as exc:  # noqa: BLE001 - background must never block a digest
+            logger.warning("situation memory unavailable (%s: %s)", type(exc).__name__, exc)
+            return plan
+        background = digest_background(snapshot, as_of=snapshot_at)
+        implementation_versions["situation_memory_snapshot_id"] = (
+            snapshot.snapshot_id if snapshot else None
+        )
+        implementation_versions["situation_memory_count"] = len(background)
+        return replace(plan, background=background) if background else plan
+
     async def generate(
         self,
         run_id: int,
@@ -1042,6 +1071,9 @@ class PublicationGenerationService:
                         max_cards_per_block=max_cards,
                         presentation_plan=presentation_plan,
                         edition_slug=getattr(frozen, "edition_slug", "") or edition_slug,
+                    )
+                    plan = await self._attach_situation_memory(
+                        plan, run=run, implementation_versions=digest_implementation_versions
                     )
 
                     writer_provider = getattr(self.generator, "provider", None)
