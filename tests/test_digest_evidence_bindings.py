@@ -575,3 +575,36 @@ def test_place_list_binds_each_value_to_its_own_place():
         locations=locations,
     )
     assert any("UNSUPPORTED_CONCRETE_CLAIM" in v for v in swapped.violations)
+
+
+def test_two_service_fact_can_state_citywide_power_but_not_water():
+    """Run 315: «пропала и вода. Значит весь город обесточен» supports power only."""
+    sources = [
+        "Если одновременно с пропажей света пропала и вода. Значит весь город обесточен.",
+        "Светы нет водяной ушёл.",
+    ]
+    power = validate_body(
+        "Житель предполагает: если одновременно пропали свет и вода, значит, обесточен весь город.",
+        sources,
+    )
+    assert not any("service_extent" in v for v in power.violations), power.violations
+
+    water = validate_body(
+        "По всему городу нет воды, сообщает житель.", [*sources, "На 8 Марта нет воды."]
+    )
+    assert any("service_extent" in v for v in water.violations)
+
+
+def test_negated_area_scope_is_partial_not_whole_area():
+    """Run 315: «свет есть не во всём районе» was read as whole-area scope."""
+    sources = ["Не везде на АКЗ есть свет. У нас последний раз был в субботу."]
+    partial = validate_body(
+        "Житель АКЗ сообщает, что свет у него был в субботу; по его словам, свет есть "
+        "не во всём районе.",
+        sources,
+    )
+    assert not any("service_extent" in v for v in partial.violations), partial.violations
+    whole = validate_body(
+        "Житель сообщает, что света нет во всём городе.", [*sources, "На АКЗ нет света."]
+    )
+    assert any("service_extent" in v for v in whole.violations)

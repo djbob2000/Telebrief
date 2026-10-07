@@ -488,6 +488,13 @@ _PRIVATE_RETURN_RE = re.compile(
     r"\bв\s+личк\w*|\bв\s+лс\b|\+?\d[\d\s()-]{8,}\d)",
     re.IGNORECASE,
 )
+# Owner named by surname and initial («Клима Д», «Иванова К.»): personal data.
+_SURNAME_INITIAL_RE = re.compile(r"\b[А-ЯЁ][а-яё]{2,}\s+[А-ЯЁ]\.?(?=[\s,.;:)]|$)")
+# A property listing: floor area together with a room count (run 315).
+_PROPERTY_LISTING_RE = re.compile(
+    r"\bплощад\w*\s+\d+[\d.,]*\s*(?:м²|м2|кв\.?\s*м)[^.!?]{0,120}?\b\d+[-\s]*комнат",
+    re.IGNORECASE,
+)
 
 
 def is_non_editorial_fact(text: str) -> bool:
@@ -502,7 +509,11 @@ def is_non_editorial_fact(text: str) -> bool:
         return False
     if (
         _NON_EDITORIAL_PAYLOAD_RE.search(text)
-        or (_LOST_DOCUMENT_RE.search(text) and _PRIVATE_RETURN_RE.search(text))
+        or (
+            _LOST_DOCUMENT_RE.search(text)
+            and (_PRIVATE_RETURN_RE.search(text) or _SURNAME_INITIAL_RE.search(text))
+        )
+        or _PROPERTY_LISTING_RE.search(text)
         or _is_location_context_without_event(text)
         or _is_announcement_context_without_event(text)
     ):

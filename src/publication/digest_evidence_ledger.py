@@ -103,7 +103,15 @@ def _amount(value: str) -> str:
 def _city_scope_level(text: str) -> int:
     """Return only explicit majority/whole-city scope stated in the text."""
     for pattern, level in ((_WHOLE_CITY_SCOPE, 2), (_MAJORITY_CITY_SCOPE, 1)):
-        match = pattern.search(text)
+        match = next(
+            (
+                found
+                for found in pattern.finditer(text)
+                # «не во всём районе» states partial, not whole-area, scope.
+                if not re.search(r"\bне\s*$", text[: found.start()], re.IGNORECASE)
+            ),
+            None,
+        )
         if match is None:
             continue
         target = match.group("target")
@@ -446,9 +454,13 @@ class DigestEvidenceLedger:
                                 f"DIGEST_LEDGER_SERVICE_SCOPE_NOT_EVALUATED:{service}"
                             )
                             continue
+                        # The clause-level parser already binds a source's scope to
+                        # the service it names. A fact whose text mentions two
+                        # services (run 315: «пропала и вода. Значит весь город
+                        # обесточен») can still state citywide power itself.
                         source_scope_supported = any(
                             service in source_services and source_scope >= claim_scope
-                            for entry in owners
+                            for entry in complete
                             for source in entry.source_texts
                             for source_scope, source_services in _city_scope_service_claims(source)
                         )

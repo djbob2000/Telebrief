@@ -510,3 +510,49 @@ def test_overlong_power_split_advice_respects_block_power_limit(
     assert len(overlong) == 1
     assert expected in overlong[0].message
     assert audit.is_publishable
+
+
+def test_items_sharing_a_duplicated_fact_are_all_targeted() -> None:
+    """Run 315: a duplicated fact stayed in an untargeted item through both edits."""
+    from types import SimpleNamespace
+
+    from src.publication.digest_quality_diagnostics import DigestQualityWarning
+    from src.publication.generation import _digest_repair_request
+
+    draft = DigestNarrativeDraft(
+        blocks=(
+            DigestNarrativeBlockDraft(
+                block_id="block:infrastructure:composition",
+                items=(
+                    DigestEditorialItemDraft(
+                        item_id="item:switch-on", body="a", covered_fact_ids=("f:osipenko", "f:a")
+                    ),
+                    DigestEditorialItemDraft(
+                        item_id="item:roster", body="b", covered_fact_ids=("f:osipenko", "f:b")
+                    ),
+                    DigestEditorialItemDraft(
+                        item_id="item:water", body="c", covered_fact_ids=("f:water",)
+                    ),
+                ),
+            ),
+        ),
+    )
+    warning = DigestQualityWarning(
+        code="OVERLONG_SYNTHESIS",
+        message="Overlong item",
+        block_id="block:infrastructure:composition",
+        item_index=1,
+    )
+    checkpoint = (
+        draft,
+        SimpleNamespace(
+            violations=("COMPOSITION_FACT_PARTITION_MISMATCH:block:infrastructure:composition",)
+        ),
+        None,
+        None,
+        SimpleNamespace(checks=(), prose_audit=SimpleNamespace(warnings=(warning,))),
+    )
+
+    _, targets, _ = _digest_repair_request(checkpoint)
+
+    assert set(targets) == {"item:switch-on", "item:roster"}

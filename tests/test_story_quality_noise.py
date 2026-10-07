@@ -234,3 +234,52 @@ def test_lost_document_reply_does_not_suppress_mixed_story() -> None:
     )
     eligible, _ = validate_story_publication_eligibility(payload)
     assert eligible
+
+
+def test_run_315_lost_document_payload_is_not_city_news() -> None:
+    """Exact sealed payload: no phone, owners named by surname and initial."""
+    payload = SimpleNamespace(
+        headline="В Бердянске утеряны два пенсионных удостоверения",
+        digest_summary=(
+            "Сообщается об утере двух детских пенсионных удостоверений на имена "
+            "Клима Д. и Иванова К.; просят вернуть за вознаграждение."
+        ),
+        category="",
+        evidence_items=[
+            SimpleNamespace(
+                text="Утеряны 2 удостоверения пенсионных Клима Д и Иванова К детских.",
+                kind="community_report",
+                publication_use="PUBLISH",
+            )
+        ],
+    )
+    eligible, reason = validate_story_publication_eligibility(payload)
+    assert not eligible
+    assert reason == "non_editorial_payload"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Жилой дом общей площадью 80 м², 4 комнаты, кухня, санузел, погреб и кладовые; "
+        "газификация, газовый котёл, бойлер, интернет, печь на дровах.",
+    ],
+)
+def test_run_315_private_notices_are_not_city_news(text: str) -> None:
+    payload = SimpleNamespace(
+        headline=text,
+        digest_summary=text,
+        category="",
+        evidence_items=[
+            SimpleNamespace(text=text, kind="community_report", publication_use="PUBLISH")
+        ],
+    )
+    eligible, _ = validate_story_publication_eligibility(payload)
+    assert not eligible
+
+
+def test_housing_damage_report_with_area_is_still_news() -> None:
+    from src.publication.story_quality import is_non_editorial_fact
+
+    text = "После прилёта на улице Шевченко повреждён жилой дом общей площадью 80 м², выбиты окна."
+    assert not is_non_editorial_fact(text)

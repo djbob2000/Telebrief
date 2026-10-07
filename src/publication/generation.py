@@ -155,13 +155,23 @@ def _digest_violation_item_ids(draft: Any, violations: Sequence[str]) -> tuple[s
         pattern = rf"(?<![\w-]){re.escape(identifier)}(?![\w-])"
         return any(re.search(pattern, str(violation)) for violation in violations)
 
+    # A fact assigned to two items breaks the partition; the block-level
+    # violation names no fact, so every holder must be editable (run 315).
+    holders: dict[str, int] = {}
+    for block in draft.blocks:
+        for item in block.items:
+            for fact in set(item.covered_fact_ids):
+                holders[fact] = holders.get(fact, 0) + 1
     return tuple(
         dict.fromkeys(
             item.item_id
             for block in draft.blocks
             for item in block.items
             if item.item_id
-            and (named(item.item_id) or any(named(fact) for fact in item.covered_fact_ids))
+            and (
+                named(item.item_id)
+                or any(named(fact) or holders[fact] > 1 for fact in item.covered_fact_ids)
+            )
         )
     )
 
