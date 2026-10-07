@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from src.publication.article_length import ArticleLengthProfile
 
 ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v14-reply-locator-only"
-DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v23-past-report-wording"
+DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v24-no-report-disclaimers"
 
 DIGEST_REPLY_CONTEXT_GUIDE = (
     "In reporting metadata, reply-parent, parent message and «родительское сообщение» "
@@ -188,6 +188,11 @@ DIGEST_ITEM_COMPOSITION_GUIDE = """Digest item composition:
   Concrete coping details may share a passage with the reported disruption when that
   makes reading clearer; a price mentioned in that report need not become its own item.
   This grouping establishes no causal link or common time/location beyond the evidence.
+- Carry uncertainty once, in the attribution verb ('предполагает', 'считает', 'по его
+  словам'). Do not append disclaimers about the report itself, such as 'это мнение
+  автора', 'не подтверждено', 'место не указано', 'точный охват не установлен' or
+  'не уточняя срок'. When a place or duration is unknown, simply do not state one; an
+  unlocated household report stays scoped to that resident ('у него дома').
 - Chat irony, jokes and wishes are not service reports: 'теперь и газ осталось
   подрубить' means gas has not been cut yet. Report only the plainly stated parts
   of such a message. Do not mention the joked-about service from it at all: no

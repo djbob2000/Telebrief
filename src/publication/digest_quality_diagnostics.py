@@ -10,7 +10,7 @@ from typing import Any, Literal, Mapping, Sequence
 from src.publication.digest_narrative import DigestNarrativeDraft
 from src.publication.evidence import PublicationEvidence
 
-DIGEST_DIAGNOSTICS_VERSION = "digest-diagnostics-v17-metadata-calque"
+DIGEST_DIAGNOSTICS_VERSION = "digest-diagnostics-v18-report-disclaimers"
 
 _NAMED_CHAT_META = re.compile(r"\b(?:в|из)\s+(?:[а-яё-]+\s+){0,2}чат[аеу]\b", re.IGNORECASE)
 
@@ -102,7 +102,15 @@ _SOURCE_META_NARRATION_RE = re.compile(
     r"историческ\w*\s+(?:сообщени\w*|публикаци\w*|пост\w*)|"
     # Commentary on a message instead of the city fact it reports.
     r"в\s+(?:этом|том\s+же)\s+сообщени\w*|"
-    r"шутлив\w*\s+(?:замечани\w*|реплик\w*|сообщени\w*))\b",
+    r"шутлив\w*\s+(?:замечани\w*|реплик\w*|сообщени\w*)|"
+    # Disclaimers about the report instead of the reported fact (run 316).
+    r"мнение\s+автора|"
+    r"(?:место|местоположение|адрес)\w*\s+(?:\w+\s+)?не\s+(?:указан\w*|уточн\w*)|"
+    r"(?:точный\s+)?охват\s+не\s+(?:установлен\w*|уточн\w*)|"
+    r"не\s+уточняя\s+(?:срок\w*|продолжительност\w*|мест\w*)|"
+    r"не\s+подтвержд[её]нн\w*\s+(?:общегородск\w*\s+)?картин\w*|"
+    r"это\s+(?:его|её|ее)\s+оценк\w*|"
+    r"в\s+сообщени\w*\s+нет\b)\b",
     re.IGNORECASE,
 )
 _CLASSIFIED_AD_RE = re.compile(
