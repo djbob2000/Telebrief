@@ -217,3 +217,16 @@ def test_verbatim_background_line_is_checked_against_memory_not_todays_facts():
         "Перебои со светом, по словам жителя, продолжаются с 4 августа."
     )
     assert not edited.validation.is_valid
+
+
+def test_reasoning_settings_disable_or_enable_with_headroom():
+    from src.ai_providers import apply_reasoning_settings
+
+    off = apply_reasoning_settings(
+        {"max_tokens": 2800, "temperature": 0.2}, "none", headroom_tokens=12000
+    )
+    assert off == {"max_tokens": 2800, "temperature": 0.2, "reasoning_effort": "none", "thinking": False}
+    on = apply_reasoning_settings(
+        {"max_tokens": 2800, "temperature": 0.2, "thinking": False}, "medium", headroom_tokens=12000
+    )
+    assert on == {"max_tokens": 14800, "reasoning_effort": "medium"}

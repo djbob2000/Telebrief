@@ -1747,3 +1747,24 @@ def ensure_provider_cascade(
     if isinstance(provider, ProviderCascade):
         return provider
     return ProviderCascade([(slot_name, provider)], logger)
+
+
+def apply_reasoning_settings(
+    chat_kwargs: dict[str, Any], effort: str | None, *, headroom_tokens: int = 0
+) -> dict[str, Any]:
+    """Set a call's reasoning level; reasoning tokens count against max_tokens.
+
+    ``none``/``None`` disables thinking. Any other level enables it and adds
+    ``headroom_tokens`` so reasoning cannot crowd out the visible answer.
+    """
+    if effort in (None, "none"):
+        chat_kwargs["reasoning_effort"] = "none"
+        chat_kwargs["thinking"] = False
+        return chat_kwargs
+    chat_kwargs["reasoning_effort"] = effort
+    chat_kwargs.pop("thinking", None)
+    # Anthropic extended thinking accepts only the default temperature.
+    chat_kwargs.pop("temperature", None)
+    if headroom_tokens > 0:
+        chat_kwargs["max_tokens"] = int(chat_kwargs.get("max_tokens") or 0) + headroom_tokens
+    return chat_kwargs

@@ -577,6 +577,8 @@ async def update_situation_memory(
     edition_id: int,
     as_of: dt.datetime,
     log: logging.Logger = logger,
+    reasoning_effort: str | None = "none",
+    reasoning_headroom_tokens: int = 0,
 ) -> int | None:
     """Advance the memory to ``as_of``; bootstrap day by day when it is empty."""
     async with uow.transaction() as conn:
@@ -621,7 +623,12 @@ async def update_situation_memory(
         }
         if model:
             kwargs["model"] = model
+        from src.ai_providers import apply_reasoning_settings
         from src.utils import robust_extract_json
+
+        apply_reasoning_settings(
+            kwargs, reasoning_effort, headroom_tokens=reasoning_headroom_tokens
+        )
 
         try:
             parsed = robust_extract_json(await provider.chat_completion(**kwargs))

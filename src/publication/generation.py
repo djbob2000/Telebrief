@@ -931,6 +931,12 @@ class PublicationGenerationService:
                         pub_edit, "digest_writer_material_format", "legacy"
                     ),
                     editor_scope=getattr(pub_edit, "digest_editor_scope", "targeted_items"),
+                    writer_reasoning_effort=getattr(
+                        pub_edit, "digest_writer_reasoning_effort", "none"
+                    ),
+                    editor_reasoning_effort=getattr(
+                        pub_edit, "digest_editor_reasoning_effort", "none"
+                    ),
                 )
                 configured_narrative_mode = (
                     getattr(pub_edit, "digest_narrative_mode", "deterministic")
@@ -1079,6 +1085,12 @@ class PublicationGenerationService:
                     writer_provider = getattr(self.generator, "provider", None)
                     writer = DigestNarrativeWriter(
                         provider=writer_provider,
+                        reasoning_effort=getattr(
+                            pub_edit, "digest_writer_reasoning_effort", "none"
+                        ),
+                        reasoning_headroom_tokens=getattr(
+                            pub_edit, "reasoning_headroom_tokens", 12000
+                        ),
                         writer_material_format=getattr(
                             pub_edit, "digest_writer_material_format", "legacy"
                         ),
@@ -1188,7 +1200,15 @@ class PublicationGenerationService:
                             ),
                             plan=plan,
                             evidence=evidence_dict,
-                            editor=DigestEditor(provider=writer_provider),
+                            editor=DigestEditor(
+                                provider=writer_provider,
+                                reasoning_effort=getattr(
+                                    pub_edit, "digest_editor_reasoning_effort", "none"
+                                ),
+                                reasoning_headroom_tokens=getattr(
+                                    pub_edit, "reasoning_headroom_tokens", 12000
+                                ),
+                            ),
                             observer=observer,
                             evaluate_candidate=_evaluate_candidate,
                             model=getattr(self.config.settings, "openai_model", None)

@@ -109,7 +109,10 @@ async def replay_digest(case: FrozenDigestCase, *, provider: Any) -> DigestRepla
             diagnostics["geography_profile_hash"] = expected
         async with asyncio.timeout(float(cfg["timeout_seconds"])):
             writer = DigestNarrativeWriter(
-                provider=counted, writer_material_format=cfg.get("writer_material_format", "legacy")
+                provider=counted,
+                writer_material_format=cfg.get("writer_material_format", "legacy"),
+                reasoning_effort=cfg.get("writer_reasoning_effort", "none"),
+                reasoning_headroom_tokens=int(cfg.get("reasoning_headroom_tokens", 12000)),
             )
             draft = await writer.generate_narrative_draft(
                 plan=case.context.plan,
@@ -126,7 +129,11 @@ async def replay_digest(case: FrozenDigestCase, *, provider: Any) -> DigestRepla
                 checkpoint=assessment.checkpoint(),
                 plan=case.context.plan,
                 evidence=case.context.evidence,
-                editor=DigestEditor(provider=counted),
+                editor=DigestEditor(
+                    provider=counted,
+                    reasoning_effort=cfg.get("editor_reasoning_effort", "none"),
+                    reasoning_headroom_tokens=int(cfg.get("reasoning_headroom_tokens", 12000)),
+                ),
                 observer=observer,
                 evaluate_candidate=lambda candidate: assess_digest_candidate(
                     candidate, context=case.context

@@ -209,6 +209,14 @@ class PublicationEditorialConfig:
     article_editor_enabled: bool = False
     article_editor_max_attempts: int = 3
     article_editor_reasoning_effort: str | None = "none"
+    # Digest writer/editor and running-story memory. Reasoning tokens count
+    # against max_tokens, so an enabled level adds this headroom to the call.
+    digest_writer_reasoning_effort: str | None = "none"
+    digest_editor_reasoning_effort: str | None = "none"
+    situation_memory_reasoning_effort: str | None = "none"
+    # None keeps the global settings.reasoning_effort for the article writer.
+    article_writer_reasoning_effort: str | None = None
+    reasoning_headroom_tokens: int = 12000
 
     def __post_init__(self) -> None:
         if self.conflict_window_minutes <= 0:
@@ -245,7 +253,14 @@ class PublicationEditorialConfig:
             raise ValueError("digest_narrative_timeout_seconds must be a positive integer")
         if self.selection_max_output_tokens <= 0:
             raise ValueError("selection_max_output_tokens must be a positive integer")
-        for field_name in ("selection_reasoning_effort", "article_editor_reasoning_effort"):
+        for field_name in (
+            "selection_reasoning_effort",
+            "article_editor_reasoning_effort",
+            "digest_writer_reasoning_effort",
+            "digest_editor_reasoning_effort",
+            "situation_memory_reasoning_effort",
+            "article_writer_reasoning_effort",
+        ):
             effort = getattr(self, field_name)
             if effort is not None and effort not in ALLOWED_REASONING_EFFORTS:
                 raise ValueError(

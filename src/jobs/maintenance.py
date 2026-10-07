@@ -122,4 +122,10 @@ async def update_situation_memory_job(timestamp: int) -> None:
             edition_id=edition_id,
             as_of=as_of,
             log=log,
+            reasoning_effort=getattr(
+                config.settings.publication_editorial, "situation_memory_reasoning_effort", "none"
+            ),
+            reasoning_headroom_tokens=getattr(
+                config.settings.publication_editorial, "reasoning_headroom_tokens", 12000
+            ),
         )

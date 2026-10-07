@@ -8,7 +8,7 @@ import re
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
-from src.ai_providers import AIProvider
+from src.ai_providers import AIProvider, apply_reasoning_settings
 from src.publication.digest_narrative import (
     DIGEST_ITEM_BODY_MAX_CHARS,
     DigestClaimAtom,
@@ -204,8 +204,16 @@ def _resolve_approved_merges(
 class DigestEditor:
     """Refines, polishes, and compresses narrative digest drafts for Telegram single-post publication."""
 
-    def __init__(self, provider: AIProvider | None = None) -> None:
+    def __init__(
+        self,
+        provider: AIProvider | None = None,
+        *,
+        reasoning_effort: str | None = "none",
+        reasoning_headroom_tokens: int = 0,
+    ) -> None:
         self._provider = provider
+        self._reasoning_effort = reasoning_effort
+        self._reasoning_headroom_tokens = reasoning_headroom_tokens
 
     async def _polish_composition(
         self,
@@ -677,6 +685,11 @@ class DigestEditor:
         }
         if model:
             chat_kwargs["model"] = model
+        apply_reasoning_settings(
+            chat_kwargs,
+            self._reasoning_effort,
+            headroom_tokens=self._reasoning_headroom_tokens,
+        )
         if (
             max_context_chars is not None
             and len(system_prompt) + len(user_prompt) > max_context_chars
@@ -1291,6 +1304,11 @@ class DigestEditor:
         if model:
             chat_kwargs["model"] = model
         chat_kwargs["max_tokens"] = 4096
+        apply_reasoning_settings(
+            chat_kwargs,
+            self._reasoning_effort,
+            headroom_tokens=self._reasoning_headroom_tokens,
+        )
 
         try:
             raw_response = await self._provider.chat_completion(**chat_kwargs)

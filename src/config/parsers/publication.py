@@ -702,4 +702,17 @@ def _parse_publication_editorial_config(settings_dict: dict) -> PublicationEdito
         article_editor_reasoning_effort=_val_reasoning_effort(
             "article_editor_reasoning_effort", "none"
         ),
+        digest_writer_reasoning_effort=_val_reasoning_effort(
+            "digest_writer_reasoning_effort", "none"
+        ),
+        digest_editor_reasoning_effort=_val_reasoning_effort(
+            "digest_editor_reasoning_effort", "none"
+        ),
+        situation_memory_reasoning_effort=_val_reasoning_effort(
+            "situation_memory_reasoning_effort", "none"
+        ),
+        reasoning_headroom_tokens=_val_nonneg_int("reasoning_headroom_tokens", 12000),
+        article_writer_reasoning_effort=_val_reasoning_effort(
+            "article_writer_reasoning_effort", None
+        ),
     )

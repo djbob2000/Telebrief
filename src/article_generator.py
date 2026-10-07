@@ -1511,7 +1511,13 @@ class ArticleGenerator:
                 self.config.settings.article.editorial_writer_max_output_tokens, 65536
             )
             writer_reasoning_effort = (
-                getattr(self.config.settings, "reasoning_effort", "low") or "low"
+                getattr(
+                    getattr(self.config.settings, "publication_editorial", None),
+                    "article_writer_reasoning_effort",
+                    None,
+                )
+                or getattr(self.config.settings, "reasoning_effort", "low")
+                or "low"
             )
             messages = [
                 {"role": "system", "content": system_prompt},

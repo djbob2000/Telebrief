@@ -172,6 +172,14 @@ settings:
     article_editor_enabled: true
     article_editor_max_attempts: 3
     article_editor_reasoning_effort: "high"
+    # Haiku 5.5 A/B on frozen windows 316/311/253 (2026-10-07): "none" failed 2/3
+    # (dropped rubric, empty digest); "low" passed 3/3 with better structure;
+    # "medium" passed only with large headroom and produced longer rosters.
+    digest_writer_reasoning_effort: "low"
+    digest_editor_reasoning_effort: "low"
+    situation_memory_reasoning_effort: "low"
+    # Reasoning tokens count against max_tokens; medium used ~13k on one window.
+    reasoning_headroom_tokens: 32000
 
   digest_mode: "digest"
 

@@ -4630,11 +4630,20 @@ def _parse_composition_writer_output(
 class DigestNarrativeWriter:
     """Single-call narrative digest writer synthesizing flowing prose across rubric blocks."""
 
-    def __init__(self, provider: Any, *, writer_material_format: str = "legacy") -> None:
+    def __init__(
+        self,
+        provider: Any,
+        *,
+        writer_material_format: str = "legacy",
+        reasoning_effort: str | None = "none",
+        reasoning_headroom_tokens: int = 0,
+    ) -> None:
         if writer_material_format not in ("legacy", "compact_v1", "source_grouped_v1"):
             raise ValueError("digest_writer_material_format is unsupported")
         self._provider = provider
         self._writer_material_format = writer_material_format
+        self._reasoning_effort = reasoning_effort
+        self._reasoning_headroom_tokens = reasoning_headroom_tokens
 
     async def _generate_composition_draft(
         self,
@@ -4743,6 +4752,13 @@ class DigestNarrativeWriter:
         }
         if model:
             chat_kwargs["model"] = model
+        from src.ai_providers import apply_reasoning_settings
+
+        apply_reasoning_settings(
+            chat_kwargs,
+            self._reasoning_effort,
+            headroom_tokens=self._reasoning_headroom_tokens,
+        )
         raw_response = await self._provider.chat_completion(**chat_kwargs)
         cleaned = (raw_response or "").strip()
         if cleaned.startswith("```"):
@@ -5351,6 +5367,13 @@ class DigestNarrativeWriter:
             chat_kwargs["model"] = model
         if max_output_tokens:
             chat_kwargs["max_tokens"] = max_output_tokens
+        from src.ai_providers import apply_reasoning_settings
+
+        apply_reasoning_settings(
+            chat_kwargs,
+            self._reasoning_effort,
+            headroom_tokens=self._reasoning_headroom_tokens,
+        )
 
         raw_response = await self._provider.chat_completion(**chat_kwargs)
 
