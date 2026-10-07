@@ -31,7 +31,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-MEMORY_VERSION = "situation-memory-v1"
+MEMORY_VERSION = "situation-memory-v2-digest-line"
 MAX_SITUATIONS = 10
 STALE_AFTER_DAYS = 21
 BOOTSTRAP_DAYS = 30
@@ -112,7 +112,9 @@ were revised since the last update. Return JSON:
   "summary_refs":["fragment:ID"],
   "causes":[{"text":"attributed cause, only as reported","refs":["fragment:ID"]}],
   "latest_change":{"text":"what changed in these new reports","refs":["fragment:ID"]},
-  "open_questions":["what residents ask that no report answers, e.g. сроки ремонта"]
+  "open_questions":["what residents ask that no report answers, e.g. сроки ремонта"],
+  "digest_line":"one standalone attributed Russian background sentence for a daily digest",
+  "digest_line_refs":["fragment:ID"]
 }]}
 
 Rules:
@@ -126,6 +128,11 @@ Rules:
 - Prefer UPDATE of an existing situation over a near-duplicate ADD. RESOLVE only
   when reports state that the situation ended.
 - Omit operations for situations the new reports do not touch; they stay unchanged.
+- digest_line (for every ADD/UPDATE): one short sentence (at most 160 characters) a
+  journalist could put before today's news, e.g. «Перебои с электроснабжением, по
+  словам жителей, продолжаются с начала августа.» Attribute it, keep only what the
+  cited reports state, use absolute dates rather than «сегодня/вчера» or day counts
+  such as «65-й день» that would be wrong tomorrow.
 - Write all text in Russian.
 """
 
@@ -375,6 +382,30 @@ def _grounded(text: str, refs: Sequence[str], texts: Mapping[str, Sequence[str]]
     return not find_unsupported_claims(text, supports)
 
 
+_ATTRIBUTION_RE = re.compile(
+    r"\b(?:по\s+(?:словам|сообщени\w*|данным|информации)|сообща\w*|жител\w*|"
+    r"утвержда\w*|пишут|рассказыва\w*)",
+    re.IGNORECASE,
+)
+_RELATIVE_TIME_RE = re.compile(
+    r"\b(?:сегодня|вчера|завтра|сейчас|накануне|позавчера)\b|"
+    r"(?:\d+\s*[-‑–]?\s*(?:й|го|ий|ый)?|\b(?:одн|дв|тр|четыр|пят|шест|сем|восьм|восем|девят|"
+    r"десят|нескольк|пар|втор|трет)\w*)\s+(?:день|дня|дней|сутк\w*|недел\w*|месяц\w*)",
+    re.IGNORECASE,
+)
+
+
+def _valid_digest_line(text: str, refs: Sequence[str], texts: Mapping[str, Sequence[str]]) -> bool:
+    """A digest background line is attributed, durable and grounded in its refs."""
+    return (
+        0 < len(text) <= 170
+        and text.endswith((".", "!", "?"))
+        and bool(_ATTRIBUTION_RE.search(text))
+        and not _RELATIVE_TIME_RE.search(text)
+        and _grounded(text, refs, texts)
+    )
+
+
 def _refs(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -443,6 +474,8 @@ def apply_memory_operations(
             "latest_change": base.get("latest_change"),
             "open_questions": list(base.get("open_questions") or []),
             "refs": list(base.get("refs") or []),
+            "digest_line": base.get("digest_line", ""),
+            "digest_line_refs": list(base.get("digest_line_refs") or []),
             "first_seen_at": base.get("first_seen_at"),
             "last_confirmed_at": base.get("last_confirmed_at"),
         }
@@ -480,6 +513,14 @@ def apply_memory_operations(
                 situation["latest_change"] = {"text": text, "refs": refs}
             elif text:
                 stats["dropped_fields"] += 1
+        line = _clean_text(raw.get("digest_line"), 200)
+        line_refs = _refs(raw.get("digest_line_refs"))
+        if line:
+            if _valid_digest_line(line, line_refs, texts):
+                situation["digest_line"] = line
+                situation["digest_line_refs"] = line_refs
+            else:
+                stats["dropped_fields"] += 1
         questions = [
             _clean_text(question, 160)
             for question in raw.get("open_questions") or ()
@@ -492,6 +533,7 @@ def apply_memory_operations(
             for ref in (
                 *summary_refs,
                 *since_refs,
+                *(situation["digest_line_refs"] if situation.get("digest_line") else ()),
                 *(ref for cause in causes for ref in cause["refs"]),
                 *(
                     situation["latest_change"]["refs"]
@@ -642,14 +684,85 @@ def digest_background(snapshot: MemorySnapshot | None, *, as_of: dt.datetime) ->
                 "open_questions": list(situation.get("open_questions") or []),
             }
         )
+        line = str(situation.get("digest_line") or "")
+        supports = [
+            text
+            for ref in situation.get("digest_line_refs") or ()
+            for text in (
+                (snapshot.ref_texts.get(ref) or {}).get("evidence_text", ""),
+                (snapshot.ref_texts.get(ref) or {}).get("source_text", ""),
+            )
+            if text
+        ]
+        if line and supports:
+            rows[-1]["digest_line"] = line
+            # Assessment re-checks the line; never sent to the model.
+            rows[-1]["digest_line_supports"] = supports
     return tuple(rows)
+
+
+def writer_background(background: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Background as shown to writer/editor: verification texts stay internal."""
+    return [{k: v for k, v in row.items() if k != "digest_line_supports"} for row in background]
+
+
+def _normalized_sentence(text: str) -> str:
+    text = text.casefold().replace("ё", "е")
+    text = re.sub(r"[«»“”\"'„]", "", text)
+    text = re.sub(r"[–—‑]", "-", text)
+    return " ".join(text.split()).rstrip(" .!?")
+
+
+def strip_verified_background_lines(draft: Any, background: Sequence[Mapping[str, Any]]) -> Any:
+    """Remove each verified digest_line once from a copy used for evidence checks.
+
+    The line was grounded against its own memory citations when the memory was
+    updated, and is re-checked here against the same texts. Only an unchanged
+    sentence is exempt; an edited one is validated as ordinary digest prose.
+    """
+    from dataclasses import replace as dc_replace
+
+    from src.publication.article_claims import find_unsupported_claims
+
+    allowed = {
+        _normalized_sentence(str(row["digest_line"])): list(row.get("digest_line_supports") or ())
+        for row in background
+        if row.get("digest_line") and row.get("digest_line_supports")
+    }
+    allowed = {
+        key: supports
+        for key, supports in allowed.items()
+        if key and not find_unsupported_claims(key, supports)
+    }
+    if not allowed:
+        return draft
+    used: set[str] = set()
+    blocks = []
+    for block in draft.blocks:
+        items = []
+        for item in block.items:
+            kept = []
+            for sentence in re.split(r"(?<=[.!?])\s+", item.body):
+                key = _normalized_sentence(sentence)
+                if key in allowed and key not in used:
+                    used.add(key)
+                    continue
+                kept.append(sentence)
+            body = " ".join(kept).strip()
+            items.append(dc_replace(item, body=body) if body != item.body.strip() else item)
+        blocks.append(dc_replace(block, items=tuple(items)))
+    return dc_replace(draft, blocks=tuple(blocks))
 
 
 DIGEST_BACKGROUND_GUIDANCE = (
     "edition_background is the newsroom's memory of long-running city situations from "
     "earlier days. It is background for judging what is new, never citable evidence: do "
     "not restate its dates, causes, durations or scope as today's facts, and keep every "
-    "sentence grounded in today's supplied facts. When today's facts continue a listed "
+    "sentence grounded in today's supplied facts. The only exception is a situation's "
+    "digest_line, an already verified background sentence: you may copy it verbatim, "
+    "unchanged and at most once, as the first sentence of the item whose facts continue "
+    "that situation on the same service. Do not edit, shorten, merge or paraphrase it; if "
+    "it does not fit, omit it. When today's facts continue a listed "
     "situation, do not present them as a sudden new event (no headlines such as "
     "«Исчезновение света» or «Свет пропал»): lead the theme with what changed — power "
     "or water returned, schedules, repairs, new areas, worsening or improvement — and "

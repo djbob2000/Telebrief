@@ -80,8 +80,10 @@ def assess_digest_candidate(
     allow_incomplete_coverage: bool = False,
 ) -> DigestAssessment:
     candidate = sanitize_digest_narrative_draft(draft)
+    from src.publication.situation_memory import strip_verified_background_lines
+
     validation = validate_digest_narrative(
-        candidate,
+        strip_verified_background_lines(candidate, getattr(context.plan, "background", ())),
         context.plan,
         support_text_by_id=context.support_text_by_id,
         situation_plan=context.presentation_plan.city_situation,

@@ -4422,6 +4422,15 @@ def _parse_composition_writer_output(
         for item_index, raw_item in enumerate(raw_block["items"]):
             if not isinstance(raw_item, Mapping):
                 raise ValueError(f"{block.block_id}.items[{item_index}] must be an object")
+            if (
+                allow_incomplete_fact_coverage
+                and not str(raw_item.get("body") or "").strip()
+                and not str(raw_item.get("headline") or "").strip()
+            ):
+                # A writer item with no prose cannot represent its facts. Leave
+                # them uncovered for the existing editor repair instead of failing
+                # the whole generation on one empty object (run 316 replay).
+                continue
             raw_unit_ids = raw_item.get("composition_unit_ids")
             if not isinstance(raw_unit_ids, list) or not raw_unit_ids:
                 raise ValueError("composition item must name one or more composition_unit_ids")
@@ -4710,7 +4719,12 @@ class DigestNarrativeWriter:
         else:
             prompt_payload: dict[str, Any] = {"blocks": blocks_payload}
             if plan.background:
-                prompt_payload = {"edition_background": list(plan.background), **prompt_payload}
+                from src.publication.situation_memory import writer_background
+
+                prompt_payload = {
+                    "edition_background": writer_background(plan.background),
+                    **prompt_payload,
+                }
             user_prompt = json.dumps(prompt_payload, ensure_ascii=False, indent=2)
         if plan.background:
             from src.publication.situation_memory import DIGEST_BACKGROUND_GUIDANCE

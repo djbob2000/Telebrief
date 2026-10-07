@@ -158,3 +158,62 @@ def test_writer_prompt_carries_background_as_non_citable_context():
     system, user = (message["content"] for message in captured["messages"])
     assert "never citable evidence" in system
     assert json.loads(user)["edition_background"][0]["title"] == "Перебои с электроснабжением"
+
+
+LINE = "Перебои со светом, по словам жителя, продолжаются с 3 августа."
+
+
+def test_digest_line_must_be_attributed_durable_and_grounded():
+    ok, refs, _ = apply_memory_operations(
+        None, [_add(digest_line=LINE, digest_line_refs=["fragment:1"])], reports=REPORTS, as_of=AS_OF
+    )
+    assert ok[0]["digest_line"] == LINE
+    [row] = digest_background(MemorySnapshot(1, 1, AS_OF, tuple(ok), refs), as_of=AS_OF)
+    assert row["digest_line"] == LINE and row["digest_line_supports"]
+    from src.publication.situation_memory import writer_background
+
+    assert "digest_line_supports" not in writer_background([row])[0]
+
+    for bad in (
+        "Перебои со светом продолжаются с 3 августа.",  # no attribution
+        "По словам жителя, света нет уже 65-й день.",  # day count goes stale
+        "Житель сообщает, что сигнала МТС нет уже две недели.",  # word count goes stale
+        "Перебои со светом, по словам жителя, продолжаются с 1 июля.",  # not in source
+    ):
+        rejected, _, _ = apply_memory_operations(
+            None, [_add(digest_line=bad, digest_line_refs=["fragment:1"])], reports=REPORTS, as_of=AS_OF
+        )
+        assert rejected[0]["digest_line"] == "", bad
+
+
+def _with_line_in_first_item(line: str):
+    from dataclasses import replace
+
+    from digest_evaluation_helpers import assessment_inputs
+
+    from src.publication.digest_assessment import DigestAssessmentContext, assess_digest_candidate
+
+    values, draft = assessment_inputs()
+    background = (
+        {
+            "title": "Перебои с электроснабжением",
+            "digest_line": LINE,
+            "digest_line_supports": ["По словам жителя, света нет с 3 августа."],
+        },
+    )
+    values["plan"] = replace(values["plan"], background=background)
+    block = draft.blocks[0]
+    first = replace(block.items[0], body=f"{line} {block.items[0].body}")
+    draft = replace(draft, blocks=(replace(block, items=(first, *block.items[1:])),))
+    return assess_digest_candidate(draft, context=DigestAssessmentContext(**values))
+
+
+def test_verbatim_background_line_is_checked_against_memory_not_todays_facts():
+    verbatim = _with_line_in_first_item(LINE)
+    assert verbatim.validation.is_valid, verbatim.validation.violations
+    assert LINE in verbatim.artifact.visible_text
+
+    edited = _with_line_in_first_item(
+        "Перебои со светом, по словам жителя, продолжаются с 4 августа."
+    )
+    assert not edited.validation.is_valid

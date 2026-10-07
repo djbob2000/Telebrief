@@ -642,6 +642,8 @@ class DigestEditor:
                 for fact in block.required_facts
                 if (fact_id := str(fact.fact_id)) in target_recomposition_fact_ids
             ]
+        from src.publication.situation_memory import writer_background
+
         user_prompt = json.dumps(
             {
                 "target_item_ids": sorted(target_ids),
@@ -649,7 +651,7 @@ class DigestEditor:
                 "required_recomposition_facts": required_recomposition_facts,
                 "target_recomposition_summary_unit_ids": target_recomposition_summary_unit_ids,
                 **(
-                    {"edition_background": list(plan.background)}
+                    {"edition_background": writer_background(plan.background)}
                     if getattr(plan, "background", ())
                     else {}
                 ),

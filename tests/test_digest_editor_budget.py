@@ -773,3 +773,52 @@ def test_targeted_recomposition_can_restore_fact_dropped_by_writer():
     assert set(dropped.covered_fact_ids) <= {
         fact["fact_id"] for fact in request["required_recomposition_facts"]
     }
+
+
+def test_empty_writer_item_leaves_its_fact_uncovered_instead_of_failing():
+    """Run 316 replay: one empty writer item aborted generation before any repair."""
+    from digest_evaluation_helpers import assessment_inputs
+
+    from src.publication.digest_narrative import _parse_composition_writer_output
+
+    values, _ = assessment_inputs()
+    plan = values["plan"]
+    block = plan.blocks[0]
+    units = list(block.composition_units)
+    assert len(units) >= 2
+    raw = {
+        "blocks": [
+            {
+                "block_id": block.block_id,
+                "items": [
+                    {
+                        "composition_unit_ids": [units[0].unit_id],
+                        "covered_fact_ids": list(units[0].fact_ids),
+                        "headline": "",
+                        "body": "По сообщению жителя, "
+                        + " ".join(f.text for f in block.required_facts if f.fact_id in units[0].fact_ids),
+                        "claims": [],
+                    },
+                    {
+                        "composition_unit_ids": [units[1].unit_id],
+                        "covered_fact_ids": list(units[1].fact_ids),
+                        "headline": "",
+                        "body": "",
+                        "claims": [],
+                    },
+                ],
+            }
+        ]
+    }
+    with pytest.raises(ValueError):
+        _parse_composition_writer_output(raw, plan=plan)
+    draft = _parse_composition_writer_output(
+        raw,
+        plan=plan,
+        allow_incomplete_fact_coverage=True,
+        allow_incomplete_summary_coverage=True,
+        allow_unmapped_writer_unit_ids=True,
+        allow_duplicate_writer_fact_ids=True,
+    )
+    covered = {fid for item in draft.blocks[0].items for fid in item.covered_fact_ids}
+    assert not set(units[1].fact_ids) & covered
