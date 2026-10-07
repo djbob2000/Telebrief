@@ -394,3 +394,35 @@ def test_digest_plan_keeps_located_positive_service_observation():
         cards=cards, evidence=evidence, include_all_candidates=True
     )
     assert "story:5" in plan.story_ids
+
+
+def test_repeated_power_reports_do_not_outrank_higher_priority_safety_story() -> None:
+    """Run 311: a priority-80 explosion lost to the fourteenth outage report."""
+    power_reports = [
+        _candidate(
+            f"story:power-{index}",
+            "infrastructure",
+            "electricity",
+            f"Жители сообщают, что на улице {street} нет электричества уже третьи сутки.",
+        )
+        for index, street in enumerate(
+            ("Центральной", "Горбенко", "Шевченко", "Ленина", "Морозова", "Гайдара")
+        )
+    ]
+    explosion = _candidate(
+        "story:explosion",
+        "safety",
+        "incident",
+        "По словам жителя, ночью было два взрыва, за общежитием сильный огонь и дым, "
+        "у соседних домов выбиты окна.",
+        epistemic_kind="community_report",
+    )
+    candidates = [*power_reports, explosion]
+    unbounded = _compose(candidates, max_chars=4096)
+    priority = {unit.story_ids[0]: unit.priority for unit in unbounded.units}
+    assert priority["story:explosion"] > max(priority[c.id] for c, _ in power_reports)
+
+    result = _compose(candidates, max_chars=700, reserved_chars=100)
+
+    assert "story:explosion" in result.admitted_story_ids
+    assert {c.id for c, _ in power_reports} & result.admitted_story_ids

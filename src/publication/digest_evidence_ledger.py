@@ -456,7 +456,10 @@ class DigestEvidenceLedger:
                             add(
                                 "service_extent",
                                 owners,
-                                "The source does not state this citywide extent for the named service.",
+                                "The source does not state this citywide extent for the named "
+                                f"service ({service}). Keep the citywide scope only for services "
+                                "the cited source wording itself names; state this service "
+                                "with its own reported places.",
                             )
 
             for sentence in re.split(r"(?<=[.!?;])\s+", text):

@@ -1382,7 +1382,19 @@ def build_digest_composition(
             deferred_packages.append(package)
         else:
             repeat_core_packages.append(package)
-    for package in repeat_core_packages + first_packages + rest_packages:
+    # After each service domain has had its first chance, a repeated power
+    # report must not outrank a higher-priority Story from another rubric
+    # (run 311: a priority-80 explosion lost to the fourteenth outage report).
+    # Admit the rest by priority; a not-yet-represented rubric wins ties.
+    first_package_ids = {id(package) for package in first_packages}
+    remaining = sorted(
+        repeat_core_packages + first_packages + rest_packages,
+        key=lambda package: (
+            -max(u.priority for u in package),
+            id(package) not in first_package_ids,
+        ),
+    )
+    for package in remaining:
         if not admit(package):
             deferred_packages.append(package)
 
