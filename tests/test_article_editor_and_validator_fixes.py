@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from src.config.parsers.publication import _parse_publication_editorial_config
 from src.config.schemas.publication import PublicationEditorialConfig
 from src.publication.article_claims import extract_concrete_claims
