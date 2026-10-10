@@ -1978,6 +1978,132 @@ def _diagnose_theme_mismatched_sections(
     return tuple(findings)
 
 
+def _place_area_mismatch_entities(
+    text: str,
+    paragraph_entities: Sequence[Any],
+    area_mention_spans: Sequence[tuple[int, int, Any]],
+    place_resolver: Any,
+) -> list[Any]:
+    """Return places/areas a paragraph assigns to a different area of the city.
+
+    An area mention inside the place's own name («улице Морозова» vs the
+    colloquial area «Морозова») is not a second location, and identifiers from
+    different views (municipal vs colloquial) cannot by themselves prove two
+    different physical areas.
+    """
+    mismatched_place_entities: list[Any] = []
+    if area_mention_spans:
+        sentence_spans = _safe_sentence_spans(text)
+        for entity in paragraph_entities:
+            if (
+                entity.kind != "place"
+                or entity.confidence != "high"
+                or not place_resolver.geographic_area_group_keys(entity)
+            ):
+                continue
+            place_area_keys = place_resolver.geographic_area_group_keys(entity)
+            for place_start, place_end in _entity_text_spans(text, entity):
+                sentence_span = next(
+                    (
+                        (sentence_start, sentence_end)
+                        for sentence_start, sentence_end in sentence_spans
+                        if sentence_start <= place_start and place_end <= sentence_end
+                    ),
+                    None,
+                )
+                if sentence_span is None:
+                    continue
+                sentence_start, sentence_end = sentence_span
+                sentence_areas = [
+                    mention
+                    for mention in area_mention_spans
+                    if sentence_start <= mention[0]
+                    and mention[1] <= sentence_end
+                    # An area alias inside the place's own name is not a second place.
+                    and (mention[1] <= place_start or mention[0] >= place_end)
+                ]
+                if not sentence_areas:
+                    continue
+
+                preceding_areas = [
+                    mention for mention in sentence_areas if mention[1] <= place_start
+                ]
+                if preceding_areas:
+                    nearest_area_start, area_end, nearest_area = max(
+                        preceding_areas, key=lambda mention: mention[0]
+                    )
+                else:
+                    nearest_area_start, area_end, nearest_area = min(
+                        sentence_areas,
+                        key=lambda mention: abs(mention[0] - place_start),
+                    )
+                separation_start = min(nearest_area_start, place_start)
+                separation_end = max(area_end, place_end)
+                if _EXPLICIT_SEPARATE_REPORT_RE.search(text[separation_start:separation_end]):
+                    continue
+                nearest_area_keys = place_resolver.geographic_area_group_keys(nearest_area)
+                # Municipal and colloquial identifiers are different views of
+                # the city; disjoint keys across views prove no wrong area.
+                shared_views = {key.split(":", 1)[0] for key in place_area_keys} & {
+                    key.split(":", 1)[0] for key in nearest_area_keys
+                }
+                if shared_views and not (place_area_keys & nearest_area_keys):
+                    mismatched_place_entities.append(entity)
+                    break
+        # A broad area label such as a profile-resolved "part of
+        # the city" can become an unsupported umbrella for more
+        # specific areas later in the same sentence. Keep this
+        # relation narrow: two standalone area reports may be
+        # contrasted in one sentence without being treated as an
+        # assignment to a shared district.
+        for umbrella_start, umbrella_end, umbrella_area in area_mention_spans:
+            if not _AREA_UMBRELLA_TERM_RE.search(getattr(umbrella_area, "matched_text", "")):
+                continue
+            umbrella_sentence = next(
+                (
+                    (sentence_start, sentence_end)
+                    for sentence_start, sentence_end in sentence_spans
+                    if sentence_start <= umbrella_start and umbrella_end <= sentence_end
+                ),
+                None,
+            )
+            if umbrella_sentence is None:
+                continue
+            if not re.fullmatch(
+                r"\s*(?:в|во|на|у)\s+",
+                text[umbrella_sentence[0] : umbrella_start],
+                re.IGNORECASE,
+            ):
+                continue
+            umbrella_keys = place_resolver.geographic_area_group_keys(umbrella_area)
+            for area_start, area_end, specific_area in area_mention_spans:
+                if area_start <= umbrella_end:
+                    continue
+                if not (umbrella_sentence[0] <= area_start and area_end <= umbrella_sentence[1]):
+                    continue
+                if umbrella_keys & place_resolver.geographic_area_group_keys(specific_area):
+                    continue
+                umbrella_relation = text[umbrella_end:area_start]
+                separator = re.search(r"[:—]", umbrella_relation)
+                if separator is None:
+                    continue
+                introductory_prefix = umbrella_relation[: separator.start()].strip()
+                if (
+                    introductory_prefix
+                    and introductory_prefix.casefold()
+                    not in {"город", "города", "городу", "городе", "городом"}
+                    and not _AREA_OVERVIEW_MARKER_RE.search(introductory_prefix)
+                ):
+                    continue
+                if _AREA_EXPLICIT_CONTRAST_RE.search(umbrella_relation):
+                    continue
+                mismatched_place_entities.append(specific_area)
+                break
+            if mismatched_place_entities:
+                break
+    return mismatched_place_entities
+
+
 def diagnose_article_quality(
     draft: StructuredArticleDraft,
     coverage_plan: ArticleCoveragePlan,
@@ -2329,119 +2455,9 @@ def diagnose_article_quality(
                     if place_resolver.geographic_area_group_keys(entity)
                 ]
                 area_mentions = [(start, entity) for start, _end, entity in area_mention_spans]
-                mismatched_place_entities: list[Any] = []
-                if area_mention_spans:
-                    sentence_spans = _safe_sentence_spans(paragraph.text)
-                    for entity in paragraph_entities:
-                        if (
-                            entity.kind != "place"
-                            or entity.confidence != "high"
-                            or not place_resolver.geographic_area_group_keys(entity)
-                        ):
-                            continue
-                        place_area_keys = place_resolver.geographic_area_group_keys(entity)
-                        for place_start, place_end in _entity_text_spans(paragraph.text, entity):
-                            sentence_span = next(
-                                (
-                                    (sentence_start, sentence_end)
-                                    for sentence_start, sentence_end in sentence_spans
-                                    if sentence_start <= place_start and place_end <= sentence_end
-                                ),
-                                None,
-                            )
-                            if sentence_span is None:
-                                continue
-                            sentence_start, sentence_end = sentence_span
-                            sentence_areas = [
-                                mention
-                                for mention in area_mention_spans
-                                if sentence_start <= mention[0] and mention[1] <= sentence_end
-                            ]
-                            if not sentence_areas:
-                                continue
-
-                            preceding_areas = [
-                                mention for mention in sentence_areas if mention[1] <= place_start
-                            ]
-                            if preceding_areas:
-                                nearest_area_start, area_end, nearest_area = max(
-                                    preceding_areas, key=lambda mention: mention[0]
-                                )
-                            else:
-                                nearest_area_start, area_end, nearest_area = min(
-                                    sentence_areas,
-                                    key=lambda mention: abs(mention[0] - place_start),
-                                )
-                            separation_start = min(nearest_area_start, place_start)
-                            separation_end = max(area_end, place_end)
-                            if _EXPLICIT_SEPARATE_REPORT_RE.search(
-                                paragraph.text[separation_start:separation_end]
-                            ):
-                                continue
-                            if not (
-                                place_area_keys
-                                & place_resolver.geographic_area_group_keys(nearest_area)
-                            ):
-                                mismatched_place_entities.append(entity)
-                                break
-                    # A broad area label such as a profile-resolved "part of
-                    # the city" can become an unsupported umbrella for more
-                    # specific areas later in the same sentence. Keep this
-                    # relation narrow: two standalone area reports may be
-                    # contrasted in one sentence without being treated as an
-                    # assignment to a shared district.
-                    for umbrella_start, umbrella_end, umbrella_area in area_mention_spans:
-                        if not _AREA_UMBRELLA_TERM_RE.search(
-                            getattr(umbrella_area, "matched_text", "")
-                        ):
-                            continue
-                        umbrella_sentence = next(
-                            (
-                                (sentence_start, sentence_end)
-                                for sentence_start, sentence_end in sentence_spans
-                                if sentence_start <= umbrella_start and umbrella_end <= sentence_end
-                            ),
-                            None,
-                        )
-                        if umbrella_sentence is None:
-                            continue
-                        if not re.fullmatch(
-                            r"\s*(?:в|во|на|у)\s+",
-                            paragraph.text[umbrella_sentence[0] : umbrella_start],
-                            re.IGNORECASE,
-                        ):
-                            continue
-                        umbrella_keys = place_resolver.geographic_area_group_keys(umbrella_area)
-                        for area_start, area_end, specific_area in area_mention_spans:
-                            if area_start <= umbrella_end:
-                                continue
-                            if not (
-                                umbrella_sentence[0] <= area_start
-                                and area_end <= umbrella_sentence[1]
-                            ):
-                                continue
-                            if umbrella_keys & place_resolver.geographic_area_group_keys(
-                                specific_area
-                            ):
-                                continue
-                            umbrella_relation = paragraph.text[umbrella_end:area_start]
-                            separator = re.search(r"[:—]", umbrella_relation)
-                            if separator is None:
-                                continue
-                            introductory_prefix = umbrella_relation[: separator.start()].strip()
-                            if (
-                                introductory_prefix
-                                and introductory_prefix.casefold()
-                                not in {"город", "города", "городу", "городе", "городом"}
-                                and not _AREA_OVERVIEW_MARKER_RE.search(introductory_prefix)
-                            ):
-                                continue
-                            if _AREA_EXPLICIT_CONTRAST_RE.search(umbrella_relation):
-                                continue
-                            mismatched_place_entities.append(specific_area)
-                            break
-                        if mismatched_place_entities:
-                            break
+                mismatched_place_entities = _place_area_mismatch_entities(
+                    paragraph.text, paragraph_entities, area_mention_spans, place_resolver
+                )
                 if mismatched_place_entities:
                     findings.append(
                         ArticleReaderQualityFinding(
