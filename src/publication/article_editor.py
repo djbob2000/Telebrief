@@ -189,6 +189,25 @@ def _paragraph_support_ids(paragraph: ArticleParagraph) -> tuple[str, ...]:
     )
 
 
+_NAME_QUOTE_WORD_RE = re.compile(r"^(?:[A-ZА-ЯЁЇІЄҐ][\w'’-]*|\d[\w-]*)$")
+
+
+def _is_inflected_existing_name(quote: str, original: str) -> bool:
+    """Return whether a quoted span is a short proper name already in the unit.
+
+    Names of shops, organisations and places in typographic quotes are not
+    direct speech; the editor may decline them. Speech fragments (lowercase
+    words, punctuation, more than three words) never qualify.
+    """
+    from src.publication.article_claims import _stem
+
+    words = quote.split()
+    if not 1 <= len(words) <= 3 or not all(_NAME_QUOTE_WORD_RE.match(word) for word in words):
+        return False
+    original_stems = {_stem(token.casefold()) for token in re.findall(r"\w+", original)}
+    return all(_stem(token.casefold()) in original_stems for token in re.findall(r"\w+", quote))
+
+
 def _preserves_existing_direct_quotes(original: str, replacement: str) -> bool:
     """Allow removing speech; preserve its exact words and permit typographic names.
 
@@ -202,6 +221,9 @@ def _preserves_existing_direct_quotes(original: str, replacement: str) -> bool:
     replacement_quotes = Counter(span.content for span in _direct_speech_spans(replacement))
     extra_quotes = replacement_quotes - original_quotes
     for quote in extra_quotes:
+        if _is_inflected_existing_name(quote, original):
+            # «Амстор» → «Амстора»: name typography, not altered direct speech.
+            continue
         quote_spans = tuple(match.span() for match in re.finditer(re.escape(quote), original))
         if not any(
             not any(

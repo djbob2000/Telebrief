@@ -388,3 +388,19 @@ def test_missing_claim_support_comprehensive_cases() -> None:
         assert len(issues) == 1, f"Expected 1 MISSING_CLAIM_SUPPORT for: {claim_text}"
         assert issues[0].blocking == exp_blocking, f"Wrong blocking for: {claim_text}"
         assert issues[0].severity == exp_sev, f"Wrong severity for: {claim_text}"
+
+
+@pytest.mark.parametrize(
+    ("original", "replacement", "expected"),
+    [
+        # Run 325: declining a quoted shop name rolled back every structural edit.
+        ("Открытие «Амстор» перенесли на 14 число.", "Открытие «Амстора» перенесено на 14 число.", True),
+        ("Житель кратко сказал: «врачи есть, связи нет».", "Житель кратко сказал: «врачи есть».", False),
+        ("Житель сказал: «Как обычно — нет».", "Житель сказал: «Как всегда — нет».", False),
+        ("Магазин открылся.", "Магазин «Семья» открылся.", False),
+    ],
+)
+def test_quoted_names_may_decline_but_direct_speech_stays_exact(original, replacement, expected):
+    from src.publication.article_editor import _preserves_existing_direct_quotes
+
+    assert _preserves_existing_direct_quotes(original, replacement) is expected
