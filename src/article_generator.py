@@ -140,6 +140,45 @@ RUN_DEBUG_ARTIFACTS = (
 )
 
 
+_RU_MONTHS_GENITIVE = (
+    "января",
+    "февраля",
+    "марта",
+    "апреля",
+    "мая",
+    "июня",
+    "июля",
+    "августа",
+    "сентября",
+    "октября",
+    "ноября",
+    "декабря",
+)
+
+
+def _article_period_label(window: Any, timezone_name: str | None) -> str:
+    """Russian label of a multi-day reporting window, e.g. «неделя с 5 по 11 октября»."""
+    if window is None:
+        return ""
+    try:
+        tz: dt.tzinfo = ZoneInfo(timezone_name) if timezone_name else dt.timezone.utc
+    except Exception:
+        tz = dt.timezone.utc
+    start = window.lookback_start.astimezone(tz)
+    end = window.snapshot_at.astimezone(tz)
+    if start.time() > dt.time(12):
+        start = start + dt.timedelta(days=1)
+    noun = "неделя" if window.lookback_hours < 336 else "период"
+    if start.month == end.month:
+        span = f"с {start.day} по {end.day} {_RU_MONTHS_GENITIVE[end.month - 1]}"
+    else:
+        span = (
+            f"с {start.day} {_RU_MONTHS_GENITIVE[start.month - 1]} "
+            f"по {end.day} {_RU_MONTHS_GENITIVE[end.month - 1]}"
+        )
+    return f"{noun} {span}"
+
+
 def _article_as_of_metadata(snapshot_at: dt.datetime, timezone_name: str) -> dict[str, str]:
     """Build article timestamp metadata in the edition's canonical local zone."""
     canonical_timezone = normalize_timezone_name(timezone_name)
@@ -1221,18 +1260,27 @@ class ArticleGenerator:
         self,
         length_profile: ArticleLengthProfile | None = None,
         is_longitudinal: bool = False,
+        period_label: str = "",
     ) -> str:
         """Compose one authoritative narrative contract and a narrow source boundary."""
         narrative_contract = build_article_narrative_contract(
             output_language=self.output_language,
             length_profile=length_profile,
         )
-        longitudinal_note = (
-            "For this multi-day reporting window, show chronology only where event times in the "
-            "evidence establish it."
-            if is_longitudinal
-            else ""
-        )
+        longitudinal_note = ""
+        if is_longitudinal:
+            longitudinal_note = (
+                "For this multi-day reporting window, show chronology only where event times in the "
+                "evidence establish it."
+            )
+            if period_label:
+                longitudinal_note += (
+                    f" This is a periodic review covering {period_label}, not a daily report. "
+                    "Make the title and lead say explicitly that this is a review of the whole period "
+                    f"(for example «{period_label}»), and do not frame the lead as a snapshot of the "
+                    "last evening. Give the period's main developments more weight than the final day, "
+                    "and show how situations changed over the period where the evidence dates support it."
+                )
         if self.output_language == "Russian":
             boundary_block = f"""### Границы источников и достоверность
 - Вся фактическая основа статьи содержится в досье между маркерами `{_ARTICLE_MATERIAL_BEGIN}` и `{_ARTICLE_MATERIAL_END}` в сообщении пользователя. Каждая JSONL-строка в блоке доказательств содержит проверенные факты городской жизни (поле 'fact' или 'x').
@@ -1419,6 +1467,11 @@ class ArticleGenerator:
         system_prompt = self._build_event_article_system_prompt(
             length_profile=length_profile,
             is_longitudinal=is_longitudinal,
+            period_label=_article_period_label(
+                article_ctx.publication_window, article_ctx.edition_timezone
+            )
+            if is_longitudinal
+            else "",
         )
         user_prompt = (
             "Напишите подробный городской лонгрид (статью о жизни города) на русском языке на основе приведённого ниже полного фактического досье.\n\n"

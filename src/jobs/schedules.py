@@ -150,8 +150,15 @@ def due_publication_actions(
     lead_minutes = config.settings.pre_publish_lead_minutes
     actions: list[DuePublicationAction] = []
 
-    for publication_type, time_str, schedule_day in _publication_types(config):
+    entries = _publication_types(config)
+    weekly_days = [day for kind, _, day in entries if kind == WEEKLY_ARTICLE_PUBLICATION_TYPE]
+    for publication_type, time_str, schedule_day in entries:
         if not _matches_schedule_day(schedule_day, local_minute):
+            continue
+        # The weekly review replaces the daily article on its day.
+        if publication_type == ARTICLE_PUBLICATION_TYPE and any(
+            _matches_schedule_day(day, local_minute) for day in weekly_days
+        ):
             continue
         slot = _parse_slot(time_str)
         if slot is None:

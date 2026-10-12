@@ -44,6 +44,12 @@ def _default_telegram_destination() -> str | None:
     return str(env_target) if env_target else None
 
 
+_PERIODIC_ARTICLE_BADGES = {
+    "weekly_article": "*ИТОГИ НЕДЕЛИ*\n",
+    "monthly_article": "*ПАНОРАМА МЕСЯЦА*\n",
+}
+
+
 def _render_payload(platform: str, pub: Any) -> tuple[str, dict[str, Any]]:
     """Render the immutable payload content for a destination platform."""
     body_text = (pub.body or "").strip()
@@ -98,13 +104,14 @@ def _render_payload(platform: str, pub: Any) -> tuple[str, dict[str, Any]]:
         if is_article and (photo_path or telegraph_url):
             title_clean = title_text.strip()
             lead_clean = lead_text.strip() if lead_text else ""
-            header = f"📰 *{title_clean}*\n\n"
+            badge = _PERIODIC_ARTICLE_BADGES.get(pub_type or "", "")
+            header = f"{badge}📰 *{title_clean}*\n\n"
             max_lead_chars = max(0, 1000 - len(header))
             if len(lead_clean) > max_lead_chars:
                 trimmed = lead_clean[:max_lead_chars].rsplit(" ", 1)[0]
                 lead_clean = f"{trimmed}..." if trimmed else "..."
 
-            caption = f"{header}{lead_clean}" if lead_clean else f"📰 *{title_clean}*"
+            caption = f"{header}{lead_clean}" if lead_clean else header.rstrip()
             rendered_data: dict[str, Any] = {
                 "text": caption,
                 "parse_mode": "Markdown",
