@@ -1459,6 +1459,54 @@ def _material_tokens(text: str) -> set[str]:
     }
 
 
+_ATTRIBUTION_STEMS = frozenset(
+    {"жител", "горож", "сообщ", "расск", "слова", "говор", "отмеч", "одна", "один", "друго"}
+)
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…])\s+")
+
+
+def _sentence_stems(sentence: str) -> frozenset[str]:
+    return frozenset(
+        token[:5] for token in _material_tokens(sentence) if token[:5] not in _ATTRIBUTION_STEMS
+    )
+
+
+def _units_retell_same_sentence(first_text: str, later_text: str) -> bool:
+    """True when a sentence of ``later_text`` restates one of ``first_text``.
+
+    Stems ignore inflection and attribution wording; a different place, service,
+    state, time progression or consequence keeps the sentence new.
+    """
+    first_sentences = [
+        (sentence, _sentence_stems(sentence))
+        for sentence in _SENTENCE_SPLIT_RE.split(first_text)
+        if sentence.strip()
+    ]
+    for later_sentence in _SENTENCE_SPLIT_RE.split(later_text):
+        later_stems = _sentence_stems(later_sentence)
+        if len(later_stems) < 3:
+            continue
+        for first_sentence, first_stems in first_sentences:
+            if len(first_stems) < 3:
+                continue
+            overlap = len(first_stems & later_stems) / min(len(first_stems), len(later_stems))
+            if overlap >= 0.75 and not _sentences_differ_in_subject(first_sentence, later_sentence):
+                return True
+    return False
+
+
+def _sentences_differ_in_subject(first: str, second: str) -> bool:
+    first_service, first_place = _service_and_place(first)
+    second_service, second_place = _service_and_place(second)
+    first_state, second_state = _state_polarity(first), _state_polarity(second)
+    return (
+        bool(first_service and second_service and first_service != second_service)
+        or bool(first_place and second_place and first_place != second_place)
+        or bool(first_state and second_state and first_state != second_state)
+        or bool(re.findall(r"\d+", first) != re.findall(r"\d+", second))
+    )
+
+
 def _claim_is_materially_new(first_text: str, second_text: str) -> bool:
     first_service, first_place = _service_and_place(first_text)
     second_service, second_place = _service_and_place(second_text)
@@ -2826,8 +2874,8 @@ def diagnose_article_quality(
     repetition_findings: dict[str, tuple[list[str], set[str]]] = {}
     for index, first_unit in enumerate(quality_units):
         for later_unit in quality_units[index + 1 :]:
-            if first_unit["section_index"] == later_unit["section_index"]:
-                continue
+            # Same-chapter repeats count too: two adjacent paragraphs retelling
+            # one report read worse than a repeat across chapters.
             duplicate_support_ids: set[str] = set()
             repeated_story_ids: set[str] = set()
             for first_text, first_ids in first_unit["claims"]:
@@ -2853,6 +2901,12 @@ def diagnose_article_quality(
                         continue
                     duplicate_support_ids.update((*first_citable_ids, *later_citable_ids))
                     repeated_story_ids.update(shared_stories)
+            if not duplicate_support_ids and _units_retell_same_sentence(
+                first_unit["text"], later_unit["text"]
+            ):
+                # The writer may retell one report from a different Story's
+                # supports; the near-identical wording is the repetition.
+                duplicate_support_ids.update(later_unit["support_ids"])
             if not duplicate_support_ids:
                 continue
             existing = repetition_findings.get(later_unit["unit_id"])

@@ -11,7 +11,7 @@ from collections import Counter
 from dataclasses import asdict, dataclass, replace
 from time import perf_counter
 from types import MappingProxyType
-from typing import Any, Callable, Literal, Mapping, cast
+from typing import Any, Callable, Literal, Mapping, Sequence, cast
 
 from src.ai_providers import AIProvider, capture_provider_attempts
 from src.publication.article_context import ArticleEditorialContext, _support_framing
@@ -1034,6 +1034,7 @@ class ArticleEditor:
                         unit["unit_id"]: tuple(unit["prompt_support_ids"]) for unit in prompt_data
                     },
                     patch_outcomes=unit_outcomes,
+                    repetition_unit_ids=_repetition_unit_ids(prompt_data),
                 )
                 actually_changed = [
                     unit_id
@@ -1136,6 +1137,7 @@ class ArticleEditor:
                                 for unit in prompt_data
                             },
                             patch_outcomes=retained_outcomes,
+                            repetition_unit_ids=_repetition_unit_ids(prompt_data),
                         )
                         # Exactly one validation of the remainder, including
                         # the all-quarantined case; never validate per unit.
@@ -2418,6 +2420,9 @@ class ArticleEditor:
             "   - Для замечания CHAT_KITCHEN_LEAK уберите только прямое раскрытие технического источника («в чате», «в канале», «в комментариях») и сохраните сообщение с естественной подтверждённой атрибуцией.\n"
             "   - Для COLLOQUIAL_AUTHOR_PROSE перепишите только разговорные слова автора как спокойную косвенную речь, сохранив реальный факт и атрибуцию.\n"
             "   - Не редактируйте точные прямые цитаты: разговорные слова в цитате остаются неизменными. Не делайте из обычного разговорного слова утечку источника и не добавляйте статус, причину или географию.\n\n"
+            "9. БЕЗ ОГОВОРОК О САМОМ СООБЩЕНИИ:\n"
+            "   - Неподтверждённое уберите или передайте через глагол атрибуции («по словам жителя», «считают горожане»). Не дописывайте поясняющих оговорок вроде «Это оценка горожан», «это личное свидетельство», «это не позволяет судить о…», «не даёт оснований связывать…», «в материалах нет данных». Не упоминайте «материалы», «досье», «сообщение» или «комментарий» как предмет текста.\n"
+            "   - Пишите о городе, а не о потоке сообщений: вместо «В другом комментарии горожанин говорил» начинайте с места, службы или события.\n\n"
             "9. ОБЪЕМ, СТИЛЬ И СОХРАННОСТЬ:\n"
             "   - Сохраняйте естественный журналистский стиль и связность с остальным текстом статьи.\n"
             "   - Не добавляйте никаких новых фактов или деталей, которых нет в предоставленных подтверждениях.\n"
@@ -2749,7 +2754,9 @@ class ArticleEditor:
             "CROSS_SECTION_REPETITION": (
                 " -> Оставьте повторяющееся утверждение в части, где оно лучше всего подтверждено; "
                 "в этом целевом фрагменте удалите повтор или сохраните только новое поддержанное "
-                "состояние, время либо последствие. Соседние части статьи не редактируйте."
+                "состояние, время либо последствие. Если весь абзац лишь повторяет уже "
+                'сказанное и не добавляет ничего нового, верните "[DELETE]" — это разрешено '
+                "только для такого повтора. Соседние части статьи не редактируйте."
             ),
             "REPEATED_CENTRAL_THESIS": (
                 " -> В этом целевом абзаце уберите только повтор центральной мысли, если он не "
@@ -3666,8 +3673,13 @@ class ArticleEditor:
         preserve_unmatched_supports: bool = False,
         allowed_support_ids_by_unit: Mapping[str, tuple[str, ...]] | None = None,
         patch_outcomes: dict[str, dict[str, str]] | None = None,
+        repetition_unit_ids: frozenset[str] = frozenset(),
     ) -> StructuredArticleDraft:
         """Apply targeted text patches while preserving structure and valid provenance.
+
+        A paragraph flagged only as a repetition may be removed whole when every
+        support it cites remains cited by another retained unit, so the facts stay
+        in the article once.
 
         Projected validation contexts intentionally omit suppressed material.  In
         every mode, replacement prose must be strictly re-grounded before the
@@ -3861,6 +3873,12 @@ class ArticleEditor:
                     "NONE",
                     "NULL",
                 ):
+                    if p_id in repetition_unit_ids and _repeated_supports_retained(
+                        draft, p_id, existing_supports, patches, repetition_unit_ids
+                    ):
+                        record_outcome(p_id, "applied", "repeated_paragraph_removed", raw_patch)
+                        p_idx += 1
+                        continue
                     record_outcome(
                         p_id, "rejected", "whole_paragraph_deletion_not_allowed", raw_patch
                     )
@@ -3979,3 +3997,49 @@ class ArticleEditor:
             title_generation_origin=draft.title_generation_origin,
             lead_generation_origin=draft.lead_generation_origin,
         )
+
+
+def _repetition_unit_ids(prompt_data: Sequence[Mapping[str, Any]]) -> frozenset[str]:
+    """Editable paragraphs whose findings include a repeated-fact finding."""
+    return frozenset(
+        str(unit["unit_id"])
+        for unit in prompt_data
+        if any(
+            getattr(issue, "code", "") == "CROSS_SECTION_REPETITION"
+            for issue in unit.get("issues", ())
+        )
+    )
+
+
+def _repeated_supports_retained(
+    draft: StructuredArticleDraft,
+    unit_id: str,
+    support_ids: Sequence[str],
+    patches: Mapping[str, str],
+    repetition_unit_ids: frozenset[str],
+) -> bool:
+    """True when every support of ``unit_id`` stays cited by a retained unit."""
+    if not support_ids:
+        return False
+    deleted = {
+        uid
+        for uid, text in patches.items()
+        if uid in repetition_unit_ids and text.strip().upper() in _DELETE_MARKERS
+    }
+    retained: set[str] = set(draft.lead_support_ids)
+    index = 1
+    for section in draft.sections:
+        for paragraph in section.paragraphs:
+            other_id = f"P{index:03d}"
+            index += 1
+            if other_id == unit_id:
+                continue
+            if other_id in deleted and other_id < unit_id:
+                continue
+            retained.update(paragraph.cited_support_ids)
+            for claim in paragraph.claims:
+                retained.update(claim.cited_support_ids)
+    return all(sid in retained for sid in support_ids)
+
+
+_DELETE_MARKERS = frozenset({"", "[DELETE]", "DELETE", "УДАЛИТЬ", "[УДАЛИТЬ]", "NONE", "NULL"})
