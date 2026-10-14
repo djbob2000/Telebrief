@@ -198,11 +198,34 @@ def is_private_classified(text: str) -> bool:
     return False
 
 
+_PIN_LABEL_PATTERN = re.compile(r"^\s*[📍📌🗺]\ufe0f?\s*(?P<label>[^\n]{1,60})$")
+_EVENT_OR_STATE_WORD = re.compile(
+    r"\b(?:не|нет|есть|был\w*|будет|дали|да[её]т|включ\w*|отключ\w*|работа\w*|"
+    r"свет\w*|вод\w*|газ\w*|связ\w*|интернет\w*|прил[её]т\w*|взрыв\w*|пожар\w*|"
+    r"дтп|авари\w*|очеред\w*|стрельб\w*|тревог\w*|сирен\w*)\b",
+    re.IGNORECASE,
+)
+
+
+def is_bare_location_label(text: str) -> bool:
+    """A pin followed only by a place name ("📍 БРД, район жд"): an ad's address tag.
+
+    It carries no event, state or practical detail, so it is not a report.
+    """
+    match = _PIN_LABEL_PATTERN.match(text.strip())
+    if match is None:
+        return False
+    label = match.group("label")
+    return len(label.split()) <= 6 and _EVENT_OR_STATE_WORD.search(label) is None
+
+
 def is_directory_payload(text: str) -> bool:
     """Detect store/shop promotional directory listings with in-stock/ordering copy."""
     trimmed = text.strip()
     if not trimmed:
         return False
+    if is_bare_location_label(trimmed):
+        return True
     for pattern in _DIRECTORY_PAYLOAD_PATTERNS:
         if pattern.search(trimmed):
             return True
