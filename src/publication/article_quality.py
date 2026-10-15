@@ -2026,6 +2026,28 @@ def _diagnose_theme_mismatched_sections(
     return tuple(findings)
 
 
+_STREET_MARKER_BEFORE_RE = re.compile(
+    r"(?:ул\.|улиц\w*|проспект\w*|просп\.|пр-т|переул\w*|пер\.|бульвар\w*|б-р|"
+    r"шоссе|площад\w*|пл\.)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _span_names_an_area(
+    text: str,
+    start: int,
+    end: int,
+    area_mention_spans: Sequence[tuple[int, int, Any]],
+) -> bool:
+    """The span is also an area name («микрорайон 8 Марта») with no street marker."""
+    if _STREET_MARKER_BEFORE_RE.search(text[max(0, start - 16) : start]):
+        return False
+    return any(
+        mention_start < end and start < mention_end
+        for mention_start, mention_end, _ in area_mention_spans
+    )
+
+
 def _place_area_mismatch_entities(
     text: str,
     paragraph_entities: Sequence[Any],
@@ -2051,6 +2073,8 @@ def _place_area_mismatch_entities(
                 continue
             place_area_keys = place_resolver.geographic_area_group_keys(entity)
             for place_start, place_end in _entity_text_spans(text, entity):
+                if _span_names_an_area(text, place_start, place_end, area_mention_spans):
+                    continue
                 sentence_span = next(
                     (
                         (sentence_start, sentence_end)

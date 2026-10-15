@@ -43,3 +43,20 @@ def test_street_named_after_a_colloquial_area_is_not_a_wrong_area(resolver):
 
 def test_street_assigned_to_another_district_is_still_flagged(resolver):
     assert _mismatches("На АКЗ возле 7 Листопада света нет.", resolver)
+
+
+def test_area_sharing_a_street_name_is_not_a_wrong_area(resolver):
+    """Run 337: the microdistrict «8 Марта» was read as the street 8 Марта."""
+    text = (
+        "Житель сообщал, что 21 октября свет будет в центре, на Горе, в АКЗ и на Лисках, "
+        "но его не будет в Колонии и на 8 Марта."
+    )
+    assert _mismatches(text, resolver) == []
+    assert (
+        _mismatches(
+            "По сообщению жителя, услуги были доступны в микрорайоне 8 Марта, Военном городке "
+            "и центре Бердянска.",
+            resolver,
+        )
+        == []
+    )
