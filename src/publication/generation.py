@@ -1232,6 +1232,12 @@ class PublicationGenerationService:
                         if not val_res.is_valid:
                             blocking_findings.extend(val_res.violations)
                         if blocking_findings:
+                            _save_rejected_digest_debug_artifact(
+                                self.config,
+                                run.id,
+                                getattr(rendered_artifact, "visible_text", "") or "",
+                                blocking_findings,
+                            )
                             raise PublicationGenerationError(
                                 "DIGEST_RENDERED_AUDIT_FAILED: "
                                 + "; ".join(dict.fromkeys(blocking_findings))
@@ -1514,3 +1520,29 @@ class PublicationGenerationService:
                 err,
             )
             raise
+
+
+def _save_rejected_digest_debug_artifact(
+    config: Any, run_id: int, visible_text: str, findings: list[str]
+) -> None:
+    """Keep the rejected digest candidate on local disk (opt-in) for diagnosis.
+
+    Uses the article debug setting and directory; never stored in the database.
+    """
+    article_config = getattr(getattr(config, "settings", None), "article", None)
+    if not getattr(article_config, "save_debug_artifacts", False):
+        return
+    from pathlib import Path
+
+    directory = Path(getattr(article_config, "debug_artifact_dir", "data/debug/editorial"))
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / f"digest_rejected_{run_id}.txt").write_text(
+            "REJECTED DIGEST — DO NOT PUBLISH\n\nFindings:\n"
+            + "\n".join(f"- {finding}" for finding in dict.fromkeys(findings))
+            + "\n\n"
+            + visible_text,
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        logger.warning("Could not save rejected digest artifact: %s", type(exc).__name__)
