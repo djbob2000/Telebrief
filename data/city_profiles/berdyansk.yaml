@@ -581,6 +581,8 @@ stable_context:
       - entity_id: prospect:Азовський
         canonical_name: Азовський
         object_type: prospect
+        colloquial_area_ids:
+        - lower_city
         aliases:
         - text: Леніна
           status: historical_pre_2016
@@ -599,6 +601,8 @@ stable_context:
       - entity_id: street:Азовського козацтва
         canonical_name: Азовського козацтва
         object_type: street
+        colloquial_area_ids:
+        - lower_city
         aliases:
         - text: Пархоменка
           status: historical_pre_2016
@@ -1076,6 +1080,8 @@ stable_context:
       - entity_id: street:Виноградна
         canonical_name: Виноградна
         object_type: street
+        colloquial_area_ids:
+        - lower_city
         aliases: []
         area_memberships:
         - area_set: municipal_neighborhood_committees_2021
@@ -1479,6 +1485,8 @@ stable_context:
       - entity_id: street:Гетьманська
         canonical_name: Гетьманська
         object_type: street
+        colloquial_area_ids:
+        - gora
         aliases:
         - text: Котовського
           status: historical_pre_2016
@@ -1506,6 +1514,8 @@ stable_context:
       - entity_id: street:Гоголівська
         canonical_name: Гоголівська
         object_type: street
+        colloquial_area_ids:
+        - lower_city
         aliases:
         - text: Винокуренка
           status: historical_pre_2016
@@ -1581,6 +1591,8 @@ stable_context:
       - entity_id: street:Гостинна
         canonical_name: Гостинна
         object_type: street
+        colloquial_area_ids:
+        - lower_city
         aliases:
         - text: Свердлова
           status: historical_pre_2016
@@ -1611,6 +1623,8 @@ stable_context:
       - entity_id: street:Грецька
         canonical_name: Грецька
         object_type: street
+        colloquial_area_ids:
+        - lower_city
         aliases:
         - text: Грецкая
           status: common_ru_or_abbreviation
@@ -2080,6 +2094,8 @@ stable_context:
       - entity_id: lane:Заслонова
         canonical_name: Заслонова
         object_type: lane
+        colloquial_area_ids:
+        - lower_city
         aliases: []
         area_memberships:
         - area_set: municipal_neighborhood_committees_2021
@@ -2107,6 +2123,8 @@ stable_context:
       - entity_id: street:Захисників України
         canonical_name: Захисників України
         object_type: street
+        colloquial_area_ids:
+        - lower_city
         aliases:
         - text: Дзержинського
           status: historical_pre_2016
@@ -2137,6 +2155,8 @@ stable_context:
       - entity_id: prospect:Західний
         canonical_name: Західний
         object_type: prospect
+        colloquial_area_ids:
+        - lower_city
         aliases:
         - text: 12 Грудня
           status: historical_pre_2016
@@ -2197,6 +2217,8 @@ stable_context:
       - entity_id: street:Земська
         canonical_name: Земська
         object_type: street
+        colloquial_area_ids:
+        - lower_city
         aliases:
         - text: Красная
           status: common_ru_or_abbreviation
@@ -2491,6 +2513,8 @@ stable_context:
       - entity_id: street:Консульська
         canonical_name: Консульська
         object_type: street
+        colloquial_area_ids:
+        - lower_city
         aliases:
         - text: Комунарів
           status: historical_pre_2016
@@ -3424,6 +3448,8 @@ stable_context:
       - entity_id: street:Меотіди
         canonical_name: Меотіди
         object_type: street
+        colloquial_area_ids:
+        - lower_city
         aliases:
         - text: Ювілейна
           status: historical_pre_2016
@@ -3898,6 +3924,8 @@ stable_context:
       - entity_id: street:Олега Сухарєва
         canonical_name: Олега Сухарєва
         object_type: street
+        colloquial_area_ids:
+        - gora
         aliases:
         - text: Ленінградська
           status: historical_pre_2016
@@ -4099,6 +4127,8 @@ stable_context:
       - entity_id: street:Переможців
         canonical_name: Переможців
         object_type: street
+        colloquial_area_ids:
+        - gora
         aliases:
         - text: Героїв Сталінграду
           status: historical_pre_2016
@@ -4184,6 +4214,8 @@ stable_context:
       - entity_id: street:Петровський шлях
         canonical_name: Петровський шлях
         object_type: street
+        colloquial_area_ids:
+        - lower_city
         aliases: []
         area_memberships:
         - area_set: municipal_neighborhood_committees_2021
@@ -4196,6 +4228,8 @@ stable_context:
       - entity_id: street:Петропавлівська
         canonical_name: Петропавлівська
         object_type: street
+        colloquial_area_ids:
+        - lower_city
         aliases:
         - text: Менжинського
           status: historical_pre_2016
@@ -4328,6 +4362,8 @@ stable_context:
       - entity_id: street:Портова
         canonical_name: Портова
         object_type: street
+        colloquial_area_ids:
+        - lower_city
         aliases:
         - text: Урицького
           status: historical_pre_2016
@@ -5802,6 +5838,8 @@ stable_context:
       - entity_id: street:Українських партизан
         canonical_name: Українських партизан
         object_type: street
+        colloquial_area_ids:
+        - lower_city
         aliases:
         - text: Червоних партизан
           status: historical_pre_2016
@@ -6182,6 +6220,8 @@ stable_context:
       - entity_id: boulevard:Шевченка
         canonical_name: Шевченка
         object_type: boulevard
+        colloquial_area_ids:
+        - gora
         aliases:
         - text: Гайдара
           status: historical_pre_2016
@@ -6283,6 +6323,8 @@ stable_context:
       - entity_id: street:Шмідта
         canonical_name: Шмідта
         object_type: street
+        colloquial_area_ids:
+        - lower_city
         aliases: []
         area_memberships:
         - area_set: municipal_neighborhood_committees_2021
@@ -6460,6 +6502,8 @@ stable_context:
       - entity_id: street:Європейська
         canonical_name: Європейська
         object_type: street
+        colloquial_area_ids:
+        - gora
         aliases:
         - text: Кірова
           status: historical_pre_2016
@@ -6613,6 +6657,8 @@ stable_context:
       - entity_id: street:Італійська
         canonical_name: Італійська
         object_type: street
+        colloquial_area_ids:
+        - lower_city
         aliases:
         - text: Дюміна
           status: historical_pre_2016

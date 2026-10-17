@@ -83,3 +83,26 @@ def test_checked_upland_streets_belong_to_gora(resolver, street):
 def test_checked_lower_streets_are_not_on_gora(resolver, street):
     """OSM centres at 2-5 m above sea level (SRTM, 2026-10-17)."""
     assert _mismatches(f"На Горе на улице {street} света нет.", resolver)
+
+
+@pytest.mark.parametrize(
+    "street",
+    ["Переможців", "Європейська", "Олега Сухарєва", "Гетьманська"],
+)
+def test_measured_gora_streets(resolver, street):
+    """Street-centre elevations 36-44 m (OSM + SRTM, 2026-10-17)."""
+    assert _mismatches(f"На Горе на улице {street} света нет.", resolver) == []
+
+
+@pytest.mark.parametrize(
+    "street",
+    ["Петровський шлях", "Захисників України", "Азовський проспект", "Консульська"],
+)
+def test_measured_lower_streets(resolver, street):
+    """Street-centre elevations 0-7 m (OSM + SRTM, 2026-10-17)."""
+    assert _mismatches(f"На Горе на улице {street} света нет.", resolver)
+
+
+def test_gora_boulevard_shevchenka(resolver):
+    """Бульвар Шевченко (Гайдара) is on Gora at 43 m; the street Шевченка is lower."""
+    assert _mismatches("На Горе на бульваре Шевченка света нет.", resolver) == []
