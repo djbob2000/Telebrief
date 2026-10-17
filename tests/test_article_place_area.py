@@ -106,3 +106,14 @@ def test_measured_lower_streets(resolver, street):
 def test_gora_boulevard_shevchenka(resolver):
     """Бульвар Шевченко (Гайдара) is on Gora at 43 m; the street Шевченка is lower."""
     assert _mismatches("На Горе на бульваре Шевченка света нет.", resolver) == []
+
+
+def test_nagornaya_is_on_gora(resolver):
+    """Нагорная: entrance to Средняя гора (OSM centre 46 m)."""
+    assert _mismatches("На Горе на улице Нагорная света нет.", resolver) == []
+
+
+def test_petrovskyi_shliakh_is_8_marta_not_gora_or_lower(resolver):
+    """Elevated street of the 8 Марта district, rising from Kolonia-Makorty (6-48 m)."""
+    assert _mismatches("На Горе на улице Петровський шлях света нет.", resolver)
+    assert _mismatches("В районе 8 Марта на улице Петровський шлях света нет.", resolver) == []

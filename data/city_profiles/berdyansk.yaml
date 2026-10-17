@@ -3712,6 +3712,8 @@ stable_context:
       - entity_id: street:Нагірна
         canonical_name: Нагірна
         object_type: street
+        colloquial_area_ids:
+        - gora
         aliases:
         - text: 50 років СРСР
           status: historical_pre_2016
@@ -4215,7 +4217,7 @@ stable_context:
         canonical_name: Петровський шлях
         object_type: street
         colloquial_area_ids:
-        - lower_city
+        - eight_march
         aliases: []
         area_memberships:
         - area_set: municipal_neighborhood_committees_2021
