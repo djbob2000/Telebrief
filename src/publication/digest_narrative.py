@@ -4380,6 +4380,20 @@ def _same_fact_group_merge_id(source_item_ids: Sequence[str], relation_ids: Sequ
     return f"same_fact_group:{digest}"
 
 
+def _fill_omitted_block_ids(received: list[str], expected: list[str]) -> list[str]:
+    """Restore a block ID the writer left blank when its position is unambiguous.
+
+    Only blank IDs are filled, and only when every non-blank ID already sits at
+    its expected position; the block's items still have to name units of that
+    exact block, so a misplaced block cannot pass membership validation.
+    """
+    if len(received) != len(expected) or "" not in received:
+        return received
+    if any(got and got != want for got, want in zip(received, expected, strict=True)):
+        return received
+    return list(expected)
+
+
 def _parse_composition_writer_output(
     parsed: Any,
     *,
@@ -4398,6 +4412,7 @@ def _parse_composition_writer_output(
         str(block.get("block_id", "")).strip() if isinstance(block, Mapping) else ""
         for block in raw_blocks
     ]
+    received_block_ids = _fill_omitted_block_ids(received_block_ids, expected_block_ids)
     if received_block_ids != expected_block_ids:
         raise ValueError(
             f"composition block set/order mismatch: expected {expected_block_ids}, got {received_block_ids}"
