@@ -290,6 +290,14 @@ stable_context:
         status: probable
         source_refs:
         - brd_areas_map
+      - id: lower_city
+        name: Нижняя часть города
+        aliases:
+        - нижняя часть города
+        - нижней части города
+        status: editorial_local_knowledge
+        source_refs:
+        - editor_2026_10_17
       - id: morozova
         name: Морозова
         aliases:
@@ -508,6 +516,8 @@ stable_context:
       - entity_id: street:Адама Міцкевича
         canonical_name: Адама Міцкевича
         object_type: street
+        colloquial_area_ids:
+        - gora
         aliases:
         - text: Чапаєва
           status: historical_pre_2016
@@ -1165,6 +1175,8 @@ stable_context:
       - entity_id: street:Володимира Довганюка
         canonical_name: Володимира Довганюка
         object_type: street
+        colloquial_area_ids:
+        - gora
         aliases:
         - text: Орджонікідзе
           status: historical_pre_2016
@@ -2976,6 +2988,8 @@ stable_context:
       - entity_id: street:Лютеранська
         canonical_name: Лютеранська
         object_type: street
+        colloquial_area_ids:
+        - lower_city
         aliases:
         - text: Горбенка
           status: historical_pre_2016
@@ -4526,6 +4540,8 @@ stable_context:
       - entity_id: street:Пушкіна
         canonical_name: Пушкіна
         object_type: street
+        colloquial_area_ids:
+        - lower_city
         aliases: []
         area_memberships:
         - area_set: municipal_neighborhood_committees_2021
@@ -4562,6 +4578,8 @@ stable_context:
       - entity_id: street:Північна
         canonical_name: Північна
         object_type: street
+        colloquial_area_ids:
+        - gora
         aliases:
         - text: Морозова
           status: historical_pre_2016
@@ -4934,6 +4952,8 @@ stable_context:
       - entity_id: street:Святомиколаївська
         canonical_name: Святомиколаївська
         object_type: street
+        colloquial_area_ids:
+        - gora
         aliases:
         - text: Островського
           status: historical_pre_2016
@@ -5203,6 +5223,8 @@ stable_context:
       - entity_id: street:Софіївська
         canonical_name: Софіївська
         object_type: street
+        colloquial_area_ids:
+        - gora
         aliases:
         - text: Димитрова
           status: historical_pre_2016
@@ -5930,6 +5952,8 @@ stable_context:
       - entity_id: street:Центральна
         canonical_name: Центральна
         object_type: street
+        colloquial_area_ids:
+        - lower_city
         aliases:
         - text: Тверская
           status: historical_pre_1920
@@ -6185,6 +6209,8 @@ stable_context:
       - entity_id: street:Шевченка
         canonical_name: Шевченка
         object_type: street
+        colloquial_area_ids:
+        - lower_city
         aliases:
         - text: Шевченко
           status: common_ru_or_abbreviation
@@ -6836,6 +6862,7 @@ operational_context:
         verified_at: '2026-09-06'
         note: Major regional telecom and internet provider (ООО Миранда-медиа).
 sources:
+  editor_2026_10_17: Editorial geography note (Gora vs lower city), 2026-10-17
   brd_neighborhood_committees_2021: https://brd.gov.ua/documents/158004-pro-vnesennia-zmin-do-risennia-berdianskoyi-miskoyi-radi-vid-01082002-no-18-pro-nadannia-dozvolu-na-stvorennia-komitetiv-m
   brd_general_plan: https://brd.gov.ua/pages/58950-generalnii-plan-berdianska
   brd_areas_map: https://brd.ua/areas/

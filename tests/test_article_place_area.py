@@ -60,3 +60,26 @@ def test_area_sharing_a_street_name_is_not_a_wrong_area(resolver):
         )
         == []
     )
+
+
+@pytest.mark.parametrize("street", ["Орджоникидзе", "Чапаева", "Димитрова"])
+def test_upland_streets_belong_to_gora(resolver, street):
+    """Editorial note 2026-10-17: these streets are on Gora, close to each other."""
+    assert _mismatches(f"На Горе на улице {street} света нет.", resolver) == []
+
+
+def test_pushkina_is_not_on_gora(resolver):
+    """Пушкина is in the lower city, far from Gora."""
+    assert _mismatches("На Горе на улице Пушкина света нет.", resolver)
+
+
+@pytest.mark.parametrize("street", ["Святомиколаївська", "Північна"])
+def test_checked_upland_streets_belong_to_gora(resolver, street):
+    """OSM centres at 44-45 m above sea level (SRTM, 2026-10-17)."""
+    assert _mismatches(f"На Горе на улице {street} света нет.", resolver) == []
+
+
+@pytest.mark.parametrize("street", ["Центральна", "Лютеранська", "Шевченка"])
+def test_checked_lower_streets_are_not_on_gora(resolver, street):
+    """OSM centres at 2-5 m above sea level (SRTM, 2026-10-17)."""
+    assert _mismatches(f"На Горе на улице {street} света нет.", resolver)
