@@ -1617,12 +1617,18 @@ def _cross_place_intervals_overlap_when_known(
     return not (first_has_interval and second_has_interval) or _time_overlap(first, second)
 
 
+# Word-start match: a bare "вод" substring also hits «проводами», «заводы», «по поводу».
+_WATER_SERVICE_RE = re.compile(
+    r"\bвод(?:а|ы|у|е|ой|ою|ичк\w*|опровод\w*|оснаб\w*|оканал\w*|овод\w*|ян\w*)?\b"
+)
+
+
 def _service_and_place(
     text: str,
     place_resolver: Any | None = None,
 ) -> tuple[str, str]:
     lowered = text.casefold()
-    if any(token in lowered for token in ("вод", "водоканал", "водовод", "насос")):
+    if _WATER_SERVICE_RE.search(lowered) or "насос" in lowered:
         service = "water"
     elif any(token in lowered for token in ("свет", "электр", "энерг", "напряж")):
         service = "power"
@@ -2729,9 +2735,25 @@ def diagnose_article_quality(
                             source_observations.append((service, source_place, state, support))
 
                 sentence_places = _extract_place_keys(sentence, place_resolver)
+                # Only observations about the sentence's own places form its roster.
+                # When one service state is supported for every place the sentence
+                # names («нет света 14 дней на улицах A, B, C, D»), it is a common
+                # condition, not a list of separate states.
+                source_observations = [
+                    observation
+                    for observation in source_observations
+                    if observation[1] in sentence_places
+                ]
+                places_by_state: dict[tuple[str, str], set[str]] = {}
+                for service_key, place_key, state_key, _support in source_observations:
+                    places_by_state.setdefault((service_key, state_key), set()).add(place_key)
+                single_shared_report = any(
+                    places >= sentence_places for places in places_by_state.values()
+                )
                 if (
                     len(sentence_places) >= 4
                     and len(source_observations) >= 4
+                    and not single_shared_report
                     and not _has_narrative_relation(sentence, source_observations, place_resolver)
                 ):
                     overloaded_support_ids.extend(sentence_support_ids)
