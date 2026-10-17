@@ -117,3 +117,13 @@ def test_petrovskyi_shliakh_is_8_marta_not_gora_or_lower(resolver):
     """Elevated street of the 8 Марта district, rising from Kolonia-Makorty (6-48 m)."""
     assert _mismatches("На Горе на улице Петровський шлях света нет.", resolver)
     assert _mismatches("В районе 8 Марта на улице Петровський шлях света нет.", resolver) == []
+
+
+def test_melitopolskoe_shosse_leads_up_to_gora(resolver):
+    """Мелітопольське шосе runs up to АКЗ and РТС, both on Gora."""
+    assert _mismatches("На Горе на Мелитопольском шоссе света нет.", resolver) == []
+
+
+def test_50_let_sssr_is_nagornaya_on_gora(resolver):
+    """50 лет СССР is the same street as Нагорная (Gora)."""
+    assert _mismatches("На Горе на улице 50 лет СССР света нет.", resolver) == []

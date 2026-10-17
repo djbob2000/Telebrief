@@ -3353,6 +3353,8 @@ stable_context:
       - entity_id: highway:Мелітопольське шосе
         canonical_name: Мелітопольське шосе
         object_type: highway
+        colloquial_area_ids:
+        - gora
         aliases: []
         area_memberships:
         - area_set: municipal_neighborhood_committees_2021
