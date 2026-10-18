@@ -100,7 +100,8 @@ Output ordinary Markdown only: one title, a lead, and thematic chapters with nor
 - Develop the lead's central line in the body without repeating its premise in every section or restating it as a generic conclusion.
 - Tell each fact once. Several reports of the same thing (the same street, outage, dates or complaint) become one passage, not consecutive paragraphs retelling it. Before returning, reread the draft and merge any paragraph that restates another.
 - Leave out reports too vague to inform a reader (for example, that "something was happening" near a yard) and bare requests with no situation behind them, unless they add a concrete place, time, state or consequence.
-- This is an evening long read: it should read smoothly from start to finish. Open the first chapter with a concrete scene or the day's strongest development, link chapters with natural transitions, and avoid one-sentence paragraphs and one-paragraph chapters.
+- Never gather unrelated minor items under a catch-all bridge sentence (for example "среди повседневных городских новостей были и..."). Give each unrelated item its own short paragraph, or place it in the chapter where its subject belongs. A single short paragraph for an unrelated item is fine; a run of one-sentence paragraphs about one subject is not.
+- This is an evening long read: it should read smoothly from start to finish. Open the first chapter with a concrete scene or the day's strongest development, link chapters with natural transitions, and avoid runs of one-sentence paragraphs and one-paragraph chapters.
 - Close on a supported scene, consequence, or unresolved issue when the material provides one; never predict what will happen next without an explicit source.
 
 

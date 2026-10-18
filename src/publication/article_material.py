@@ -12,6 +12,7 @@ from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Literal
 
+from src.domain.edition_geography import _COMMON_OUT_OF_SCOPE_LOCATIONS
 from src.processing.noise_detection import detect_classified_cues
 from src.publication.article_context import ArticleEditorialContext, ArticleSupport
 from src.publication.article_writer_context import sanitize_writer_source_text
@@ -20,6 +21,49 @@ ArticleMaterialAction = Literal["KEEP", "TRIM_DIRECTORY", "SUPPRESS_PROMOTION_ON
 _ARTICLE_SUPPORT_STORY_ID_RE = re.compile(r"story:(?:[^:]+|\d+)")
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…])\s+|\n+")
+# Abbreviations end in a dot but do not end a sentence ("м. Запоріжжя", "вул. Шевченка").
+_ABBREVIATION_DOT_RE = re.compile(r"\b(м|вул|ул|г|обл|р-н|с)\.")
+_OUT_OF_SCOPE_PLACE_RE = re.compile(
+    r"(?<!\w)(?:"
+    + "|".join(
+        re.escape(name) for name in sorted(_COMMON_OUT_OF_SCOPE_LOCATIONS, key=len, reverse=True)
+    )
+    + r")(?!\w)",
+    re.IGNORECASE,
+)
+# A sentence that tells a reader where to go to get a service.
+_SERVICE_LOCATION_CUE_RE = re.compile(
+    r"\b(?:приём|прием|прийом|приймає|принимает|відбувається|адрес|по\s+адресу|вул\.|ул\.)",
+    re.IGNORECASE,
+)
+
+
+def _drop_out_of_scope_access_sentences(text: str) -> str:
+    """Remove sentences that send a reader to a service in another settlement.
+
+    The edition profile lists out-of-scope settlements. A sentence that names one
+    of them together with an intake/address cue is not city-life information for
+    this edition's readers. Other sentences, including ones that only mention the
+    place, are kept unchanged.
+    """
+    if not text:
+        return text
+    protected = _ABBREVIATION_DOT_RE.sub(lambda m: m.group(1) + "\u0000", text)
+    parts = [
+        part.replace("\u0000", ".")
+        for part in _SENTENCE_SPLIT_RE.split(protected)
+        if part and part.strip()
+    ]
+    kept = [
+        part
+        for part in parts
+        if not (_OUT_OF_SCOPE_PLACE_RE.search(part) and _SERVICE_LOCATION_CUE_RE.search(part))
+    ]
+    if len(kept) == len(parts):
+        return text
+    return " ".join(part.strip() for part in kept).strip()
+
+
 _CONTACT_OR_CTA_RE = re.compile(
     r"(?:https?://\S+|\bwww\.\S+|\bt\.me/\S+|\+?\d[\d\s()\-–—]{8,}\d|"
     r"\b(?:звон(?:ите|ить)?|телефон|подробност|брониров|"
@@ -315,7 +359,10 @@ def _project_support_text(support: ArticleSupport) -> tuple[str, bool]:
     combined = _combined_text(support)
     preserve_public_access = _has_essential_or_public_resident_access(combined)
     for raw in candidates:
-        trimmed = _strip_directory_sentences(raw, preserve_public_access=preserve_public_access)
+        trimmed = _strip_directory_sentences(
+            _drop_out_of_scope_access_sentences(raw),
+            preserve_public_access=preserve_public_access,
+        )
         sanitized = sanitize_writer_source_text(trimmed)
         payload_changed = payload_changed or sanitized != raw
         cleaned = " ".join(sanitized.split()).strip()
