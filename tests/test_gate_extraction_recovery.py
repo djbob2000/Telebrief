@@ -124,6 +124,7 @@ async def test_failed_service_extraction_defers_instead_of_dropping_as_noise(mon
     assert result.results == ()
     assert result.invalid_story_ids == (10,)
     assert result.deferred_story_ids == (10,)
+    assert result.invalid_reasons == {10: "unsupported_publish_extraction"}
     assert conn.decisions == []
 
 

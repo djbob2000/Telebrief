@@ -9,7 +9,7 @@ import logging
 import re
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Mapping
 
 import psycopg
@@ -584,6 +584,8 @@ class StoryGateBatchResult:
     fence_lost_story_ids: tuple[int, ...] = ()
     missing_story_ids: tuple[int, ...] = ()
     invalid_story_ids: tuple[int, ...] = ()
+    # Per-story validation reason for invalid_story_ids (diagnostics only).
+    invalid_reasons: dict[int, str] = field(default_factory=dict, compare=False)
 
 
 DecisionFence = Callable[[psycopg.AsyncConnection, int, int], Awaitable[bool]]
@@ -1596,6 +1598,9 @@ class StoryTriageService:
             fence_lost_story_ids=tuple(sorted(fence_lost_ids)),
             missing_story_ids=missing_story_ids,
             invalid_story_ids=invalid_story_ids,
+            invalid_reasons={
+                sid: invalid_reasons[sid] for sid in invalid_story_ids if sid in invalid_reasons
+            },
         )
 
     async def _lookup_cached_decisions(

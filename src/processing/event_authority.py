@@ -38,6 +38,27 @@ from src.repositories.event_retries import EventProcessingRetryRepository
 
 logger = logging.getLogger(__name__)
 
+
+def singleton_recovery_fields(
+    *,
+    story_id: int,
+    batch_result: StoryGateBatchResult,
+    singleton_result: StoryGateBatchResult,
+) -> dict[str, object]:
+    """Diagnostic fields for one story re-sent alone after a batch (no behaviour)."""
+    if story_id in batch_result.missing_story_ids:
+        original_reason = "missing"
+    else:
+        original_reason = batch_result.invalid_reasons.get(story_id, "unknown")
+    return {
+        "story_id": story_id,
+        "original_reason": original_reason,
+        "batch_error_kind": batch_result.batch_error_kind,
+        "singleton_recovered": bool(singleton_result.results),
+        "singleton_error_kind": singleton_result.batch_error_kind,
+    }
+
+
 # A singleton recovery only needs one compact Gate decision. Keeping its output
 # budget bounded prevents a malformed model response from consuming the whole
 # provider timeout and exhausting the assignment on a runaway generation.
@@ -387,6 +408,14 @@ class EventAuthorityService:
                             batch_error_kind="timeout",
                         )
 
+                    logger.info(
+                        "authority_singleton_recovery",
+                        extra=singleton_recovery_fields(
+                            story_id=item.target.story_id,
+                            batch_result=result,
+                            singleton_result=singleton_result,
+                        ),
+                    )
                     if singleton_result.results:
                         recovered_gate = singleton_result.results[0]
                         result_by_id[recovered_gate.story_id] = recovered_gate
