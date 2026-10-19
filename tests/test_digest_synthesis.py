@@ -1532,3 +1532,42 @@ def test_busy_power_theme_gets_ordered_reader_passages():
     assert passages[1]["fact_ids"] == ["brief", "present"]
     assert passages[2]["fact_ids"] == ["promise", "outage"]
     assert sorted(fid for p in passages for fid in p["fact_ids"]) == sorted(texts)
+
+
+def test_writer_prompt_merges_single_source_reports_and_keeps_their_locality() -> None:
+    import asyncio
+
+    from src.publication.digest_narrative import DigestNarrativeWriter
+
+    class CapturedPrompt(Exception):
+        pass
+
+    class Provider:
+        system_prompt = ""
+
+        async def chat_completion(self, **kwargs):
+            self.system_prompt = kwargs["messages"][0]["content"]
+            raise CapturedPrompt
+
+    cards, evidence, _, plan = _fixture()
+    provider = Provider()
+    writer = DigestNarrativeWriter(provider)
+
+    with pytest.raises(CapturedPrompt):
+        asyncio.run(
+            writer._generate_composition_draft(
+                plan=plan,
+                cards=cards,
+                evidence=evidence,
+                language="Russian",
+                max_output_tokens=512,
+                model="test-model",
+            )
+        )
+
+    prompt = provider.system_prompt
+    assert "Single-source community reports in the same rubric" in prompt
+    assert "Жители сообщают, что" in prompt
+    assert "Житель Бердянска просит" in prompt
+    assert "A request for help is written as what residents ask for" in prompt
+    assert "never restate it as a whole-city fact" in prompt
