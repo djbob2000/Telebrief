@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import re
 from typing import Any
 
 import procrastinate
@@ -54,6 +55,40 @@ async def _load_publication_run(run_id: int) -> Any | None:
     runtime = get_runtime()
     async with runtime.uow.transaction() as conn:
         return await PublicationRepository().get_run_by_id(conn, run_id)
+
+
+DIGEST_PUBLICATION_TYPE = "digest_grouped"
+RETRY_DIGEST_PUBLICATION_TASK_NAME = "retry_digest_publication"
+# Automatic retries of a failed scheduled digest slot. The first attempt is the
+# scheduled one; each retry gets a fresh request key and the same target slot.
+DIGEST_RETRY_MAX_ATTEMPTS = 3
+DIGEST_RETRY_DELAY_SECONDS = 20 * 60
+# Do not start an attempt this close to the readiness deadline.
+DIGEST_RETRY_MIN_LEAD_SECONDS = 10 * 60
+_RETRY_KEY_PREFIX_RE = re.compile(r"^retry-(\d+):")
+
+
+def digest_retry_attempt(request_key: str) -> int:
+    """Return 1 for a scheduled request key and N for a `retry-N:` key."""
+    match = _RETRY_KEY_PREFIX_RE.match(request_key)
+    return int(match.group(1)) if match else 1
+
+
+def digest_retry_base_key(request_key: str) -> str:
+    """Return the scheduled request key without any `retry-N:` prefix."""
+    return _RETRY_KEY_PREFIX_RE.sub("", request_key, count=1)
+
+
+def digest_retry_delay_seconds(
+    *, attempt: int, now: dt.datetime, deadline_at: dt.datetime
+) -> float | None:
+    """Seconds to wait before attempt `attempt + 1`, or None when no attempt fits."""
+    if attempt >= DIGEST_RETRY_MAX_ATTEMPTS:
+        return None
+    last_start = deadline_at - dt.timedelta(seconds=DIGEST_RETRY_MIN_LEAD_SECONDS)
+    if now + dt.timedelta(seconds=DIGEST_RETRY_DELAY_SECONDS) > last_start:
+        return None
+    return float(DIGEST_RETRY_DELAY_SECONDS)
 
 
 @procrastinate_app.task(
@@ -109,10 +144,9 @@ async def generate_publication(context: Any, run_id: int) -> None:
         return
     except PublicationGenerationError as exc:
         logger.error("publication run %s ended with terminal generation failure: %s", run_id, exc)
-        await _mark_publication_intent_failed(
-            run,
-            error_kind=getattr(exc, "error_kind", type(exc).__name__),
-        )
+        error_kind = getattr(exc, "error_kind", type(exc).__name__)
+        retried = await _schedule_digest_retry(run)
+        await _mark_publication_intent_failed(run, error_kind=error_kind, notify=not retried)
         return
 
 
@@ -339,8 +373,13 @@ async def _mark_publication_intent_failed(
     run: Any | None,
     *,
     error_kind: str,
+    notify: bool = True,
 ) -> None:
-    """Close the intent after terminal generation failure and notify its owner."""
+    """Close the intent after terminal generation failure and notify its owner.
+
+    With `notify=False` the intent still closes, but the owner is not told: an
+    automatic retry is already scheduled for the same slot.
+    """
     from src.config_loader import load_config
     from src.publication.notifications import PublicationFailureNotificationService
     from src.publication.readiness_repository import PublicationReadinessRepository
@@ -363,14 +402,15 @@ async def _mark_publication_intent_failed(
             status="failed",
             error_kind=error_kind,
         )
-        notification_ids = await PublicationFailureNotificationService(
-            config=load_config(), readiness_repo=readiness_repo
-        ).enqueue_for_failed_intent(
-            conn,
-            intent=refresh,
-            failure_kind=error_kind,
-            dispatch=False,
-        )
+        if notify:
+            notification_ids = await PublicationFailureNotificationService(
+                config=load_config(), readiness_repo=readiness_repo
+            ).enqueue_for_failed_intent(
+                conn,
+                intent=refresh,
+                failure_kind=error_kind,
+                dispatch=False,
+            )
 
     if not notification_ids:
         return
@@ -389,6 +429,96 @@ async def _mark_publication_intent_failed(
         logger.exception(
             "failed to dispatch generation failure notification for intent %s", refresh_run_id
         )
+
+
+async def _schedule_digest_retry(run: Any | None) -> bool:
+    """Defer one more attempt for a failed scheduled digest slot when one still fits."""
+    from src.config_loader import load_config
+    from src.publication.orchestrator import calculate_intent_times
+
+    if run is None or getattr(run, "publication_type", None) != DIGEST_PUBLICATION_TYPE:
+        return False
+    metadata = getattr(run, "metadata", None)
+    if not isinstance(metadata, dict) or metadata.get("trigger") != "scheduled":
+        return False
+    slot = metadata.get("scheduled_slot_at")
+    request_key = metadata.get("intent_request_key")
+    if not isinstance(slot, str) or not isinstance(request_key, str):
+        return False
+
+    config = load_config()
+    target_at = dt.datetime.fromisoformat(slot)
+    _cutoff, deadline_at = calculate_intent_times(
+        target_at,
+        freshness_ttl_minutes=config.settings.publication_freshness_ttl_minutes,
+        deadline_minutes=config.settings.publication_readiness_deadline_minutes,
+    )
+    attempt = digest_retry_attempt(request_key)
+    delay = digest_retry_delay_seconds(
+        attempt=attempt,
+        now=dt.datetime.now(dt.timezone.utc),
+        deadline_at=deadline_at,
+    )
+    if delay is None:
+        return False
+    run_at = dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=delay)
+    await retry_digest_publication.configure(schedule_at=run_at).defer_async(
+        edition_id=int(run.edition_id),
+        target_at=slot,
+        attempt=attempt + 1,
+        base_request_key=digest_retry_base_key(request_key),
+    )
+    logger.warning(
+        "digest slot %s failed (attempt %s); retry %s deferred by %s seconds",
+        slot,
+        attempt,
+        attempt + 1,
+        int(delay),
+    )
+    return True
+
+
+@procrastinate_app.task(
+    name=RETRY_DIGEST_PUBLICATION_TASK_NAME,
+    queue=PUBLICATION_QUEUE,
+    lock="retry_digest_publication:{edition_id}:{target_at}",
+)
+async def retry_digest_publication(
+    edition_id: int,
+    target_at: str,
+    attempt: int,
+    base_request_key: str,
+) -> None:
+    """Open the next attempt for a scheduled digest slot through the orchestrator."""
+    from src.config_loader import load_config
+    from src.publication.orchestrator import PublicationOrchestrator, calculate_intent_times
+
+    runtime = get_runtime()
+    config = load_config()
+    target = dt.datetime.fromisoformat(target_at)
+    now = dt.datetime.now(dt.timezone.utc)
+    _cutoff, deadline_at = calculate_intent_times(
+        target,
+        freshness_ttl_minutes=config.settings.publication_freshness_ttl_minutes,
+        deadline_minutes=config.settings.publication_readiness_deadline_minutes,
+    )
+    if now + dt.timedelta(seconds=DIGEST_RETRY_MIN_LEAD_SECONDS) > deadline_at:
+        logger.warning("digest retry %s for slot %s skipped: past deadline", attempt, target_at)
+        return
+    async with runtime.uow.transaction() as conn:
+        cursor = await conn.execute("SELECT slug FROM editions WHERE id = %s", (edition_id,))
+        row = await cursor.fetchone()
+    if row is None:
+        logger.error("digest retry for unknown edition %s", edition_id)
+        return
+    await PublicationOrchestrator(uow=runtime.uow, config=config).request(
+        edition_slug=str(row[0]),
+        publication_type=DIGEST_PUBLICATION_TYPE,
+        trigger="scheduled",
+        target_at=target,
+        request_key=f"retry-{attempt}:{base_request_key}",
+        now=now,
+    )
 
 
 # Kept as an import-level compatibility name for code that only imported the
