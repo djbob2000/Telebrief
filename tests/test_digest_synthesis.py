@@ -1571,3 +1571,4 @@ def test_writer_prompt_merges_single_source_reports_and_keeps_their_locality() -
     assert "Житель Бердянска просит" in prompt
     assert "A request for help is written as what residents ask for" in prompt
     assert "never restate it as a whole-city fact" in prompt
+    assert "district_hints give the profile district" in prompt

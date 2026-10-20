@@ -3302,7 +3302,8 @@ stable_context:
       - entity_id: street:Маяковського
         canonical_name: Маяковського
         object_type: street
-        aliases: []
+        aliases:
+        - Маяковского
         area_memberships:
         - area_set: municipal_neighborhood_committees_2021
           area_id: koloniia_makorty

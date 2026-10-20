@@ -15,6 +15,7 @@ from src.publication.article_claims import (
     extract_concrete_claims,
     find_unsupported_claims,
 )
+from src.publication.digest_place_areas import place_area_hints
 from src.publication.digest_presentation import (
     RequiredDigestFact,
     validate_digest_fact_ids,
@@ -4277,14 +4278,16 @@ def _composition_writer_payload(
                     raise DigestCoverageInvariantError(
                         f"DIGEST_COMPOSITION_SUPPORT_TEXT_MISSING:{unit_id}:{support_id}"
                     )
-                support_rows.append(
-                    {
-                        "support_id": support_id,
-                        "texts": list(texts),
-                        "fare_comparisons": fare_comparison_context(texts),
-                        **support_metadata.get(support_id, {}),
-                    }
-                )
+                row: dict[str, Any] = {
+                    "support_id": support_id,
+                    "texts": list(texts),
+                    "fare_comparisons": fare_comparison_context(texts),
+                    **support_metadata.get(support_id, {}),
+                }
+                district_hints = place_area_hints(plan.edition_slug, " ".join(texts))
+                if district_hints:
+                    row["district_hints"] = list(district_hints)
+                support_rows.append(row)
 
             facts_payload: list[dict[str, Any]] = []
             for fact_id in fact_ids:
@@ -4712,6 +4715,7 @@ class DigestNarrativeWriter:
             "- Keep a concrete local location attached to its own fact. Do not infer proximity, a shared district, a cause, or a city-wide condition. When one item weaves units from different locations, mention each named place in its own clause or sentence; a shared rubric is not a shared neighborhood. Use only explicitly supported localized contrasts.\n"
             "- Single-source community reports in the same rubric that share no place or event are written as one attributed passage, for example «Жители сообщают, что ...» once, followed by each report. Do not give each speaker a separate headline or bullet, and do not start an item with the speaker («Житель Бердянска просит...», «Житель Бердянска говорит...»).\n"
             "- A request for help is written as what residents ask for, attached to the situation it describes. It is never its own item when that situation is in the same rubric.\n"
+            "- A support's district_hints give the profile district of a named street or place. Keep that place under its given district. Never move it to a different district, and never use a district word of your own (for example «в центре») for a place that has a hint.\n"
             "- Keep the locality the source names. A resident's statement about one street or district stays about that street or district; never restate it as a whole-city fact (for example, «в Бердянске нет газа» from a statement about one district).\n"
             "- Avoid chat/forum language, filler, generic status phrases, advice, and invented context. Headline is optional: use a short scan label when useful, or start with a complete natural paragraph. Never add a headline just to paraphrase the first sentence.\n\n"
             f"{build_digest_narrative_contract(output_language=language)}\n\n"
