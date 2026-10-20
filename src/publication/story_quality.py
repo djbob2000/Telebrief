@@ -483,6 +483,16 @@ _LOST_DOCUMENT_RE = re.compile(
     r"пропуск\w*|водительск\w*\s+прав\w*|банковск\w*\s+карт\w*)",
     re.IGNORECASE,
 )
+# A private lost or found personal belonging («потеряли коричневую сумку с
+# паспортом», «нашли ключи») is personal payload, not city news. Civic losses
+# («потеряли воду», «пропал свет») do not match: the object list is personal.
+_LOST_PERSONAL_ITEM_RE = re.compile(
+    r"\b(?:потеря\w*|потерян\w*|пропал\w*|забыл\w*|оставил\w*|нашл\w*|найден\w*)\s+"
+    r"(?:[\w-]+\s+){0,3}"
+    r"(?:сумк\w*|сумочк\w*|рюкзак\w*|кошел[её]к\w*|ключ\w*|телефон\w*|перчатк\w*|"
+    r"зонт\w*|очк\w*|пакет\w*|наушник\w*|цепочк\w*|серьг\w*)",
+    re.IGNORECASE,
+)
 _PRIVATE_RETURN_RE = re.compile(
     r"(?:(?:просьба|прошу|просим)\s+вернуть|верн(?:уть|ите)\s+за\s+вознагражд\w*|"
     r"\bв\s+личк\w*|\bв\s+лс\b|\+?\d[\d\s()-]{8,}\d)",
@@ -513,6 +523,7 @@ def is_non_editorial_fact(text: str) -> bool:
             _LOST_DOCUMENT_RE.search(text)
             and (_PRIVATE_RETURN_RE.search(text) or _SURNAME_INITIAL_RE.search(text))
         )
+        or _LOST_PERSONAL_ITEM_RE.search(text)
         or _PROPERTY_LISTING_RE.search(text)
         or _is_location_context_without_event(text)
         or _is_announcement_context_without_event(text)
