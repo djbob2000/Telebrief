@@ -104,6 +104,33 @@ ARTICLE_EDITOR_PASS_REASONS = frozenset(
         "editor_pass_error_atomic_rollback",
     }
 )
+
+
+def rollback_cause_fields(
+    rollback_cause: str | None,
+    rollback_blockers: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Persistable fields for a rolled-back structural batch.
+
+    Only allowlisted cause codes and `CODE:UNIT` keys are kept, so no prose can
+    reach metadata.
+    """
+    if rollback_cause is None:
+        return {}
+    known_cause = (
+        rollback_cause in ARTICLE_STRUCTURAL_OUTCOME_REASONS
+        or rollback_cause == "new_blocker_atomic_rollback"
+    )
+    return {
+        "rollback_cause": rollback_cause if known_cause else "assessment_error_atomic_rollback",
+        "rollback_blockers": [
+            code for code in rollback_blockers if _SAFE_BLOCKER_KEY_RE.fullmatch(code)
+        ][:20],
+    }
+
+
+_SAFE_BLOCKER_KEY_RE = re.compile(r"[A-Z][A-Z0-9_]*:(?:[PH][0-9]{3,}|TITLE|LEAD)")
+
 ARTICLE_STRUCTURAL_OUTCOME_REASONS = frozenset(
     {
         "no_authorized_structural_sources",
@@ -503,12 +530,15 @@ class ArticleEditor:
             shown_support_count: int,
             base_fingerprint: str,
             result_fingerprint: str,
+            rollback_cause: str | None = None,
+            rollback_blockers: Sequence[str] = (),
         ) -> dict[str, Any]:
             if status not in ARTICLE_EDITOR_UNIT_STATUSES:
                 status = "rejected"
             if reason not in ARTICLE_EDITOR_OUTCOME_REASONS:
                 reason = "patch_rejected"
             return {
+                **rollback_cause_fields(rollback_cause, rollback_blockers),
                 "pass_index": pass_index,
                 "unit_id": unit_id,
                 "status": status,
@@ -801,7 +831,7 @@ class ArticleEditor:
             rollback_assessment = previous_assessment
             rollback_patched_unit_ids = list(previous_patched_unit_ids)
             response: str | None = None
-            unit_outcomes: dict[str, dict[str, str]] = {}
+            unit_outcomes: dict[str, dict[str, Any]] = {}
             requested_units = {unit["unit_id"] for unit in prompt_data}
             prompt_units_by_id = {unit["unit_id"]: unit for unit in prompt_data}
             _unknown_unit_count = 0
@@ -833,6 +863,7 @@ class ArticleEditor:
                     finally:
                         self.last_provider_attempts.append(counts.to_metadata())
                 operation_error: str | None = None
+                rollback_blockers: list[str] = []
                 try:
                     operations = self._parse_structural_operations(response)
                 except ValueError as exc:
@@ -1220,8 +1251,13 @@ class ArticleEditor:
                             candidate_blockers = self._mapped_blocking_keys(
                                 candidate_val, candidate_quality, origins
                             )
-                            if candidate_blockers - base_blockers:
+                            new_blockers = candidate_blockers - base_blockers
+                            if new_blockers:
                                 operation_error = "new_blocker_atomic_rollback"
+                                # Codes and unit IDs only: keys also carry prose.
+                                rollback_blockers = sorted(
+                                    {f"{key[1]}:{key[2]}" for key in new_blockers}
+                                )
                             else:
                                 current_draft, current_val, current_quality = (
                                     structural_candidate,
@@ -1284,6 +1320,8 @@ class ArticleEditor:
                                         "status": "rolled_back",
                                         "reason": "structural_batch_rollback",
                                         "attempted_text": "",
+                                        "rollback_cause": operation_error,
+                                        "rollback_blockers": list(rollback_blockers),
                                     }
                             elif unit_outcomes[source_unit_id].get("status") == "not_returned":
                                 unit_outcomes[source_unit_id] = {
@@ -1352,6 +1390,8 @@ class ArticleEditor:
                             shown_support_count=unit["shown_support_count"],
                             base_fingerprint=base_fingerprint,
                             result_fingerprint=result_fingerprint,
+                            rollback_cause=outcome.get("rollback_cause"),
+                            rollback_blockers=outcome.get("rollback_blockers", ()),
                         )
                     )
                 applied_unit_ids = {
