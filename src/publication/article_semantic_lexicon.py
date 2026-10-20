@@ -18,7 +18,20 @@ def _norm(token: str) -> str:
 
 _CONCEPT_PREFIXES: dict[str, tuple[str, ...]] = {
     "uav": tuple(_norm(p) for p in ("бпла", "беспилот", "безпілот", "дрон")),
-    "internet": tuple(_norm(p) for p in ("интернет", "інтернет", "wifi", "вайфай")),
+    "internet": tuple(
+        _norm(p)
+        for p in (
+            "интернет",
+            "інтернет",
+            "wifi",
+            "вайфай",
+            # Fixed-line access is internet access too (run 995: "волокно" and
+            # "провайдер" describe the same service without the word itself).
+            "оптоволокн",
+            "волокн",
+            "провайдер",
+        )
+    ),
     "report": tuple(_norm(p) for p in ("сообщ", "повідом")),
     "apply_use": tuple(_norm(p) for p in ("примен", "застос", "поступ", "надійш")),
     "power": tuple(_norm(p) for p in ("свет", "электр", "електр", "струм", "блэкаут", "блекаут")),
