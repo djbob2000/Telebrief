@@ -10,6 +10,7 @@ from digest_evaluation_helpers import assessment_inputs
 from scripts.digest_evaluation.replay import ReplayObserver
 from src.publication.digest_assessment import DigestAssessmentContext, assess_digest_candidate
 from src.publication.digest_editor import DigestEditor
+from src.publication.digest_fact_labels import fact_labels_for_plan
 from src.publication.generation import _repair_digest_candidate
 
 
@@ -308,7 +309,8 @@ def test_thematic_editor_receives_the_same_reporting_navigation_as_writer():
     provider = Provider()
     initial, result, _ = run_repair(provider, inputs=(values, draft))
     plan_blocks = {block.block_id: block for block in values["plan"].blocks}
-    for block in provider.requests[0]["blocks"]:
+    request0 = fact_labels_for_plan(values["plan"]).decode(provider.requests[0])
+    for block in request0["blocks"]:
         planned = plan_blocks[block["block_id"]]
         assert block["reader_synthesis_groups"] == _reader_synthesis_groups(planned)
         assert block["related_reporting_sets"] == _related_reporting_sets(planned)
@@ -327,12 +329,13 @@ def test_thematic_editor_receives_actual_publish_sources_for_each_item():
     values, _draft = assessment_inputs()
     plan_blocks = {block.block_id: block for block in values["plan"].blocks}
     run_repair(provider)
-    for block in provider.requests[0]["blocks"]:
+    request0 = fact_labels_for_plan(values["plan"]).decode(provider.requests[0])
+    for block in request0["blocks"]:
         planned = plan_blocks[block["block_id"]]
         records = {str(record.fact_id): record for record in planned.composition_fact_records}
         for fact in (
             row
-            for row in provider.requests[0]["required_recomposition_facts"]
+            for row in request0["required_recomposition_facts"]
             if row["block_id"] == block["block_id"]
         ):
             sources = fact["supports"]
@@ -515,7 +518,8 @@ def test_second_editor_call_recomposes_remaining_structural_style_findings():
 
     assert provider.calls == calls == 2
     expected = {str(fact.fact_id) for fact in context.plan.blocks[0].required_facts}
-    assert set(provider.requests[1]["target_recomposition_fact_ids"]) == expected
+    request1 = fact_labels_for_plan(context.plan).decode(provider.requests[1])
+    assert set(request1["target_recomposition_fact_ids"]) == expected
     assert provider.requests[1]["blocks"][0]["allow_recomposition"] is True
     assert (
         f"Each replacement item body must stay within {DIGEST_ITEM_BODY_MAX_CHARS} characters; "
@@ -709,7 +713,9 @@ def test_editor_cannot_add_reader_findings_to_safe_checkpoint():
             ),
         )
 
-    original = with_warnings(assess_digest_candidate(base, context=context), ("OVERLONG_SYNTHESIS",))
+    original = with_warnings(
+        assess_digest_candidate(base, context=context), ("OVERLONG_SYNTHESIS",)
+    )
 
     def evaluate(candidate):
         assessment = assess_digest_candidate(candidate, context=context)
@@ -768,7 +774,7 @@ def test_targeted_recomposition_can_restore_fact_dropped_by_writer():
         )
     )
 
-    request = provider.requests[0]
+    request = fact_labels_for_plan(context.plan).decode(provider.requests[0])
     assert set(dropped.covered_fact_ids) <= set(request["target_recomposition_fact_ids"])
     assert set(dropped.covered_fact_ids) <= {
         fact["fact_id"] for fact in request["required_recomposition_facts"]
@@ -796,7 +802,9 @@ def test_empty_writer_item_leaves_its_fact_uncovered_instead_of_failing():
                         "covered_fact_ids": list(units[0].fact_ids),
                         "headline": "",
                         "body": "По сообщению жителя, "
-                        + " ".join(f.text for f in block.required_facts if f.fact_id in units[0].fact_ids),
+                        + " ".join(
+                            f.text for f in block.required_facts if f.fact_id in units[0].fact_ids
+                        ),
                         "claims": [],
                     },
                     {

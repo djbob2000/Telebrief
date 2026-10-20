@@ -15,6 +15,7 @@ from src.publication.digest_composition import (
     build_digest_composition,
 )
 from src.publication.digest_coverage import build_digest_coverage_trace
+from src.publication.digest_fact_labels import fact_labels_for_plan
 from src.publication.digest_narrative import (
     _composition_narrative_plan,
     _composition_writer_payload,
@@ -725,9 +726,9 @@ def test_editor_recomposition_preserves_all_facts_or_rolls_back(invalid: bool) -
     assert "source messages" in captured_system_prompt
     assert "Previous response omitted fact:1 and fact:5." in captured_system_prompt
     if not invalid:
-        assert json.loads(captured_user_prompt)["target_recomposition_fact_ids"] == sorted(
-            original.blocks[0].items[0].covered_fact_ids
-        )
+        assert fact_labels_for_plan(plan).decode(json.loads(captured_user_prompt))[
+            "target_recomposition_fact_ids"
+        ] == sorted(original.blocks[0].items[0].covered_fact_ids)
         assert len(result.blocks[0].items) == 2
         assert {fid for i in result.blocks[0].items for fid in i.covered_fact_ids} == set(texts)
         assert {sid for i in result.blocks[0].items for sid in i.cited_support_ids} == {
@@ -1572,3 +1573,44 @@ def test_writer_prompt_merges_single_source_reports_and_keeps_their_locality() -
     assert "A request for help is written as what residents ask for" in prompt
     assert "never restate it as a whole-city fact" in prompt
     assert "district_hints give the profile district" in prompt
+
+
+def test_writer_prompt_shows_fact_labels_instead_of_long_ids() -> None:
+    import asyncio
+
+    from src.publication.digest_narrative import DigestNarrativeWriter
+
+    class CapturedPrompt(Exception):
+        pass
+
+    class Provider:
+        user_prompt = ""
+        system_prompt = ""
+
+        async def chat_completion(self, **kwargs):
+            self.system_prompt = kwargs["messages"][0]["content"]
+            self.user_prompt = kwargs["messages"][1]["content"]
+            raise CapturedPrompt
+
+    cards, evidence, _, plan = _fixture()
+    provider = Provider()
+    writer = DigestNarrativeWriter(provider)
+
+    with pytest.raises(CapturedPrompt):
+        asyncio.run(
+            writer._generate_composition_draft(
+                plan=plan,
+                cards=cards,
+                evidence=evidence,
+                language="Russian",
+                max_output_tokens=512,
+                model="test-model",
+            )
+        )
+
+    fact_ids = [str(fact.fact_id) for block in plan.blocks for fact in block.required_facts]
+    assert fact_ids
+    for fact_id in fact_ids:
+        assert f'"{fact_id}"' not in provider.user_prompt
+    assert '"F1"' in provider.user_prompt
+    assert "short labels such as F1" in provider.system_prompt

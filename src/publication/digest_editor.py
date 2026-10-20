@@ -9,6 +9,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from src.ai_providers import AIProvider, apply_reasoning_settings
+from src.publication.digest_fact_labels import FACT_LABEL_INSTRUCTION, fact_labels_for_plan
 from src.publication.digest_narrative import (
     DIGEST_ITEM_BODY_MAX_CHARS,
     DigestClaimAtom,
@@ -652,22 +653,27 @@ class DigestEditor:
             ]
         from src.publication.situation_memory import writer_background
 
+        fact_labels = fact_labels_for_plan(plan)
         user_prompt = json.dumps(
-            {
-                "target_item_ids": sorted(target_ids),
-                "target_recomposition_fact_ids": target_recomposition_fact_ids,
-                "required_recomposition_facts": required_recomposition_facts,
-                "target_recomposition_summary_unit_ids": target_recomposition_summary_unit_ids,
-                **(
-                    {"edition_background": writer_background(plan.background)}
-                    if getattr(plan, "background", ())
-                    else {}
-                ),
-                "blocks": editor_blocks,
-            },
+            fact_labels.encode(
+                {
+                    "target_item_ids": sorted(target_ids),
+                    "target_recomposition_fact_ids": target_recomposition_fact_ids,
+                    "required_recomposition_facts": required_recomposition_facts,
+                    "target_recomposition_summary_unit_ids": target_recomposition_summary_unit_ids,
+                    **(
+                        {"edition_background": writer_background(plan.background)}
+                        if getattr(plan, "background", ())
+                        else {}
+                    ),
+                    "blocks": editor_blocks,
+                }
+            ),
             ensure_ascii=False,
             indent=2,
         )
+        if fact_labels:
+            system_prompt += "\n" + FACT_LABEL_INSTRUCTION
         if getattr(plan, "background", ()):
             from src.publication.situation_memory import DIGEST_BACKGROUND_GUIDANCE
 
@@ -705,6 +711,7 @@ class DigestEditor:
                 if first_brace < 0 or last_brace <= first_brace:
                     raise ValueError("editor response did not contain a JSON object")
                 parsed = json.loads(raw_response[first_brace : last_brace + 1])
+            parsed = fact_labels.decode(parsed)
             raw_blocks = parsed.get("blocks") if isinstance(parsed, Mapping) else None
             if not isinstance(raw_blocks, list):
                 raise ValueError("editor response blocks must be a list")
@@ -1286,10 +1293,15 @@ class DigestEditor:
             "}\n"
         )
 
-        user_content: dict[str, Any] = {"blocks": blocks_payload}
+        fact_labels = fact_labels_for_plan(plan)
+        user_content: dict[str, Any] = fact_labels.encode({"blocks": blocks_payload})
         if violations:
-            user_content["validation_violations_to_fix"] = list(violations[:10])
+            user_content["validation_violations_to_fix"] = [
+                fact_labels.encode_text(str(violation)) for violation in violations[:10]
+            ]
         user_prompt = json.dumps(user_content, ensure_ascii=False, indent=2)
+        if fact_labels:
+            system_prompt += "\n" + FACT_LABEL_INSTRUCTION
 
         chat_kwargs: dict[str, Any] = {
             "messages": [
@@ -1324,6 +1336,7 @@ class DigestEditor:
                 else:
                     parsed = json.loads(text_resp)
 
+            parsed = fact_labels.decode(parsed)
             if not isinstance(parsed, dict) or "blocks" not in parsed:
                 logger.warning("DigestEditor output missing 'blocks'; returning original draft")
                 return draft

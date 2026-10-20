@@ -15,6 +15,7 @@ from src.publication.article_claims import (
     extract_concrete_claims,
     find_unsupported_claims,
 )
+from src.publication.digest_fact_labels import FACT_LABEL_INSTRUCTION, fact_labels_for_plan
 from src.publication.digest_place_areas import place_area_hints
 from src.publication.digest_presentation import (
     RequiredDigestFact,
@@ -4683,6 +4684,7 @@ class DigestNarrativeWriter:
             evidence=evidence,
             cards=cards,
         )
+        fact_labels = fact_labels_for_plan(plan)
         schema_desc = (
             '{"blocks":[{"block_id":"exact input block_id","items":[{'
             '"composition_unit_ids":["one or more exact unit IDs from this same-rubric block"],'
@@ -4748,7 +4750,7 @@ class DigestNarrativeWriter:
                 + f"Output language: {language}\nSchema: {schema_desc}"
             )
         else:
-            prompt_payload: dict[str, Any] = {"blocks": blocks_payload}
+            prompt_payload: dict[str, Any] = {"blocks": fact_labels.encode(blocks_payload)}
             if plan.background:
                 from src.publication.situation_memory import writer_background
 
@@ -4757,6 +4759,8 @@ class DigestNarrativeWriter:
                     **prompt_payload,
                 }
             user_prompt = json.dumps(prompt_payload, ensure_ascii=False, indent=2)
+            if fact_labels:
+                system_prompt += "\n" + FACT_LABEL_INSTRUCTION
         if plan.background:
             from src.publication.situation_memory import DIGEST_BACKGROUND_GUIDANCE
 
@@ -4793,7 +4797,7 @@ class DigestNarrativeWriter:
         first_brace, last_brace = cleaned.find("{"), cleaned.rfind("}")
         if first_brace < 0 or last_brace <= first_brace:
             raise ValueError("composition writer response did not contain a JSON object")
-        parsed = json.loads(cleaned[first_brace : last_brace + 1])
+        parsed = fact_labels.decode(json.loads(cleaned[first_brace : last_brace + 1]))
         return _parse_composition_writer_output(
             parsed,
             plan=plan,
