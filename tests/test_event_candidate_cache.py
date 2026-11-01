@@ -195,3 +195,34 @@ async def test_zero_query_vector_scores_zero_instead_of_failing():
     )
 
     assert found[0].similarity == 0.0
+
+
+@pytest.mark.asyncio
+async def test_entries_pruned_by_another_job_during_load_still_rank():
+    rng = random.Random(9)
+    repo = _FakeClusterRepo()
+    repo.put(1, _unit(rng), T0)
+    repo.put(2, _unit(rng), T0)
+    cache = CandidateCentroidCache(repo)  # type: ignore[arg-type]
+    kwargs = {
+        "model": MODEL,
+        "dimensions": DIMENSIONS,
+        "active_since": T0 - dt.timedelta(hours=72),
+        "limit": 5,
+    }
+    await cache.find_candidates(None, EDITION, _unit(rng), **kwargs)
+
+    # Story 1 becomes stale; while this job awaits its reload, another job
+    # sharing the cache drops every entry from its narrower window.
+    repo.put(1, _unit(rng), T0)
+    original_load = repo.load_centroids
+
+    async def load_and_prune(conn, story_ids):
+        loaded = await original_load(conn, story_ids)
+        cache._centroids.clear()
+        return loaded
+
+    repo.load_centroids = load_and_prune  # type: ignore[method-assign]
+    found = await cache.find_candidates(None, EDITION, _unit(rng), **kwargs)
+
+    assert sorted(c.story_id for c in found) == [1, 2]
