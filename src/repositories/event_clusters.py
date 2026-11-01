@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from array import array
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -104,8 +105,12 @@ class EventClusterRepository:
 
     async def load_centroids(
         self, conn: psycopg.AsyncConnection, story_ids: Sequence[int]
-    ) -> dict[int, tuple[dt.datetime, list[float]]]:
-        """Read centroid vectors with the version stamp they were committed under."""
+    ) -> dict[int, tuple[dt.datetime, array[float]]]:
+        """Read centroid vectors with the version stamp they were committed under.
+
+        Vectors come back as float32 arrays: a list of Python floats per centroid
+        costs several times the memory on a 1 GB host.
+        """
         if not story_ids:
             return {}
         await register_vector_async(conn)
@@ -117,7 +122,10 @@ class EventClusterRepository:
             """,
             (list(story_ids),),
         )
-        return {int(row[0]): (row[1], _vec_to_list(row[2])) for row in await cursor.fetchall()}
+        return {
+            int(row[0]): (row[1], array("f", _vec_to_list(row[2])))
+            for row in await cursor.fetchall()
+        }
 
     async def get_cluster_state(
         self, conn: psycopg.AsyncConnection, story_id: int
