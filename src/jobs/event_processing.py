@@ -7,10 +7,11 @@ import datetime as dt
 import logging
 import os
 import uuid
-from typing import Any
+from typing import Any, cast
 
 import procrastinate
 import psycopg
+from procrastinate.types import JSONValue
 
 from src.config_loader import load_config
 from src.embedding_providers import create_embedding_provider
@@ -119,6 +120,44 @@ async def process_event_revisions_task(revision_ids: list[int]) -> dict[str, int
     finally:
         heartbeat_task.cancel()
         await asyncio.gather(heartbeat_task, return_exceptions=True)
+
+
+RECOVERY_RETRY_AFTER_SECONDS = 600
+RECOVERY_MAX_REVISIONS_PER_SWEEP = 500
+
+
+@procrastinate_app.periodic(
+    cron="*/10 * * * *",
+    periodic_id="requeue-unfinished-revisions",
+)
+@procrastinate_app.task(
+    queue="maintenance",
+    queueing_lock="requeue-unfinished-revisions",
+)
+async def requeue_unfinished_revisions(timestamp: int) -> None:
+    """Re-defer revisions left failed, pending or abandoned, whatever the collector does.
+
+    A collection scan requeues only the revisions it observes. After a provider
+    outage the failed revisions would otherwise wait for a scan that happens to
+    see the same messages again, and scheduled collection may be switched off.
+    """
+    del timestamp
+    runtime = get_runtime()
+    config = getattr(runtime, "config", None) or load_config()
+    batch_size = config.settings.event_pipeline.revision_processing_batch_size
+    async with runtime.uow.transaction() as conn:
+        revision_ids = await EventRevisionProcessingRepository().list_recoverable_revision_ids(
+            conn,
+            retry_after_seconds=RECOVERY_RETRY_AFTER_SECONDS,
+            limit=RECOVERY_MAX_REVISIONS_PER_SWEEP,
+        )
+        for start in range(0, len(revision_ids), batch_size):
+            chunk = revision_ids[start : start + batch_size]
+            await process_event_revisions_task.configure(connection=conn).defer_async(
+                revision_ids=cast(JSONValue, chunk)
+            )
+    if revision_ids:
+        logger.info("requeued %d unfinished revision(s) for processing", len(revision_ids))
 
 
 async def _revision_claim_heartbeat(

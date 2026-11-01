@@ -90,6 +90,36 @@ class EventRevisionProcessingRepository:
         )
         return [int(row[0]) for row in await cursor.fetchall()]
 
+    async def list_recoverable_revision_ids(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        retry_after_seconds: int,
+        limit: int,
+    ) -> list[int]:
+        """Return unfinished revisions that no live job is expected to pick up.
+
+        Failed or pending rows qualify once they have been untouched for
+        ``retry_after_seconds``, which leaves a freshly queued job time to start.
+        Running rows qualify only when their claim lease has expired. Oldest
+        rows come first so one bounded sweep cannot starve the others.
+        """
+        cursor = await conn.execute(
+            """
+            SELECT source_item_revision_id
+            FROM event_revision_processing_state
+            WHERE (
+                status IN ('pending', 'failed')
+                AND updated_at <= now() - make_interval(secs => %s)
+            )
+               OR (status = 'running' AND claim_expires_at <= now())
+            ORDER BY updated_at
+            LIMIT %s
+            """,
+            (retry_after_seconds, limit),
+        )
+        return [int(row[0]) for row in await cursor.fetchall()]
+
     async def claim_revision_ids(
         self,
         conn: psycopg.AsyncConnection,
