@@ -6,6 +6,7 @@ import asyncio
 import datetime as dt
 import logging
 import os
+import time
 import uuid
 from typing import Any, cast
 
@@ -222,6 +223,8 @@ async def _process_event_revisions(
     emb_provider = create_embedding_provider(config, logger)
 
     stats = {"revisions": len(revision_ids), "fragments": 0, "candidates": 0, "assignments": 0}
+    timings = {"load": 0.0, "embed": 0.0, "embed_provider": 0.0, "cluster": 0.0}
+    started = time.monotonic()
 
     # 1. Load revisions and create deterministic fragments in a short transaction.
     async with runtime.uow.transaction() as conn:
@@ -268,6 +271,7 @@ async def _process_event_revisions(
     if not all_candidate_frags:
         return stats
 
+    timings["load"] = time.monotonic() - started
     # 2. Read cache state and create audit rows in a short transaction. The
     # transaction is closed before any provider/network await below.
     async with runtime.uow.transaction() as conn:
@@ -284,7 +288,9 @@ async def _process_event_revisions(
         )
 
     # 3. Provider calls are deliberately outside every pooled transaction.
+    embed_started = time.monotonic()
     for batch in prepared.batches:
+        call_started = time.monotonic()
         try:
             vectors = await emb_provider.embed_many(
                 list(batch.texts),
@@ -292,6 +298,7 @@ async def _process_event_revisions(
                 model=emb_cfg.model,
                 dimensions=emb_cfg.dimensions,
             )
+            timings["embed_provider"] += time.monotonic() - call_started
         except Exception as exc:
             async with runtime.uow.transaction() as conn:
                 await emb_service.record_batch_completion(
@@ -323,6 +330,8 @@ async def _process_event_revisions(
             conn, [f.id for f in prepared.candidates]
         )
 
+    timings["embed"] = time.monotonic() - embed_started
+    cluster_started = time.monotonic()
     # 4. Each cluster assignment owns only one short transaction. A failure
     # cannot roll back earlier embedding checkpoints or cluster units.
     for f in prepared.candidates:
@@ -351,6 +360,19 @@ async def _process_event_revisions(
         )
         stats["assignments"] += 1
 
+    timings["cluster"] = time.monotonic() - cluster_started
+    logger.info(
+        "revision batch timing revisions=%d fragments=%d candidates=%d assignments=%d "
+        "load_s=%.2f embed_s=%.2f embed_provider_s=%.2f cluster_s=%.2f",
+        stats["revisions"],
+        stats["fragments"],
+        stats["candidates"],
+        stats["assignments"],
+        timings["load"],
+        timings["embed"],
+        timings["embed_provider"],
+        timings["cluster"],
+    )
     if stats["assignments"] > 0 and getattr(cfg, "background_authority_enabled", False):
         from src.jobs.event_authority import request_background_authority_dispatch
 
