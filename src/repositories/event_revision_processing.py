@@ -101,19 +101,21 @@ class EventRevisionProcessingRepository:
 
         Failed or pending rows qualify once they have been untouched for
         ``retry_after_seconds``, which leaves a freshly queued job time to start.
-        Running rows qualify only when their claim lease has expired. Oldest
-        rows come first so one bounded sweep cannot starve the others.
+        Running rows qualify only when their claim lease has expired. The newest
+        collected revisions come first: the weekly publication reads recent
+        stories, so they must be ready before the historical backlog.
         """
         cursor = await conn.execute(
             """
-            SELECT source_item_revision_id
-            FROM event_revision_processing_state
+            SELECT state.source_item_revision_id
+            FROM event_revision_processing_state state
+            JOIN source_item_revisions sir ON sir.id = state.source_item_revision_id
             WHERE (
-                status IN ('pending', 'failed')
-                AND updated_at <= now() - make_interval(secs => %s)
+                state.status IN ('pending', 'failed')
+                AND state.updated_at <= now() - make_interval(secs => %s)
             )
-               OR (status = 'running' AND claim_expires_at <= now())
-            ORDER BY updated_at
+               OR (state.status = 'running' AND state.claim_expires_at <= now())
+            ORDER BY sir.collected_at DESC, state.source_item_revision_id DESC
             LIMIT %s
             """,
             (retry_after_seconds, limit),
