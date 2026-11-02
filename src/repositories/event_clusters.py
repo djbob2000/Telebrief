@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Sequence
-from dataclasses import dataclass
 
 import psycopg
 from pgvector import Vector
@@ -12,16 +11,6 @@ from pgvector.psycopg import register_vector_async
 
 from src.domain.event_clusters import ClusterJoinCandidate, StoryClusterState
 from src.repositories.embeddings import _vec_to_list
-
-
-@dataclass(frozen=True)
-class CandidateMetadata:
-    """Candidate-universe row; ``updated_at`` versions the centroid it describes."""
-
-    story_id: int
-    updated_at: dt.datetime
-    fragment_count: int
-    last_seen_at: dt.datetime
 
 
 class EventClusterRepository:
@@ -68,56 +57,6 @@ class EventClusterRepository:
                 )
             )
         return candidates
-
-    async def list_candidate_metadata(
-        self,
-        conn: psycopg.AsyncConnection,
-        edition_id: int,
-        *,
-        model: str,
-        dimensions: int,
-        active_since: dt.datetime,
-    ) -> list[CandidateMetadata]:
-        """List the candidate universe without reading centroid vectors."""
-        cursor = await conn.execute(
-            """
-            SELECT sc.story_id, sc.updated_at, sc.fragment_count, sc.last_seen_at
-            FROM story_cluster_state sc
-            JOIN stories s ON s.id = sc.story_id
-            WHERE s.edition_id = %s
-              AND s.lifecycle_state IN ('candidate', 'active', 'reopened')
-              AND sc.model = %s
-              AND sc.dimensions = %s
-              AND sc.last_seen_at >= %s
-            """,
-            (edition_id, model, dimensions, active_since),
-        )
-        return [
-            CandidateMetadata(
-                story_id=int(row[0]),
-                updated_at=row[1],
-                fragment_count=int(row[2]),
-                last_seen_at=row[3],
-            )
-            for row in await cursor.fetchall()
-        ]
-
-    async def load_centroids(
-        self, conn: psycopg.AsyncConnection, story_ids: Sequence[int]
-    ) -> dict[int, tuple[dt.datetime, list[float]]]:
-        """Read centroid vectors with the version stamp they were committed under."""
-        if not story_ids:
-            return {}
-        await register_vector_async(conn)
-        cursor = await conn.execute(
-            """
-            SELECT story_id, updated_at, centroid
-            FROM story_cluster_state
-            WHERE story_id = ANY(%s)
-            """,
-            (list(story_ids),),
-        )
-        return {int(row[0]): (row[1], _vec_to_list(row[2])) for row in await cursor.fetchall()}
 
     async def get_cluster_state(
         self, conn: psycopg.AsyncConnection, story_id: int

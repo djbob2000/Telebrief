@@ -5,15 +5,12 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import math
-import operator
-from array import array
 from collections.abc import Sequence
-from dataclasses import dataclass
 from typing import Literal, cast
 
 import psycopg
 
-from src.domain.event_clusters import ClusterAssignmentResult, ClusterJoinCandidate
+from src.domain.event_clusters import ClusterAssignmentResult
 from src.domain.event_pipeline import SourceFragment
 from src.repositories.event_clusters import EventClusterRepository
 from src.repositories.stories import StoryRepository
@@ -40,91 +37,6 @@ def combine_centroids(
     return normalize_vector(combined)
 
 
-def _vector_norm(v: Sequence[float]) -> float:
-    return math.sqrt(sum(x * x for x in v))
-
-
-@dataclass(frozen=True)
-class _CachedCentroid:
-    updated_at: dt.datetime
-    vector: array[float]
-    norm: float
-
-
-class CandidateCentroidCache:
-    """In-memory centroids for the candidate search of one clustering service.
-
-    Every search still reads the candidate universe from the database, so the
-    filters, the active window and the visibility of concurrent joins match a
-    plain query. Only centroid vectors are reused, and only while the stored
-    ``updated_at`` still matches the committed row, so a stale vector can never
-    rank a candidate. Entries for stories that left the universe are dropped.
-    """
-
-    def __init__(self, cluster_repo: EventClusterRepository) -> None:
-        self._cluster_repo = cluster_repo
-        self._centroids: dict[int, _CachedCentroid] = {}
-
-    async def find_candidates(
-        self,
-        conn: psycopg.AsyncConnection,
-        edition_id: int,
-        query_vector: Sequence[float],
-        *,
-        model: str,
-        dimensions: int,
-        active_since: dt.datetime,
-        limit: int,
-    ) -> list[ClusterJoinCandidate]:
-        rows = await self._cluster_repo.list_candidate_metadata(
-            conn,
-            edition_id,
-            model=model,
-            dimensions=dimensions,
-            active_since=active_since,
-        )
-        universe = {row.story_id for row in rows}
-        for story_id in [sid for sid in self._centroids if sid not in universe]:
-            del self._centroids[story_id]
-
-        stale = [
-            row.story_id
-            for row in rows
-            if (cached := self._centroids.get(row.story_id)) is None
-            or cached.updated_at != row.updated_at
-        ]
-        if stale:
-            loaded = await self._cluster_repo.load_centroids(conn, stale)
-            for story_id, (updated_at, vector) in loaded.items():
-                self._centroids[story_id] = _CachedCentroid(
-                    updated_at=updated_at,
-                    vector=array("f", vector),
-                    norm=_vector_norm(vector),
-                )
-
-        query = [float(x) for x in query_vector]
-        query_norm = _vector_norm(query)
-        scored: list[ClusterJoinCandidate] = []
-        for row in rows:
-            cached = self._centroids.get(row.story_id)
-            if cached is None:
-                continue
-            denominator = query_norm * cached.norm
-            similarity = (
-                sum(map(operator.mul, query, cached.vector)) / denominator if denominator else 0.0
-            )
-            scored.append(
-                ClusterJoinCandidate(
-                    story_id=row.story_id,
-                    similarity=similarity,
-                    fragment_count=row.fragment_count,
-                    last_seen_at=row.last_seen_at,
-                )
-            )
-        scored.sort(key=lambda candidate: (-candidate.similarity, candidate.story_id))
-        return scored[:limit]
-
-
 class EventClusteringService:
     """Assigns candidate fragments to active stories or seeds new story shells."""
 
@@ -137,7 +49,6 @@ class EventClusteringService:
         self.cluster_repo = cluster_repo or EventClusterRepository()
         self.story_repo = story_repo or StoryRepository()
         self.logger = logger_instance or logger
-        self._candidate_cache = CandidateCentroidCache(self.cluster_repo)
 
     async def process_fragment(
         self,
@@ -176,7 +87,7 @@ class EventClusteringService:
             )
 
         # 1. Search candidate clusters
-        candidates = await self._candidate_cache.find_candidates(
+        candidates = await self.cluster_repo.find_candidate_clusters(
             conn,
             edition_id,
             norm_vec,
