@@ -87,33 +87,26 @@ class CandidateCentroidCache:
         for story_id in [sid for sid in self._centroids if sid not in universe]:
             del self._centroids[story_id]
 
-        # Snapshot what is valid now. Another job sharing this cache may prune
-        # or refresh entries while this search awaits the database, so scoring
-        # uses only this snapshot plus the vectors loaded for this search.
-        current: dict[int, _CachedCentroid] = {}
-        stale: list[int] = []
-        for row in rows:
-            cached = self._centroids.get(row.story_id)
-            if cached is None or cached.updated_at != row.updated_at:
-                stale.append(row.story_id)
-            else:
-                current[row.story_id] = cached
+        stale = [
+            row.story_id
+            for row in rows
+            if (cached := self._centroids.get(row.story_id)) is None
+            or cached.updated_at != row.updated_at
+        ]
         if stale:
             loaded = await self._cluster_repo.load_centroids(conn, stale)
             for story_id, (updated_at, vector) in loaded.items():
-                entry = _CachedCentroid(
+                self._centroids[story_id] = _CachedCentroid(
                     updated_at=updated_at,
                     vector=vector,
                     norm=_vector_norm(vector),
                 )
-                self._centroids[story_id] = entry
-                current[story_id] = entry
 
         query = [float(x) for x in query_vector]
         query_norm = _vector_norm(query)
         scored: list[ClusterJoinCandidate] = []
         for row in rows:
-            cached = current.get(row.story_id)
+            cached = self._centroids.get(row.story_id)
             if cached is None:
                 continue
             denominator = query_norm * cached.norm
@@ -140,12 +133,11 @@ class EventClusteringService:
         cluster_repo: EventClusterRepository | None = None,
         story_repo: StoryRepository | None = None,
         logger_instance: logging.Logger | None = None,
-        candidate_cache: CandidateCentroidCache | None = None,
     ) -> None:
         self.cluster_repo = cluster_repo or EventClusterRepository()
         self.story_repo = story_repo or StoryRepository()
         self.logger = logger_instance or logger
-        self._candidate_cache = candidate_cache or CandidateCentroidCache(self.cluster_repo)
+        self._candidate_cache = CandidateCentroidCache(self.cluster_repo)
 
     async def process_fragment(
         self,

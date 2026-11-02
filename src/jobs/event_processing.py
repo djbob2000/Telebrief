@@ -22,7 +22,7 @@ from src.processing.embeddings import EmbeddingService
 from src.processing.errors import RevisionClaimLostError, classify_processing_failure
 from src.processing.event_analysis import EventAnalysisService
 from src.processing.event_brief import EventBriefService
-from src.processing.event_clustering import CandidateCentroidCache, EventClusteringService
+from src.processing.event_clustering import EventClusteringService
 from src.processing.event_triage import StoryTriageService
 from src.processing.fragments import split_into_fragments
 from src.processing.providers import resolve_processing_provider
@@ -205,22 +205,6 @@ async def _require_revision_claim(
         raise RevisionClaimLostError("revision claim is no longer owned")
 
 
-_candidate_cache: CandidateCentroidCache | None = None
-
-
-def _process_candidate_cache(cluster_repo: EventClusterRepository) -> CandidateCentroidCache:
-    """Share centroid vectors across jobs in this worker process.
-
-    A per-job cache starts cold, and a cold load reads every active centroid
-    from TOAST on each batch. Entries are validated by ``updated_at`` on every
-    search, so sharing them cannot serve a stale vector.
-    """
-    global _candidate_cache
-    if _candidate_cache is None:
-        _candidate_cache = CandidateCentroidCache(cluster_repo)
-    return _candidate_cache
-
-
 async def _process_event_revisions(
     revision_ids: list[int], *, claim_token: uuid.UUID, claim_lost: asyncio.Event
 ) -> dict[str, int]:
@@ -234,11 +218,7 @@ async def _process_event_revisions(
     cluster_repo = EventClusterRepository()
     story_repo = StoryRepository()
     emb_service = EmbeddingService()
-    clustering_service = EventClusteringService(
-        cluster_repo=cluster_repo,
-        story_repo=story_repo,
-        candidate_cache=_process_candidate_cache(cluster_repo),
-    )
+    clustering_service = EventClusteringService(cluster_repo=cluster_repo, story_repo=story_repo)
 
     emb_provider = create_embedding_provider(config, logger)
 
