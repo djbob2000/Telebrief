@@ -81,3 +81,57 @@ def test_mixed_states_across_places_are_still_a_roster() -> None:
 def test_wires_are_not_water() -> None:
     assert _service_and_place("столб с проводами лежит, света нет 12 дней")[0] == "power"
     assert _service_and_place("нет воды третий день")[0] == "water"
+
+
+def test_multi_sentence_roster_names_its_own_paragraph() -> None:
+    supports = [
+        _support("a", "По сообщению жителя, на улице Орджоникидзе света нет."),
+        _support("b", "По сообщению жителя, на улице Чапаева свет включили."),
+        _support("c", "По сообщению жителя, на улице Островского света нет."),
+        _support("w", "Жительница рассказала, что на рынке работает швейная мастерская."),
+    ]
+    context = ArticleEditorialContext(
+        headline_candidates=(),
+        support_index=tuple(supports),
+        support_by_id={s.support_id: s for s in supports},
+        recurring_topics=(),
+    )
+    roster_ids = ("a", "b", "c")
+    draft = StructuredArticleDraft(
+        title="Свет",
+        title_support_ids=roster_ids,
+        lead="Свет.",
+        lead_support_ids=roster_ids,
+        sections=(
+            ArticleSection(
+                heading="Мастерская",
+                paragraphs=(
+                    ArticleParagraph(
+                        text="На рынке работает швейная мастерская.", cited_support_ids=("w",)
+                    ),
+                ),
+            ),
+            ArticleSection(
+                heading="Свет",
+                paragraphs=(
+                    ArticleParagraph(
+                        text=(
+                            "На улице Орджоникидзе света нет. На улице Чапаева свет включили. "
+                            "На улице Островского света нет."
+                        ),
+                        cited_support_ids=roster_ids,
+                    ),
+                ),
+            ),
+        ),
+    )
+    report = diagnose_article_quality(
+        draft,
+        build_article_coverage_plan((), context),
+        context,
+        place_resolver=CityContextResolver.from_yaml(PROFILE),
+    )
+
+    rosters = [f for f in report.findings if f.code == "MULTI_SENTENCE_ADDRESS_STATUS_ROSTER"]
+    assert [f.unit_id for f in rosters] == ["P002"]
+    assert set(rosters[0].support_ids) == set(roster_ids)

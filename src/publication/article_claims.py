@@ -225,14 +225,23 @@ _TIME_EQUIVALENTS: dict[str, tuple[str, ...]] = {
 }
 
 
+_APOSTROPHE_BETWEEN_LETTERS_RE = re.compile(
+    r"(?<=[A-Za-zА-Яа-яЁёІіЇїЄєҐґ])['’ʼʹ`′](?=[A-Za-zА-Яа-яЁёІіЇїЄєҐґ])"
+)
 _DASH_RE = re.compile(r"[\u2010\u2012\u2013\u2014\u2212]")
 _SPACES_RE = re.compile(r"\s+")
 _QUOTES_RE = re.compile(r"[«»“”\"]")
 
 
+def fold_apostrophes(text: str) -> str:
+    """Drop apostrophes inside a word so «Мар'їна» and «Марїна» compare equal."""
+    return _APOSTROPHE_BETWEEN_LETTERS_RE.sub("", text)
+
+
 def normalize_direct_quote(text: str) -> str:
     t = _DASH_RE.sub("-", text)
     t = _QUOTES_RE.sub("", t)
+    t = fold_apostrophes(t)
     t = t.lower().replace("ё", "е")
     t = _SPACES_RE.sub(" ", t).strip(" .,!?;:-—\t\n\r")
     return t
@@ -240,7 +249,7 @@ def normalize_direct_quote(text: str) -> str:
 
 def quote_words(text: str) -> list[str]:
     """Tokenize words for sequence quote comparison."""
-    words = re.findall(r"[A-Za-zА-Яа-яЁёІіЇїЄєҐґ0-9]+", text)
+    words = re.findall(r"[A-Za-zА-Яа-яЁёІіЇїЄєҐґ0-9]+", fold_apostrophes(text))
     return [w.lower().replace("ё", "е") for w in words]
 
 

@@ -15,6 +15,7 @@ from dataclasses import dataclass, replace
 from time import perf_counter
 from typing import Any, Literal, Sequence
 
+from src.publication.article_claims import stem_word
 from src.publication.article_context import (
     ArticleEditorialContext,
     ArticleSupport,
@@ -990,6 +991,74 @@ def _provider_quote_has_adjacent_service_syntax(text: str, quote_match: re.Match
     return bool(_QUOTED_PROVIDER_USAGE_PREPOSITION_RE.search(prefix))
 
 
+_NAME_LIST_GAP_RE = re.compile(r"\s*(?:[,;]\s*(?:(?:и|или)\s*)?|(?:и|или)\s+)", re.IGNORECASE)
+_NAME_WORD_RE = re.compile(r"[A-Za-zА-Яа-яЁёІіЇїЄєҐґ0-9]+")
+
+
+def _name_word_stems(text: str) -> tuple[str, ...]:
+    normalized = unicodedata.normalize("NFKC", text).casefold().replace("ё", "е")
+    return tuple(stem_word(word) for word in _NAME_WORD_RE.findall(normalized))
+
+
+def _source_contains_quoted_name_forms(quoted_text: str, source_texts: Sequence[str]) -> bool:
+    """Match a short quoted name in any inflection of a cited source phrase.
+
+    Writers decline place names («Зирочки Дом» for source «Зирочка Дом»). Each word
+    must share a stem with the aligned source word, so only the grammatical form may
+    differ; a different word never matches.
+    """
+    wanted = _name_word_stems(quoted_text)
+    if not wanted or len(wanted) > 6 or len(quoted_text) > 80:
+        return False
+    # Place and business names are title-cased; lowercase quoted speech is never a name.
+    if not all(word[:1].isupper() for word in _NAME_WORD_RE.findall(quoted_text)):
+        return False
+    for source_text in source_texts:
+        if not source_text:
+            continue
+        source = _name_word_stems(source_text)
+        for start in range(len(source) - len(wanted) + 1):
+            if source[start : start + len(wanted)] == wanted:
+                return True
+    return False
+
+
+def _supported_place_list_name_spans(
+    text: str,
+    cited_texts: Sequence[str],
+) -> set[tuple[int, int]]:
+    """Quoted place names listed after a place preposition, grounded in cited sources.
+
+    AGENTS §0.6: supported place names in typographic quotes are not direct speech.
+    A run is at least two quotes that each match a cited name in any inflection,
+    joined only by list punctuation and introduced by a place preposition
+    («возле», «на», «в»…). A lone quote or an unmatched quote stays countable speech.
+    """
+    spans: set[tuple[int, int]] = set()
+    run: list[re.Match[str]] = []
+
+    def close_run() -> None:
+        if len(run) >= 2:
+            spans.update(match.span(1) for match in run)
+
+    for quote_match in _QUOTE_RE.finditer(text):
+        is_name = _source_contains_quoted_name_forms(quote_match.group(1), cited_texts)
+        if (
+            run
+            and is_name
+            and _NAME_LIST_GAP_RE.fullmatch(text[run[-1].end() : quote_match.start()])
+        ):
+            run.append(quote_match)
+            continue
+        close_run()
+        run = []
+        prefix = text[max(0, quote_match.start() - 48) : quote_match.start()]
+        if is_name and _QUOTED_PLACE_CUE_RE.search(prefix):
+            run = [quote_match]
+    close_run()
+    return spans
+
+
 def _supported_non_speech_name_quote_spans(
     text: str,
     support_ids: Sequence[str],
@@ -1101,7 +1170,8 @@ def _supported_non_speech_name_quote_spans(
         else:
             previous_syntax_name_quote_end = None
 
-    return tuple(sorted(profile_name_spans | syntax_name_spans))
+    place_list_spans = _supported_place_list_name_spans(text, cited_texts)
+    return tuple(sorted(profile_name_spans | syntax_name_spans | place_list_spans))
 
 
 def _direct_quote_count(
@@ -2678,7 +2748,6 @@ def diagnose_article_quality(
     # length or address quota.  A paragraph may weave several small place-based
     # reports together without making any one sentence a roster.
     p_idx = 1
-    address_roster_support_ids: list[str] = []
     for section in draft.sections:
         for paragraph in section.paragraphs:
             if paragraph.claims:
@@ -2816,26 +2885,28 @@ def diagnose_article_quality(
                     paragraph.text, paragraph_observations, place_resolver
                 )
             ):
-                address_roster_support_ids.extend(
-                    support_id
-                    for _service, _place, _state, ids in address_status_records
-                    for support_id in ids
+                # The roster is a property of this paragraph, so the finding names it:
+                # the editor then targets exactly this unit, not every paragraph that
+                # happens to cite one of the same supports.
+                findings.append(
+                    ArticleReaderQualityFinding(
+                        code="MULTI_SENTENCE_ADDRESS_STATUS_ROSTER",
+                        unit_id=f"P{p_idx:03d}",
+                        message=(
+                            "Адреса и состояния услуги разнесены по однотипным предложениям без "
+                            "подтверждённого сравнения или развития; соберите сообщения в связный локальный контраст."
+                        ),
+                        support_ids=tuple(
+                            dict.fromkeys(
+                                support_id
+                                for _service, _place, _state, ids in address_status_records
+                                for support_id in ids
+                            )
+                        ),
+                        severity="blocking",
+                    )
                 )
             p_idx += 1
-
-    if address_roster_support_ids:
-        findings.append(
-            ArticleReaderQualityFinding(
-                code="MULTI_SENTENCE_ADDRESS_STATUS_ROSTER",
-                unit_id="ARTICLE",
-                message=(
-                    "Адреса и состояния услуги разнесены по однотипным предложениям без "
-                    "подтверждённого сравнения или развития; соберите сообщения в связный локальный контраст."
-                ),
-                support_ids=tuple(dict.fromkeys(address_roster_support_ids)),
-                severity="blocking",
-            )
-        )
 
     directory_findings: list[str] = []
     for section in draft.sections:

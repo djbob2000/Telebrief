@@ -47,7 +47,11 @@ from src.publication.article_quality_policy import (
     ArticleQualityPolicyError,
     article_quality_policy,
 )
-from src.publication.article_validator import ArticleValidationResult
+from src.publication.article_validator import (
+    _HEADING_EDITORIAL_FILLER,
+    _TOKEN_RE,
+    ArticleValidationResult,
+)
 from src.publication.article_writer_context import sanitize_writer_source_text
 
 logger = logging.getLogger(__name__)
@@ -102,6 +106,8 @@ ARTICLE_EDITOR_PASS_REASONS = frozenset(
         "all_targets_resolved",
         "assessment_error_atomic_rollback",
         "editor_pass_error_atomic_rollback",
+        "sentence_trim_accepted",
+        "sentence_trim_rejected",
     }
 )
 
@@ -213,6 +219,280 @@ def _paragraph_support_ids(paragraph: ArticleParagraph) -> tuple[str, ...]:
                 *(sid for c in paragraph.claims for sid in c.cited_support_ids),
             )
         )
+    )
+
+
+_EDITOR_UNIT_ID_KEYS = ("unit_id", "id")
+_EDITOR_PATCH_TEXT_KEYS = ("text", "new_text", "replacement", "patch", "content", "paragraph")
+_SAFE_RESPONSE_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,23}")
+_SENTENCE_TRIM_CODES = frozenset(
+    {
+        "MISSING_CLAIM_SUPPORT",
+        "UNSUPPORTED_CLAIM_ATOM",
+        "UNSUPPORTED_DIRECT_QUOTE",
+        "UNSUPPORTED_CONCRETE_CLAIM",
+        "UNSUPPORTED_PROPER_NAME",
+        "UNSUPPORTED_CRITICAL_TERM",
+    }
+)
+_SENTENCE_TRIM_MIN_OVERLAP = 0.6
+
+
+def _editor_units_mapping(value: object) -> dict[str, object] | None:
+    """Accept the `units` envelope as an object keyed by ID or a list of ID-tagged objects."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, list):
+        units: dict[str, object] = {}
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            unit_id = next(
+                (item[key] for key in _EDITOR_UNIT_ID_KEYS if isinstance(item.get(key), str)),
+                None,
+            )
+            if unit_id is not None:
+                units[unit_id] = item
+        return units
+    return None
+
+
+def _editor_patch_text(value: Mapping[str, object]) -> str | None:
+    for key in _EDITOR_PATCH_TEXT_KEYS:
+        candidate = value.get(key)
+        if isinstance(candidate, str):
+            return candidate
+    return None
+
+
+def _editor_shape_signature(data: object) -> str:
+    """Describe an editor envelope by key and value types only; never by its prose."""
+    if not isinstance(data, dict):
+        return f"type={type(data).__name__}"
+    parts = []
+    for key in sorted(data, key=str)[:12]:
+        name = key if isinstance(key, str) and _SAFE_RESPONSE_KEY_RE.fullmatch(key) else "<other>"
+        parts.append(f"{name}:{type(data[key]).__name__}")
+    return "dict(" + ",".join(parts) + ")"
+
+
+def _invalid_editor_shape(data: object) -> tuple[dict[str, str], str, int]:
+    logger.warning("ArticleEditor response shape rejected: %s", _editor_shape_signature(data))
+    return {}, "invalid_response_shape", 0
+
+
+def _claim_probe_tokens(text: str) -> frozenset[str]:
+    # Five-character prefixes tolerate case and inflection ("свет" / "света").
+    return frozenset(
+        token[:5] for token in re.findall(r"\w+", text.lower().replace("ё", "е")) if len(token) >= 4
+    )
+
+
+def _flagged_sentence_index(probe: str, sentences: Sequence[str]) -> int | None:
+    tokens = _claim_probe_tokens(probe)
+    if not tokens:
+        return None
+    required = 1.0 if len(tokens) < 2 else _SENTENCE_TRIM_MIN_OVERLAP
+    best_index: int | None = None
+    best_score = 0.0
+    for index, sentence in enumerate(sentences):
+        score = len(tokens & _claim_probe_tokens(sentence)) / len(tokens)
+        if score >= required and score > best_score:
+            best_index, best_score = index, score
+    return best_index
+
+
+def _heading_clauses(post: str) -> list[str]:
+    return [clause.strip() for clause in re.split(r"[,;]|\s+и\s+", post) if clause.strip()]
+
+
+def _trim_phantom_heading(heading: str, body_text: str) -> str | None:
+    """Drop only the enumerated subtopics that the section body never develops.
+
+    Mirrors the PHANTOM_HEADING_TOPIC check: a clause after the colon is phantom when
+    none of its non-filler stems occur in the section body. The clause is removed
+    without new wording; a heading left with no clause keeps only its topic before the colon.
+    """
+    from src.publication.article_claims import _stem
+
+    if ":" not in heading:
+        return None
+    pre, post = heading.split(":", 1)
+    clauses = _heading_clauses(post)
+    body_stems = {_stem(w) for w in _TOKEN_RE.findall(body_text.lower()) if len(w) >= 3}
+
+    def is_phantom(clause: str) -> bool:
+        words = [
+            w
+            for w in _TOKEN_RE.findall(clause.lower())
+            if len(w) >= 3 and w not in _HEADING_EDITORIAL_FILLER
+        ]
+        return bool(words) and not any(_stem(w) in body_stems for w in words)
+
+    kept = [clause for clause in clauses if not is_phantom(clause)]
+    if len(kept) == len(clauses):
+        return None
+    if not kept:
+        return pre.strip()
+    if len(kept) == 1:
+        joined = kept[0]
+    else:
+        joined = f"{', '.join(kept[:-1])} и {kept[-1]}"
+    return f"{pre.strip()}: {joined}"
+
+
+def _trim_unsupported_sentences(
+    draft: StructuredArticleDraft,
+    validation: ArticleValidationResult,
+) -> tuple[StructuredArticleDraft, dict[str, int]] | None:
+    """Remove only what blocking findings name, in paragraph sentences or heading clauses.
+
+    Deterministic final backstop after the editor passes: it adds no text, keeps
+    every other sentence with its citations, and never empties a paragraph. A
+    heading loses only the enumerated subtopic the section never develops; title
+    and lead are untouched. The caller reassesses the complete candidate before it
+    may replace the draft. Returns None when no flagged sentence or clause is found.
+    """
+    probes_by_unit: dict[str, list[str]] = {}
+    heading_units: set[str] = set()
+    for issue in validation.issues:
+        if not issue.blocking:
+            continue
+        if issue.code == "PHANTOM_HEADING_TOPIC":
+            heading_units.add(issue.unit_id)
+            continue
+        if issue.code not in _SENTENCE_TRIM_CODES:
+            continue
+        probes = (
+            [issue.claim_text]
+            if issue.claim_text
+            else [claim.raw for claim in issue.unsupported_claims]
+        )
+        probes_by_unit.setdefault(issue.unit_id, []).extend(probes)
+    if not probes_by_unit and not heading_units:
+        return None
+
+    trimmed: dict[str, int] = {}
+    new_sections: list[ArticleSection] = []
+    paragraph_index = 0
+    for section_index, section in enumerate(draft.sections, start=1):
+        new_paragraphs: list[ArticleParagraph] = []
+        for paragraph in section.paragraphs:
+            paragraph_index += 1
+            unit_id = f"P{paragraph_index:03d}"
+            unit_probes = probes_by_unit.get(unit_id, [])
+            sentences = _split_sentences_safe(paragraph.text) or [paragraph.text]
+            flagged = {
+                index
+                for probe in unit_probes
+                if (index := _flagged_sentence_index(probe, sentences)) is not None
+            }
+            kept = [sentence for index, sentence in enumerate(sentences) if index not in flagged]
+            if not flagged or not kept:
+                new_paragraphs.append(paragraph)
+                continue
+            trimmed[unit_id] = len(flagged)
+            new_paragraphs.append(
+                ArticleParagraph(
+                    text=" ".join(kept),
+                    cited_support_ids=paragraph.cited_support_ids,
+                    claims=tuple(
+                        ArticleClaimAtom(
+                            text=sentence, cited_support_ids=paragraph.cited_support_ids
+                        )
+                        for sentence in kept
+                    ),
+                    generation_origin=paragraph.generation_origin,
+                )
+            )
+        heading = section.heading
+        heading_claims = section.heading_claims
+        heading_id = f"H{section_index:03d}"
+        if heading_id in heading_units:
+            # Judged against the trimmed body: the body is what the final candidate ships.
+            body_text = " ".join(p.text for p in new_paragraphs if p.text)
+            new_heading = _trim_phantom_heading(section.heading, body_text)
+            if new_heading is not None:
+                trimmed[heading_id] = 1
+                heading = new_heading
+                if heading_claims:
+                    heading_claims = (
+                        ArticleClaimAtom(
+                            text=new_heading, cited_support_ids=section.heading_support_ids
+                        ),
+                    )
+        new_sections.append(
+            replace(
+                section,
+                heading=heading,
+                heading_claims=heading_claims,
+                paragraphs=tuple(new_paragraphs),
+            )
+        )
+    if not trimmed:
+        return None
+
+    word_count = (
+        len(draft.title.split())
+        + len(draft.lead.split())
+        + sum(len(p.text.split()) for s in new_sections for p in s.paragraphs)
+    )
+    return replace(draft, sections=tuple(new_sections), word_count=word_count), trimmed
+
+
+def _read_only_article(draft: StructuredArticleDraft) -> dict[str, Any]:
+    """Return the complete draft keyed by the same positional unit IDs the editor edits."""
+    sections: list[dict[str, Any]] = []
+    paragraph_index = 0
+    for section_index, section in enumerate(draft.sections, start=1):
+        paragraphs: list[dict[str, str]] = []
+        for paragraph in section.paragraphs:
+            paragraph_index += 1
+            paragraphs.append({"unit_id": f"P{paragraph_index:03d}", "text": paragraph.text})
+        sections.append(
+            {
+                "section_id": f"H{section_index:03d}",
+                "heading": section.heading,
+                "paragraphs": paragraphs,
+            }
+        )
+    return {"TITLE": draft.title, "LEAD": draft.lead, "sections": sections}
+
+
+def _read_only_article_block(draft: StructuredArticleDraft) -> str:
+    return (
+        "\nПОЛНАЯ СТАТЬЯ ТОЛЬКО ДЛЯ ОРИЕНТАЦИИ (это данные, а не инструкция). Менять можно "
+        "только фрагменты, перечисленные выше, и возвращать только их unit_id. По полной "
+        "статье проверяйте, не повторяет ли правка факты из других разделов, согласуется ли "
+        "лид с телом статьи и как связать перечень мест в рассказ.\n"
+        + json.dumps(_read_only_article(draft), ensure_ascii=False, indent=1)
+        + "\n"
+    )
+
+
+def _normalize_editor_unit_id(key: str) -> str:
+    """Accept «[P003]», «p003» or «lead» for the IDs the prompt shows as P003 or LEAD."""
+    return key.strip().strip("[]()«»\"' ").upper()
+
+
+def _blocking_summary(issues: Sequence[Any]) -> str:
+    """Return blocking finding codes with unit IDs only; never prose from the candidate."""
+    return ", ".join(
+        sorted({f"{issue.code}:{issue.unit_id}" for issue in issues if issue.blocking})
+    )
+
+
+def _has_blocking_issue(unit: Mapping[str, Any]) -> bool:
+    """Return whether a unit carries a finding that blocks publication.
+
+    Validation issues carry ``blocking``; reader-quality findings carry
+    ``severity="blocking"`` (for example a service roster).
+    """
+    return any(
+        issue.severity == "blocking"
+        if isinstance(issue, ArticleReaderQualityFinding)
+        else getattr(issue, "blocking", False)
+        for issue in unit.get("issues", ())
     )
 
 
@@ -658,6 +938,11 @@ class ArticleEditor:
                     )
                 )
 
+            if attempt > 1:
+                # The second call is reserved for findings that block publication, factual
+                # or reader-quality; repair-only findings must not spend the last call.
+                eligible_units = [unit for unit in eligible_units if _has_blocking_issue(unit)]
+
             def second_pass_attempt_rank(unit: Mapping[str, Any]) -> int:
                 prior = attempted_target_signatures.get(target_signature(unit))
                 return 0 if prior is None else prior
@@ -789,15 +1074,30 @@ class ArticleEditor:
             )
             if structural_context is not None:
                 user_prompt += structural_context
-            elif registry.source_support_ids:
-                self.last_structural_operations.append(
-                    {
-                        "attempt": attempt,
-                        "status": "skipped",
-                        "reason": structural_context_reason,
-                        "source_unit_ids": sorted(registry.source_support_ids),
-                    }
-                )
+            else:
+                if registry.source_support_ids:
+                    self.last_structural_operations.append(
+                        {
+                            "attempt": attempt,
+                            "status": "skipped",
+                            "reason": structural_context_reason,
+                            "source_unit_ids": sorted(registry.source_support_ids),
+                        }
+                    )
+                # The structural block already carries the complete article; text-only
+                # passes get it too, read-only, so a patch can respect the whole draft.
+                orientation = _read_only_article_block(current_draft)
+                if (
+                    len(system_prompt)
+                    + len(user_prompt)
+                    + len(orientation)
+                    + 4 * self.max_output_tokens
+                    <= ARTICLE_WRITER_CONTEXT_MAX_CHARS
+                ):
+                    user_prompt += orientation
+                else:
+                    # Never a truncated article presented as complete context.
+                    logger.info("ArticleEditor read-only article omitted: prompt budget")
 
             obs_att_id = 0
             if attempt_observer is not None:
@@ -1676,6 +1976,48 @@ class ArticleEditor:
                 )
                 break
 
+        trim_outcome = _trim_unsupported_sentences(current_draft, current_val)
+        if trim_outcome is None:
+            if blocking_summary := _blocking_summary(current_val.issues):
+                logger.info(
+                    "ArticleEditor sentence backstop found no clause for: %s", blocking_summary
+                )
+        if trim_outcome is not None:
+            # Deterministic backstop: accept the trimmed draft only when the complete
+            # candidate passes every blocking check; otherwise keep the exact prior checkpoint.
+            trimmed_draft, trimmed_units = trim_outcome
+            trimmed_checkpoint = await assess_candidate(trimmed_draft)
+            accepted = not blocking_keys(trimmed_checkpoint.validation, trimmed_checkpoint.quality)
+            append_pass_outcome(
+                pass_index=max_attempts + 1,
+                reason="sentence_trim_accepted" if accepted else "sentence_trim_rejected",
+                requested=len(trimmed_units),
+                applied=len(trimmed_units) if accepted else 0,
+                deferred=0,
+                unresolved=len(current_val.violations),
+                elapsed=0.0,
+                base_fingerprint=_draft_fingerprint(current_draft),
+            )
+            if not accepted:
+                logger.warning(
+                    "ArticleEditor sentence backstop rejected %s: remaining %s",
+                    sorted(trimmed_units),
+                    _blocking_summary(trimmed_checkpoint.validation.issues) or "quality findings",
+                )
+            if accepted:
+                current_draft = trimmed_draft
+                current_val = trimmed_checkpoint.validation
+                current_quality = trimmed_checkpoint.quality
+                self.last_assessment = trimmed_checkpoint
+                self.last_quality_report = current_quality
+                self.last_patched_unit_ids = tuple(
+                    dict.fromkeys((*self.last_patched_unit_ids, *trimmed_units))
+                )
+                logger.info(
+                    "ArticleEditor removed %d unsupported sentence(s) across %d unit(s)",
+                    sum(trimmed_units.values()),
+                    len(trimmed_units),
+                )
         return current_draft, current_val
 
     def _build_unit_contexts(
@@ -1787,6 +2129,7 @@ class ArticleEditor:
                     or support.publication_use != "PUBLISH"
                     or support.temporal_role != "CURRENT_WINDOW"
                     or not editor_visible_support(support_id)
+                    or not support_text(support_id)
                 ):
                     continue
                 visible_current_ids.append(support_id)
@@ -1915,14 +2258,14 @@ class ArticleEditor:
                 support_id for support_id in dict.fromkeys(prioritized) if support_id in available
             ]
 
-        def current_title_repair_supports() -> list[str]:
-            """Find current-window article evidence for repairing a historical title.
+        def current_repair_supports(unit_text: str, own_support_ids: list[str]) -> list[str]:
+            """Find current-window article evidence for repairing a title or lead.
 
-            A title that cites only historical supports cannot be repaired by
-            rephrasing those same supports: the validator will still correctly
-            reject it for lacking current-window evidence. Offer the editor
-            only relevant, current-window supports already used elsewhere in
-            this draft, then constrain re-grounding to those same IDs.
+            A title or lead that cites no current-window PUBLISH support cannot be
+            repaired by rephrasing those same supports: the validator will still
+            correctly reject it. Offer the editor only relevant, current-window
+            supports already used elsewhere in this draft, then constrain
+            re-grounding to the IDs shown.
             """
             from src.publication.article_claims import _stem
             from src.publication.article_semantic_support import _STOPWORDS
@@ -1939,14 +2282,13 @@ class ArticleEditor:
                         draft_support_ids.extend(claim.cited_support_ids)
             draft_support_ids = list(dict.fromkeys(draft_support_ids))
 
-            historical_text = [draft.title]
-            for support_id in unit_supports(
-                list(draft.title_support_ids),
-                [sid for claim in draft.title_claims for sid in claim.cited_support_ids],
-                issues_by_unit.get("TITLE", []),
-            ):
+            historical_text = [unit_text]
+            for support_id in own_support_ids:
                 support = context.support_by_id.get(support_id)
-                if support and support.temporal_role == "HISTORICAL_CONTEXT":
+                if support and not (
+                    support.publication_use == "PUBLISH"
+                    and support.temporal_role == "CURRENT_WINDOW"
+                ):
                     historical_text.extend((support.text, support.source_text))
 
             token_re = re.compile(r"[a-zа-яё0-9]+", re.IGNORECASE)
@@ -1971,6 +2313,8 @@ class ArticleEditor:
                     support is None
                     or support.publication_use != "PUBLISH"
                     or support.temporal_role != "CURRENT_WINDOW"
+                    or not editor_visible_support(support_id)
+                    or not support_text(support_id)
                 ):
                     continue
                 overlap = len(
@@ -2003,7 +2347,17 @@ class ArticleEditor:
                 # The candidate title must be grounded in today's article
                 # material. Keeping the old historical IDs in the allowed set
                 # would let the title retain the stale claim and fail again.
-                t_sups = current_title_repair_supports()
+                own_title_ids = unit_supports(
+                    list(draft.title_support_ids),
+                    [sid for claim in draft.title_claims for sid in claim.cited_support_ids],
+                    title_issues,
+                )
+                # Word overlap can find nothing when the historical title shares no
+                # stems with today's supports; the body's current supports are then
+                # the only grounded choice, as for the lead.
+                t_sups = current_repair_supports(draft.title, own_title_ids) or (
+                    current_body_repair_supports()
+                )
             else:
                 t_sups = unit_supports(
                     list(draft.title_support_ids),
@@ -2035,6 +2389,19 @@ class ArticleEditor:
                     [sid for claim in draft.lead_claims for sid in claim.cited_support_ids],
                     lead_issues,
                 )
+                if any(
+                    getattr(issue, "code", "")
+                    in {"INVALID_SUPPORT_POLICY", "HISTORICAL_CONTEXT_UNFRAMED"}
+                    for issue in lead_issues
+                ):
+                    # The lead lacks current-window evidence; rephrasing its own
+                    # supports cannot fix that. Its own supports stay, so supported
+                    # earlier context may remain with continuation framing.
+                    current_ids = (
+                        current_repair_supports(draft.lead, lead_sups)
+                        or current_body_repair_supports()
+                    )
+                    lead_sups = list(dict.fromkeys([*lead_sups, *current_ids]))
             unit_data.append(
                 {
                     "unit_id": "LEAD",
@@ -2453,7 +2820,8 @@ class ArticleEditor:
             "   - Замечание указывает, что в конкретном предложении есть утверждение или лексика, недостаточно подтвержденная источниками.\n"
             "   - ВАЖНО: ВЫПОЛНИТЕ ТОЧЕЧНУЮ КОРРЕКТИРОВКУ! Исправьте или перефразируйте именно проблемное утверждение, удалив неподтвержденные слова и домыслы.\n"
             "   - НЕ дублируйте факты, уже изложенные в соседних абзацах. Не добавляйте лишних обобщающих предложений. Опирайтесь только на факты, относящиеся к этому конкретному фрагменту.\n"
-            "   - Категорически запрещено удалять весь абзац ([DELETE]), если в нем есть подтвержденная информация.\n\n"
+            "   - Категорически запрещено удалять весь абзац ([DELETE]), если в нем есть подтвержденная информация.\n"
+            "   - Если замечание касается конкретного предложения и его нельзя переписать так, чтобы каждое утверждение опиралось на показанные источники, удалите именно это предложение целиком. Остальные предложения абзаца и их подтверждённые факты сохраните.\n\n"
             "7. ОТСУТСТВИЕ ИСТОЧНИКОВ (MISSING_SUPPORT):\n"
             '   - Только если к фрагменту вообще нет никаких подтверждающих фактов в источниках — верните пустую строку "" или "[DELETE]", чтобы удалить этот неподтвержденный фрагмент.\n\n'
             "8. МЕХАНИКА ИСТОЧНИКОВ И АВТОРСКАЯ РАЗГОВОРНАЯ РЕЧЬ:\n"
@@ -2679,7 +3047,15 @@ class ArticleEditor:
                 elif iss.code == "REPEATED_CONTENT_LOOP":
                     msg += " -> ВАЖНО: удалите дублирующиеся одинаковые предложения, оставив мысль ровно один раз!"
                 elif iss.code == "INVALID_SUPPORT_POLICY":
-                    msg += " -> ВАЖНО: заголовок раздела или лид обязан опираться на подтвержденные факты с публикацией (PUBLISH) текущего дня. Сформулируйте заголовок раздела строго по фактам из абзацев этого раздела!"
+                    if utype == "lead":
+                        msg += (
+                            " -> ВАЖНО: лид обязан опираться хотя бы на один подтверждённый факт "
+                            "текущего периода. Среди подтверждений ниже есть факты из тела статьи: "
+                            "откройте лид главным из них и сохраните прежние факты лида только "
+                            "с явным маркером продолжения («по-прежнему», «всё ещё»)."
+                        )
+                    else:
+                        msg += " -> ВАЖНО: заголовок раздела или лид обязан опираться на подтвержденные факты с публикацией (PUBLISH) текущего дня. Сформулируйте заголовок раздела строго по фактам из абзацев этого раздела!"
                 elif iss.code == "QUESTION_CONTEXT_OVERCLAIM":
                     msg += " -> ВАЖНО: запрещено утверждать вопрос жителей из чата как установленный факт. Используйте вопросительную или исследовательскую формулировку («Что известно о...», «Вопросы жителей о...») либо перепишите по реальным подтвержденным фактам!"
                 elif iss.code == "HISTORICAL_CONTEXT_UNFRAMED":
@@ -3166,25 +3542,9 @@ class ArticleEditor:
             if support_chars > _MAX_EDITOR_SUPPORT_CONTEXT_CHARS:
                 return None, "required_support_budget_exceeded"
             packets.append(packet)
-        article = {
-            "TITLE": draft.title,
-            "LEAD": draft.lead,
-            "sections": [
-                {
-                    "section_id": sid,
-                    "heading": section.heading,
-                    "paragraphs": [
-                        {"unit_id": pid, "text": paragraph.text}
-                        for pid, paragraph in registry.paragraphs.items()
-                        if registry.paragraph_sections[pid] == sid
-                    ],
-                }
-                for sid, section in registry.sections.items()
-            ],
-        }
         payload = {
             "base_fingerprint": registry.base_fingerprint,
-            "complete_read_only_article": article,
+            "complete_read_only_article": _read_only_article(draft),
             "authorized_sources": {
                 pid: {
                     "support_ids": ids,
@@ -3664,11 +4024,11 @@ class ArticleEditor:
                 return {}, "unparseable_response", 0
 
         if not isinstance(data, dict):
-            return {}, "invalid_response_shape", 0
+            return _invalid_editor_shape(data)
         if "units" in data:
-            raw_units = data.get("units")
-            if not isinstance(raw_units, dict):
-                return {}, "invalid_response_shape", 0
+            raw_units = _editor_units_mapping(data.get("units"))
+            if raw_units is None:
+                return _invalid_editor_shape(data)
         else:
             raw_units = {
                 key: value
@@ -3676,32 +4036,42 @@ class ArticleEditor:
                 if key not in {"operations", "base_fingerprint"}
             }
             if not raw_units and not isinstance(data.get("operations"), list):
-                return {}, "invalid_response_shape", 0
+                return _invalid_editor_shape(data)
 
         patches: dict[str, str] = {}
-        unknown_count = 0
+        unknown_keys: list[str] = []
         malformed_values = 0
         for key, value in raw_units.items():
             if not isinstance(key, str):
                 malformed_values += 1
                 continue
-            unit_id = key.strip()
+            unit_id = _normalize_editor_unit_id(key)
             if unit_id not in requested_unit_ids:
-                unknown_count += 1
+                unknown_keys.append(
+                    unit_id if _SAFE_RESPONSE_KEY_RE.fullmatch(unit_id) else "<other>"
+                )
                 continue
             if isinstance(value, str):
                 patches[unit_id] = _normalize_homoglyphs(value.strip())
-            elif isinstance(value, dict) and isinstance(value.get("text"), str):
-                patches[unit_id] = _normalize_homoglyphs(value["text"].strip())
             elif value is None:
                 patches[unit_id] = ""
+            elif isinstance(value, dict) and (text := _editor_patch_text(value)) is not None:
+                patches[unit_id] = _normalize_homoglyphs(text.strip())
             else:
                 malformed_values += 1
 
-        if unknown_count:
-            return patches, "unknown_unit_ids", unknown_count
+        if unknown_keys:
+            # Keys only, never values: they show whether the editor answered other units.
+            logger.warning("ArticleEditor ignored unrequested unit key(s): %s", unknown_keys[:12])
+            return patches, "unknown_unit_ids", len(unknown_keys)
         if malformed_values:
-            return patches, "invalid_response_shape", 0
+            logger.warning(
+                "ArticleEditor skipped %d malformed unit value(s); shape=%s",
+                malformed_values,
+                _editor_shape_signature(data),
+            )
+            if not patches:
+                return _invalid_editor_shape(data)
         return patches, "completed", 0
 
     def apply_patches(

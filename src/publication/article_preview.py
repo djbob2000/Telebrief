@@ -390,7 +390,7 @@ def _safe_editor_outcomes(
         if (
             not isinstance(pass_index, int)
             or isinstance(pass_index, bool)
-            or pass_index not in (1, 2)
+            or pass_index not in (1, 2, 3)  # 3 is the deterministic sentence backstop
         ):
             continue
         base = item.get("base_fingerprint")

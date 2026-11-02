@@ -6,7 +6,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from src.publication.article_claims import stem_word
+from src.publication.article_claims import fold_apostrophes, stem_word
 from src.publication.article_semantic_lexicon import (
     canonical_semantic_concepts,
     canonicalize_semantic_token,
@@ -836,6 +836,8 @@ def assess_semantic_support(
         )
 
     context = prepared_context or prepare_semantic_context(allowed_context_terms)
+    claim_text = fold_apostrophes(claim_text)
+    support_texts = [fold_apostrophes(st) for st in support_texts]
 
     # 1. Prepare support tokens and stems
     support_stems: set[str] = set()

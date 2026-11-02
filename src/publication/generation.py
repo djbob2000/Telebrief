@@ -40,6 +40,14 @@ from src.publication.rubrics import (
 
 logger = logging.getLogger(__name__)
 
+# Article rejections caused by the Evidence Boundary or reader-quality gate are
+# retried once for the same frozen run. The writer is not deterministic, so a
+# second attempt with identical sealed inputs can yield a different draft.
+# Writer/provider failures keep their own provider-level handling.
+ARTICLE_RUN_RETRY_REASONS = frozenset({"validation_failed", "quality_failed"})
+ARTICLE_RUN_MAX_ATTEMPTS = 2
+
+
 _MONTHS_RU = (
     "января",
     "февраля",
@@ -682,6 +690,40 @@ class PublicationGenerationService:
             except Exception as exc:
                 logger.warning("Could not initialize rubric embedding provider: %s", exc)
                 self.rubric_classifier = DigestRubricClassifier()
+
+    async def _generate_article_with_run_retry(
+        self,
+        run_id: int,
+        frozen: Any,
+        observer: Any,
+    ) -> tuple[str, str, str]:
+        """Generate one article from the same sealed inputs, retrying a safety rejection once.
+
+        Only a rejection from the Evidence Boundary or the reader-quality gate is
+        retried. Any second rejection propagates unchanged and fails the run closed.
+        """
+        for attempt_number in range(1, ARTICLE_RUN_MAX_ATTEMPTS + 1):
+            try:
+                return await self.generator.generate_from_frozen_input(
+                    frozen, attempt_observer=observer
+                )
+            except ArticlePublicationRejected as exc:
+                if exc.reason not in ARTICLE_RUN_RETRY_REASONS:
+                    raise
+                if attempt_number >= ARTICLE_RUN_MAX_ATTEMPTS:
+                    logger.warning(
+                        "article run %s rejected again after run-level retry (%s)",
+                        run_id,
+                        exc.reason,
+                    )
+                    raise
+                logger.warning(
+                    "article run %s rejected on attempt %s (%s); retrying the same sealed inputs",
+                    run_id,
+                    attempt_number,
+                    exc.reason,
+                )
+        raise AssertionError("unreachable: article run retry loop exited without a result")
 
     async def _attach_situation_memory(
         self, plan: Any, *, run: Any, implementation_versions: dict[str, Any]
@@ -1348,8 +1390,8 @@ class PublicationGenerationService:
                     )
 
             else:
-                title, lead, body = await self.generator.generate_from_frozen_input(
-                    frozen, attempt_observer=observer
+                title, lead, body = await self._generate_article_with_run_retry(
+                    run_id, frozen, observer
                 )
                 is_article = run.publication_type in (
                     "daily_article",

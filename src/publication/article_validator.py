@@ -19,6 +19,7 @@ from src.publication.article_context import ArticleEditorialContext, ArticleSupp
 from src.publication.article_geography import (
     resolve_article_place_resolver,
 )
+from src.publication.article_kitchen import CHAT_KITCHEN_LEAK_PATTERN
 from src.publication.article_length import ArticleLengthProfile
 from src.publication.article_material import (
     ArticleMaterialProjection,
@@ -47,17 +48,6 @@ _META_OMISSION_PATTERN = re.compile(
     r"контакт[а-я]*\s+скрыт[а-я]*|"
     r"дат[а-я]*\s+не\s+(?:указыва[а-я]+|уточня[а-я]+)|"
     r"номера\s+не\s+публику[а-я]+)\b",
-    re.IGNORECASE,
-)
-
-_CHAT_KITCHEN_LEAK_PATTERN = re.compile(
-    r"\b(?:"
-    r"перекличк[а-я]*|"
-    r"в\s+(?:местных\s+|городских\s+)?(?:чатах|чате|пабликах|каналах|группах)|"
-    r"участник[а-я]*\s+чата|"
-    r"в\s+комментариях|"
-    r"в\s+(?:телеграм|telegram)-канал[а-я]*"
-    r")\b",
     re.IGNORECASE,
 )
 
@@ -1077,7 +1067,7 @@ def validate_article_draft(
             )
 
         # Check for leaked chat kitchen / source references
-        if _CHAT_KITCHEN_LEAK_PATTERN.search(unit_text):
+        if CHAT_KITCHEN_LEAK_PATTERN.search(unit_text):
             issues.append(
                 ArticleValidationIssue(
                     code="CHAT_KITCHEN_LEAK",

@@ -21,6 +21,7 @@ from src.publication.article_coverage_diagnostics import (
     ArticleCoverageDiagnostics,
     diagnose_article_coverage,
 )
+from src.publication.article_kitchen import repair_chat_kitchen_phrases
 from src.publication.article_length import ArticleLengthProfile
 from src.publication.article_material import (
     ArticleMaterialProjection,
@@ -1314,7 +1315,7 @@ def _prepare_text_and_claims(
     )
     citable_unit_ids = _citable_support_ids(all_unit_support_ids, context, material_projection)
     prepared_text = _wrap_supported_organization_names(
-        text, citable_unit_ids, context, place_resolver
+        repair_chat_kitchen_phrases(text), citable_unit_ids, context, place_resolver
     )
     added_claim_supports: tuple[str, ...] = ()
     if clarify_unknown_district:
@@ -1331,7 +1332,7 @@ def _prepare_text_and_claims(
         for claim in claims
         for formatted_text in (
             _wrap_supported_organization_names(
-                claim.text,
+                repair_chat_kitchen_phrases(claim.text),
                 _citable_support_ids(claim.cited_support_ids, context, material_projection),
                 context,
                 place_resolver,
