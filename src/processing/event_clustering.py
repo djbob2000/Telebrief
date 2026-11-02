@@ -98,7 +98,7 @@ class CandidateCentroidCache:
             for story_id, (updated_at, vector) in loaded.items():
                 self._centroids[story_id] = _CachedCentroid(
                     updated_at=updated_at,
-                    vector=vector,
+                    vector=array("f", vector),
                     norm=_vector_norm(vector),
                 )
 
