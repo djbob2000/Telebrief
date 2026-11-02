@@ -252,6 +252,18 @@ def _resolve_openrouter_max_tokens(requested: int | None) -> int:
     return min(effective, cap)
 
 
+def _openrouter_floor_quantizations(model: str) -> list[str]:
+    """Precisions allowed for a ``:floor`` OpenRouter model, from OPENROUTER_FLOOR_QUANTIZATIONS.
+
+    Only ``:floor`` models are filtered, so every other model keeps its normal routing.
+    An empty or unset variable means no filter.
+    """
+    if not model.endswith(":floor"):
+        return []
+    raw = os.environ.get("OPENROUTER_FLOOR_QUANTIZATIONS") or ""
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
 def _request_has_openrouter_reasoning(create_kwargs: Dict[str, Any]) -> bool:
     """Return whether an OpenRouter request carries an explicit reasoning object."""
     extra_body = create_kwargs.get("extra_body")
@@ -1091,6 +1103,19 @@ class OpenAIProvider(AIProvider):
             create_kwargs.setdefault("extra_body", {})["thinking"] = {
                 "type": "enabled" if thinking else "disabled"
             }
+        floor_quantizations = _openrouter_floor_quantizations(model) if is_openrouter else []
+        if floor_quantizations:
+            # ":floor" routes to the cheapest provider regardless of precision. The
+            # allowlist keeps that price-first routing inside the chosen precisions.
+            create_kwargs.setdefault("extra_body", {})["provider"] = {
+                "quantizations": floor_quantizations
+            }
+        if response_format is not None and is_openrouter and model.startswith("anthropic/"):
+            # OpenRouter rejects structured-output schemas for Anthropic models with a
+            # generic 400 that bypasses the reasoning retry path. Callers parse JSON
+            # from plain text, so the schema is dropped instead of failing the batch.
+            self.logger.debug("Dropping response_format for OpenRouter model=%s", model)
+            response_format = None
         if response_format is not None:
             create_kwargs["response_format"] = response_format
 
