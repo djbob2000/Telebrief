@@ -11,7 +11,7 @@ import re
 from dataclasses import asdict
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Iterable, List, Tuple
 from zoneinfo import ZoneInfo
 
 from src.ai_providers import (
@@ -74,6 +74,7 @@ from src.publication.article_writer_response import (
     ArticleWriterResponse,
     parse_article_writer_markdown,
 )
+from src.publication.errors import ArticlePublicationRejected
 from src.publication.narrative_contract import build_article_narrative_contract
 from src.publication.policies import ARTICLE_WRITER_VERSION
 from src.timezones import get_timezone, normalize_timezone_name
@@ -92,6 +93,22 @@ class NoSubstantiveEditorialError(NoSubstantiveMaterialError):
 
 class UnusableArticleWriterResponse(RuntimeError):
     """The final configured writer response contained no usable article prose."""
+
+
+def _writer_can_cite_current_publish(
+    article_ctx: ArticleEditorialContext, support_ids: Iterable[str]
+) -> bool:
+    """Return whether any writer-visible support can satisfy the title/lead policy.
+
+    The validator requires a title and a lead to cite at least one PUBLISH support
+    from the current window (AGENTS §6.5). Without one, no draft can pass.
+    """
+    return any(
+        (support := article_ctx.support_by_id.get(support_id)) is not None
+        and support.publication_use == "PUBLISH"
+        and support.temporal_role == "CURRENT_WINDOW"
+        for support_id in support_ids
+    )
 
 
 def _escape_article_material_markers(context_text: str) -> str:
@@ -1453,6 +1470,15 @@ class ArticleGenerator:
             context_str.encode("utf-8")
         ).hexdigest()
         writer_exposed_support_ids = set(writer_input.exposed_support_ids)
+        if not _writer_can_cite_current_publish(article_ctx, writer_exposed_support_ids):
+            # Fail closed before any provider call: the title and lead could never pass.
+            raise ArticlePublicationRejected(
+                reason="global_incompleteness",
+                message=(
+                    "article window has no current-window PUBLISH support for the title or lead"
+                ),
+                metadata={"exposed_support_count": len(writer_exposed_support_ids)},
+            )
         writer_quote_allowlist = writer_input.quote_allowlist
         richness_summary = await asyncio.to_thread(
             build_article_composition_richness_summary,
@@ -1764,7 +1790,7 @@ class ArticleGenerator:
             writer_meta["writer_invocation_count"] = 1
             writer_meta["editor_invocation_count"] = 0
             writer_meta["editor_invocation_limit"] = min(
-                getattr(editorial_config, "article_editor_max_attempts", 3), 3
+                getattr(editorial_config, "article_editor_max_attempts", 3), 2
             )
             writer_meta["generation_timeout_seconds"] = (
                 self.config.settings.article.article_generation_timeout_seconds
@@ -1826,8 +1852,9 @@ class ArticleGenerator:
                             max_output_tokens=editor_max_tokens,
                             reasoning_effort=editor_reasoning_effort,
                         )
+                        # ArticleEditor allows at most two calls per attempt (AGENTS §0.7).
                         editor_attempts = min(
-                            getattr(editorial_config, "article_editor_max_attempts", 3), 3
+                            getattr(editorial_config, "article_editor_max_attempts", 3), 2
                         )
                         try:
                             edited_draft, edited_val = await editor.edit_draft(

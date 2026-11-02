@@ -320,21 +320,21 @@ def test_article_editor_trims_large_packets_to_context_budget_without_dropping()
 
 
 def test_generator_editor_attempt_clamping() -> None:
-    # Verify the clamp logic in ArticleGenerator: min(attempts, 3)
+    # Verify the clamp logic in ArticleGenerator: min(attempts, 2), the editor's own two-call cap
     def compute_max_attempts(configured_val: int | None) -> int:
         editorial_config = MagicMock()
         if configured_val is not None:
             editorial_config.article_editor_max_attempts = configured_val
         else:
             del editorial_config.article_editor_max_attempts
-        return min(getattr(editorial_config, "article_editor_max_attempts", 3), 3)
+        return min(getattr(editorial_config, "article_editor_max_attempts", 3), 2)
 
-    assert compute_max_attempts(None) == 3
-    assert compute_max_attempts(3) == 3
+    assert compute_max_attempts(None) == 2
+    assert compute_max_attempts(3) == 2
     assert compute_max_attempts(2) == 2
     assert compute_max_attempts(1) == 1
-    # If user sets 5, it should be capped at 3
-    assert compute_max_attempts(5) == 3
+    # If user sets 5, it should be capped at 2
+    assert compute_max_attempts(5) == 2
 
 
 def test_missing_claim_support_comprehensive_cases() -> None:
