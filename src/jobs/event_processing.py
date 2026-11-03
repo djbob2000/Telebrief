@@ -22,11 +22,7 @@ from src.processing.embeddings import EmbeddingService
 from src.processing.errors import RevisionClaimLostError, classify_processing_failure
 from src.processing.event_analysis import EventAnalysisService
 from src.processing.event_brief import EventBriefService
-from src.processing.event_clustering import (
-    BatchCandidateIndex,
-    EventClusteringService,
-    normalize_vector,
-)
+from src.processing.event_clustering import EventClusteringService
 from src.processing.event_triage import StoryTriageService
 from src.processing.fragments import split_into_fragments
 from src.processing.providers import resolve_processing_provider
@@ -335,41 +331,8 @@ async def _process_event_revisions(
         )
 
     timings["embed"] = time.monotonic() - embed_started
-
-    # 4. Read the join candidates of the whole batch once per edition. The
-    # centroid table is scanned here, not once for each fragment below.
-    snapshot_started = time.monotonic()
-    candidate_index = BatchCandidateIndex()
-    queries_by_edition: dict[int, list[tuple[int, list[float], dt.datetime]]] = {}
-    for f in prepared.candidates:
-        if f.id not in embeddings_map:
-            continue
-        _sfe_id, vec = embeddings_map[f.id]
-        edition_id, collected_at = frag_meta[f.id]
-        active_since = collected_at - dt.timedelta(hours=cfg.active_window_hours)
-        queries_by_edition.setdefault(edition_id, []).append(
-            (f.id, normalize_vector(vec), active_since)
-        )
-    for edition_id, queries in queries_by_edition.items():
-        async with runtime.uow.transaction() as conn:
-            await _require_revision_claim(
-                conn, EventRevisionProcessingRepository(), revision_ids, claim_token, claim_lost
-            )
-            # Keep every story the batch may join, even after earlier fragments
-            # of the batch have moved their centroids.
-            snapshot = await cluster_repo.search_batch_candidates(
-                conn,
-                edition_id,
-                queries,
-                model=emb_cfg.model,
-                dimensions=emb_cfg.dimensions,
-                limit=cfg.max_cluster_candidates + len(queries),
-            )
-        candidate_index.add_snapshot(snapshot)
-    timings["snapshot"] = time.monotonic() - snapshot_started
-
     cluster_started = time.monotonic()
-    # 5. Each cluster assignment owns only one short transaction. A failure
+    # 4. Each cluster assignment owns only one short transaction. A failure
     # cannot roll back earlier embedding checkpoints or cluster units.
     for f in prepared.candidates:
         if f.id not in embeddings_map:
@@ -394,14 +357,13 @@ async def _process_event_revisions(
             join_similarity=cfg.join_similarity,
             active_window_hours=cfg.active_window_hours,
             max_cluster_candidates=cfg.max_cluster_candidates,
-            candidate_index=candidate_index,
         )
         stats["assignments"] += 1
 
     timings["cluster"] = time.monotonic() - cluster_started
     logger.info(
         "revision batch timing revisions=%d fragments=%d candidates=%d assignments=%d "
-        "load_s=%.2f embed_s=%.2f embed_provider_s=%.2f snapshot_s=%.2f cluster_s=%.2f",
+        "load_s=%.2f embed_s=%.2f embed_provider_s=%.2f cluster_s=%.2f",
         stats["revisions"],
         stats["fragments"],
         stats["candidates"],
@@ -409,7 +371,6 @@ async def _process_event_revisions(
         timings["load"],
         timings["embed"],
         timings["embed_provider"],
-        timings["snapshot"],
         timings["cluster"],
     )
     if stats["assignments"] > 0 and getattr(cfg, "background_authority_enabled", False):
@@ -448,11 +409,9 @@ async def _process_cluster_unit_with_retry(
     join_similarity: float,
     active_window_hours: int,
     max_cluster_candidates: int,
-    candidate_index: BatchCandidateIndex,
 ) -> None:
     """Retry only a short cluster transaction after a retryable serialization error."""
     for attempt in range(_CLUSTER_UNIT_MAX_RETRIES):
-        candidate_index.discard()
         try:
             async with runtime.uow.transaction() as conn:
                 await _require_revision_claim(
@@ -474,9 +433,7 @@ async def _process_cluster_unit_with_retry(
                     join_similarity=join_similarity,
                     active_window_hours=active_window_hours,
                     max_cluster_candidates=max_cluster_candidates,
-                    candidate_index=candidate_index,
                 )
-            candidate_index.commit()
             return
         except (psycopg.errors.DeadlockDetected, psycopg.errors.SerializationFailure):
             if attempt + 1 >= _CLUSTER_UNIT_MAX_RETRIES:

@@ -5,14 +5,12 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import math
-import operator
 from collections.abc import Sequence
-from dataclasses import dataclass
 from typing import Literal, cast
 
 import psycopg
 
-from src.domain.event_clusters import ClusterAssignmentResult, ClusterJoinCandidate
+from src.domain.event_clusters import ClusterAssignmentResult
 from src.domain.event_pipeline import SourceFragment
 from src.repositories.event_clusters import EventClusterRepository
 from src.repositories.stories import StoryRepository
@@ -37,96 +35,6 @@ def combine_centroids(
         for old_c, new_v in zip(old_centroid, new_vector, strict=True)
     ]
     return normalize_vector(combined)
-
-
-@dataclass(frozen=True)
-class _ChangedStory:
-    """A story that this batch joined or created, with its current centroid."""
-
-    edition_id: int
-    centroid: list[float]
-    fragment_count: int
-    last_seen_at: dt.datetime
-
-
-class BatchCandidateIndex:
-    """Join candidates for one revision batch, read from the database once.
-
-    The database snapshot is taken before the batch assigns its fragments. The
-    fragments of the batch then search it in memory. Stories that this batch
-    joins or creates are tracked separately and scored with their current
-    centroids. A snapshot entry for such a story is dropped, because its
-    snapshot centroid is stale. Writes from other jobs become visible at the
-    next batch, while the per-story row lock still protects each update.
-    """
-
-    def __init__(self) -> None:
-        self._snapshot: dict[int, list[ClusterJoinCandidate]] = {}
-        self._changed: dict[int, _ChangedStory] = {}
-        self._staged: tuple[int, _ChangedStory] | None = None
-
-    def add_snapshot(self, results: dict[int, list[ClusterJoinCandidate]]) -> None:
-        self._snapshot.update(results)
-
-    def candidates(
-        self,
-        fragment_id: int,
-        *,
-        edition_id: int,
-        vector: Sequence[float],
-        active_since: dt.datetime,
-        limit: int,
-    ) -> list[ClusterJoinCandidate]:
-        """Return the best ``limit`` candidates, as a fresh database search would."""
-        merged = [
-            candidate
-            for candidate in self._snapshot.get(fragment_id, [])
-            if candidate.story_id not in self._changed
-        ]
-        for story_id, changed in self._changed.items():
-            if changed.edition_id != edition_id or changed.last_seen_at < active_since:
-                continue
-            merged.append(
-                ClusterJoinCandidate(
-                    story_id=story_id,
-                    similarity=sum(map(operator.mul, changed.centroid, vector)),
-                    fragment_count=changed.fragment_count,
-                    last_seen_at=changed.last_seen_at,
-                )
-            )
-        merged.sort(key=lambda candidate: candidate.similarity, reverse=True)
-        return merged[:limit]
-
-    def stage(
-        self,
-        story_id: int,
-        *,
-        edition_id: int,
-        centroid: list[float],
-        fragment_count: int,
-        last_seen_at: dt.datetime,
-    ) -> None:
-        """Record the change of the fragment being assigned; applied by commit()."""
-        self._staged = (
-            story_id,
-            _ChangedStory(
-                edition_id=edition_id,
-                centroid=centroid,
-                fragment_count=fragment_count,
-                last_seen_at=last_seen_at,
-            ),
-        )
-
-    def commit(self) -> None:
-        """Apply the staged change after its database transaction has committed."""
-        if self._staged is not None:
-            story_id, changed = self._staged
-            self._changed[story_id] = changed
-        self._staged = None
-
-    def discard(self) -> None:
-        """Drop the staged change after a failed or retried transaction."""
-        self._staged = None
 
 
 class EventClusteringService:
@@ -156,14 +64,8 @@ class EventClusteringService:
         join_similarity: float = 0.84,
         active_window_hours: int = 72,
         max_cluster_candidates: int = 20,
-        candidate_index: BatchCandidateIndex | None = None,
     ) -> ClusterAssignmentResult:
-        """Assign one candidate fragment to an existing active story cluster or seed a new one.
-
-        With ``candidate_index`` the search reads the batch snapshot instead of the
-        table, and the caller must call ``candidate_index.commit()`` after the
-        transaction succeeds.
-        """
+        """Assign one candidate fragment to an existing active story cluster or seed a new one."""
         norm_vec = normalize_vector(vector)
         active_since = item_timestamp - dt.timedelta(hours=active_window_hours)
 
@@ -185,24 +87,15 @@ class EventClusteringService:
             )
 
         # 1. Search candidate clusters
-        if candidate_index is None:
-            candidates = await self.cluster_repo.find_candidate_clusters(
-                conn,
-                edition_id,
-                norm_vec,
-                model=model,
-                dimensions=dimensions,
-                active_since=active_since,
-                limit=max_cluster_candidates,
-            )
-        else:
-            candidates = candidate_index.candidates(
-                fragment.id,
-                edition_id=edition_id,
-                vector=norm_vec,
-                active_since=active_since,
-                limit=max_cluster_candidates,
-            )
+        candidates = await self.cluster_repo.find_candidate_clusters(
+            conn,
+            edition_id,
+            norm_vec,
+            model=model,
+            dimensions=dimensions,
+            active_since=active_since,
+            limit=max_cluster_candidates,
+        )
 
         # 2. Check if closest cluster meets join threshold
         if candidates and candidates[0].similarity >= join_similarity:
@@ -255,14 +148,6 @@ class EventClusteringService:
                 latest_assignment_id=assignment_id,
                 analysis_dirty=True,
             )
-            if candidate_index is not None:
-                candidate_index.stage(
-                    target_story_id,
-                    edition_id=edition_id,
-                    centroid=new_centroid,
-                    fragment_count=new_frag_count,
-                    last_seen_at=last_seen,
-                )
 
             return ClusterAssignmentResult(
                 fragment_id=fragment.id,
@@ -297,14 +182,6 @@ class EventClusteringService:
             latest_assignment_id=assignment_id,
             analysis_dirty=True,
         )
-        if candidate_index is not None:
-            candidate_index.stage(
-                story_id,
-                edition_id=edition_id,
-                centroid=norm_vec,
-                fragment_count=1,
-                last_seen_at=item_timestamp,
-            )
 
         return ClusterAssignmentResult(
             fragment_id=fragment.id,
