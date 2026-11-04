@@ -16,6 +16,7 @@ import psycopg
 
 from src.ai_providers import classify_provider_failure
 from src.config_loader import EditionScopeConfig
+from src.domain.edition_geography import EditionGeographyContext
 from src.domain.event_clusters import StoryClusterState
 from src.domain.event_payload import (
     EventPayload,
@@ -29,10 +30,13 @@ from src.llm_telemetry import llm_call_context
 from src.processing.edition_scope import (
     SCOPE_VERSION,
     EditionScopeClass,
+    FragmentMessageContext,
     broad_region_without_focus_impact,
     build_scope_contract,
     external_city_without_focus_impact,
     external_relocated_idp_event,
+    message_context_names_place,
+    story_placed_outside_by_message,
 )
 from src.processing.hard_exclusion import evaluate_story_hard_exclusion
 from src.processing.operational_semantics import (
@@ -133,10 +137,15 @@ def _extract_mixed_question_and_outage(text: str) -> tuple[str, str, str, str] |
     return q_combined, statement_combined, subject_key, subject_label
 
 
+SAME_MESSAGE_CONTEXT_CHARS = 240
+
+
 def format_gate_fragment_excerpt(
-    fragment: Mapping[str, Any], parent_text: str | None = None
+    fragment: Mapping[str, Any],
+    parent_text: str | None = None,
+    same_message_text: str | None = None,
 ) -> str:
-    """Render a citable fragment separately from its non-citable reply context."""
+    """Render a citable fragment separately from its non-citable reply and message context."""
     fragment_id = fragment["fragment_id"]
     observed_at = fragment["observed_at"]
     timestamp = observed_at.isoformat() if hasattr(observed_at, "isoformat") else str(observed_at)
@@ -145,10 +154,50 @@ def format_gate_fragment_excerpt(
         f"- [frag={fragment_id} time={timestamp} role={fragment['source_role']} "
         f"source={fragment['source_name']}] PRIMARY SOURCE TEXT: {own_text}"
     )
+    if same_message_text and same_message_text.strip():
+        clean_message = " ".join(same_message_text.split())
+        line += f"\n  [SAME-MESSAGE CONTEXT ONLY — NOT CITABLE]: {clean_message}"
     if parent_text and parent_text.strip():
         clean_parent = " ".join(parent_text.split())
         line += f"\n  [REPLY-PARENT CONTEXT ONLY — NOT CITABLE]: {clean_parent}"
     return line
+
+
+def _fragment_message_context(
+    fragment: Mapping[str, Any],
+    same_message_context: Mapping[int, FragmentMessageContext],
+) -> FragmentMessageContext:
+    """Pair a story fragment's full text with the other paragraphs of its message."""
+    text = str(fragment.get("full_text") or fragment.get("text") or "")
+    context = same_message_context.get(int(fragment["fragment_id"]))
+    if context is None:
+        return FragmentMessageContext(text=text)
+    return replace(context, text=text)
+
+
+def same_message_geography_excerpt(
+    context: FragmentMessageContext,
+    *,
+    scope: EditionScopeConfig,
+    geo_context: EditionGeographyContext | None,
+    limit: int = SAME_MESSAGE_CONTEXT_CHARS,
+) -> str | None:
+    """Return the message's other paragraphs that name a place, earliest first.
+
+    Only paragraphs that name a local anchor or a known external place help Gate
+    locate a split paragraph, so place-free paragraphs are left out to save input.
+    """
+    texts = [
+        " ".join(text.split())
+        for text in (*context.earlier_message_texts, *context.later_message_texts)
+        if message_context_names_place([text], scope=scope, geo_context=geo_context)
+    ]
+    if not texts:
+        return None
+    joined = " … ".join(texts)
+    if len(joined) <= limit:
+        return joined
+    return joined[: limit - 1].rstrip() + "…"
 
 
 def decompose_mixed_outage_evidence(
@@ -247,8 +296,14 @@ For every Story return three judgments in the same result:
 Scope is evaluated first. Source membership alone does not make an event local.
 An event in another city/region is OUT_OF_SCOPE unless the excerpts explicitly state a concrete consequence inside the configured focus area.
 Same-region, national importance, front-line direction names, and broad strategic relevance are not DIRECT_IMPACT by themselves.
-Mentions of places, districts, neighborhoods, or streets listed in the configured Focus Places or GEOGRAPHIC CONTEXT establish LOCAL scope.
+Mentions of places, districts, neighborhoods, or streets listed in the configured Focus Places or GEOGRAPHIC CONTEXT establish LOCAL scope, unless the same message explicitly places them in another city or region. District and neighborhood names repeat across cities.
 OUT_OF_SCOPE or UNCERTAIN is normalized to DROP+NONE without requiring a brief.
+
+SAME-MESSAGE CONTEXT:
+- A long source message is split into several fragments. A fragment may be followed by [SAME-MESSAGE CONTEXT ONLY — NOT CITABLE]: other paragraphs of its own message that name a place.
+- Use that context only to decide where the fragment's event takes place. When it explicitly places the message in a city or region outside the focus places and the message names no focus settlement, the fragment's unlocated statements and its district, neighborhood, or street names refer to that external place: classify OUT_OF_SCOPE unless the fragment's own text states a concrete consequence inside the focus places.
+- When that context places the message in a focus place and the fragment names no other place, the fragment shares that placement; cite the fragment itself as the scope basis.
+- Never cite same-message context in scope_basis_fragment_ids or source_fragment_ids, and never copy its facts into evidence.
 
 EDITION-LOCAL DEICTIC CITY REFERENCES:
 - If a PRIMARY SOURCE TEXT itself contains an explicit generic city-level locator such as "в городе", "по городу", "по всему городу", or "во всём городе", and that fragment's source metadata name exactly matches the configured Target Edition name, resolve the generic city reference to that edition and allow LOCAL scope when no competing city/place is mentioned. Cite that primary fragment as the scope basis.
@@ -838,6 +893,13 @@ class StoryTriageService:
                 async for p_row in cur_parents:
                     parent_texts[int(p_row[0])] = str(p_row[1])[:200]
 
+            # Other paragraphs of each fragment's own source message. They share
+            # the fragment's revision, so a source cutoff applies to them equally.
+            same_message_context = await self._load_same_message_context(
+                read_conn,
+                story_fragments_map,
+            )
+
             # 3. Load dynamic recent subject hints
             recent_hints = await self._load_recent_subject_hints(read_conn, edition_id)
 
@@ -847,6 +909,10 @@ class StoryTriageService:
             )
             row_slug = await cur_slug.fetchone()
             edition_slug = str(row_slug[0]) if row_slug else "unknown"
+
+        from src.domain.edition_geography import resolve_edition_geography
+
+        geo_context = resolve_edition_geography(edition_slug, scope_config.name)
 
         # Select at most max_gate_fragments per story deterministically:
         # first newest fragment from each distinct source, then newest unused
@@ -881,7 +947,15 @@ class StoryTriageService:
                     if parent_id is not None and str(parent_id).isdigit()
                     else None
                 )
-                excerpt_lines.append(format_gate_fragment_excerpt(sf, p_text))
+                message_ctx = same_message_context.get(int(sf["fragment_id"]))
+                message_text = (
+                    same_message_geography_excerpt(
+                        message_ctx, scope=scope_config, geo_context=geo_context
+                    )
+                    if message_ctx is not None
+                    else None
+                )
+                excerpt_lines.append(format_gate_fragment_excerpt(sf, p_text, message_text))
             story_sampled_excerpts[sid] = excerpt_lines
 
         hint_text = ""
@@ -893,9 +967,6 @@ class StoryTriageService:
                 + "\n\n"
             )
 
-        from src.domain.edition_geography import resolve_edition_geography
-
-        geo_context = resolve_edition_geography(edition_slug, scope_config.name)
         contract_text = build_scope_contract(scope_config, geo_context)
         prompt_lines = [
             contract_text,
@@ -1206,6 +1277,23 @@ class StoryTriageService:
                     scope = "OUT_OF_SCOPE"
                     scope_confidence = max(scope_confidence, 0.95)
                     scope_reason = "Displaced persons (IDP) or relocated administration activity outside the focus area"
+                elif story_placed_outside_by_message(
+                    basis_fragments=[
+                        _fragment_message_context(sf, same_message_context)
+                        for sf in story_frags
+                        if sf["fragment_id"] in scope_basis_ids
+                    ],
+                    story_fragments=[
+                        _fragment_message_context(sf, same_message_context) for sf in story_frags
+                    ],
+                    scope=scope_config,
+                    geo_context=geo_context,
+                ):
+                    scope = "OUT_OF_SCOPE"
+                    scope_confidence = max(scope_confidence, 0.95)
+                    scope_reason = (
+                        "Same source message places the event outside the configured focus area"
+                    )
 
             # Hard exclusion audit on story fragments
             story_frag_texts: dict[int, str] = {}
@@ -1602,6 +1690,48 @@ class StoryTriageService:
                 sid: invalid_reasons[sid] for sid in invalid_story_ids if sid in invalid_reasons
             },
         )
+
+    async def _load_same_message_context(
+        self,
+        conn: psycopg.AsyncConnection,
+        story_fragments_map: Mapping[int, list[dict[str, Any]]],
+    ) -> dict[int, FragmentMessageContext]:
+        """Load the other paragraphs of each fragment's source message revision.
+
+        A sibling may sit in another Story or be a dropped noise paragraph; it is
+        geographic context only and never a citable fragment of this Story.
+        """
+        fragment_ids = sorted(
+            {int(sf["fragment_id"]) for frags in story_fragments_map.values() for sf in frags}
+        )
+        if not fragment_ids:
+            return {}
+        cursor = await conn.execute(
+            """
+            SELECT f.id, sib.ordinal < f.ordinal, sib.text_content
+            FROM source_fragments f
+            JOIN source_fragments sib
+              ON sib.source_item_revision_id = f.source_item_revision_id
+             AND sib.fragmenter_version = f.fragmenter_version
+             AND sib.id <> f.id
+            WHERE f.id = ANY(%s)
+            ORDER BY f.id, sib.ordinal
+            """,
+            (fragment_ids,),
+        )
+        earlier: dict[int, list[str]] = {}
+        later: dict[int, list[str]] = {}
+        async for row in cursor:
+            target = earlier if row[1] else later
+            target.setdefault(int(row[0]), []).append(str(row[2]))
+        return {
+            fid: FragmentMessageContext(
+                text="",
+                earlier_message_texts=tuple(earlier.get(fid, ())),
+                later_message_texts=tuple(later.get(fid, ())),
+            )
+            for fid in set(earlier) | set(later)
+        }
 
     async def _lookup_cached_decisions(
         self,

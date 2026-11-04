@@ -619,6 +619,7 @@ Rules:
 - source membership alone does not prove locality;
 - same region/nation/front-direction terminology alone does not prove local scope;
 - explicit external geography overrides assumptions based on a local source;
+- a fragment keeps the geography of its own source message: Gate receives the message's other place-naming paragraphs as non-citable `SAME-MESSAGE CONTEXT`, and a deterministic guard (`story_placed_outside_by_message`) normalizes a Story to `OUT_OF_SCOPE` when every cited basis paragraph follows an earlier paragraph that names an external place, the message names no edition settlement, and the paragraph has no first-person locator. Neighborhood names repeat across cities, so a shared one (e.g. "Slobodka") does not make another city's post local;
 - writer must never decide geography;
 - do not hardcode one edition's city, streets, districts, or local examples in generic production prompt code.
 

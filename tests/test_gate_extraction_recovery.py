@@ -42,6 +42,8 @@ class GateConnection:
         query = " ".join(sql.split())
         if "FROM story_fragments sf" in query:
             return Cursor([(10, 100, self.text, 1, "Бердянск", "community", NOW, None)])
+        if "JOIN source_fragments sib" in query:
+            return Cursor([])
         if query.startswith("SELECT slug FROM editions"):
             return Cursor([("berdyansk",)])
         if query.startswith("INSERT INTO story_event_triage_runs"):

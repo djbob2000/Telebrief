@@ -366,6 +366,130 @@ def external_relocated_idp_event(
     return False
 
 
+def _focus_anchors(
+    scope: EditionScopeConfig, geo_context: EditionGeographyContext | None
+) -> set[str]:
+    """Every configured local anchor: the edition's settlements, districts and neighborhoods."""
+    anchors: set[str] = set(scope.focus_places)
+    if geo_context is not None:
+        anchors.update(geo_context.target_locations)
+        anchors.update(geo_context.district_locations)
+    return {anchor for anchor in anchors if anchor}
+
+
+def _settlement_anchors(
+    scope: EditionScopeConfig, geo_context: EditionGeographyContext | None
+) -> set[str]:
+    """Anchors that name the edition's own city or district settlements.
+
+    Neighborhood names (a "Slobodka", a "Center", a "Port") recur in many cities,
+    so only these settlement names can tie a message to the edition by themselves.
+    """
+    anchors: set[str] = set(scope.focus_places)
+    if geo_context is not None:
+        anchors.add(geo_context.edition_name)
+        anchors.update(geo_context.district_locations)
+    return {anchor for anchor in anchors if anchor}
+
+
+def _external_locations(
+    scope: EditionScopeConfig, geo_context: EditionGeographyContext | None
+) -> set[str]:
+    """Known out-of-scope places, without any name that is also a local anchor."""
+    locations = (
+        geo_context.out_of_scope_locations
+        if geo_context is not None
+        else _COMMON_OUT_OF_SCOPE_LOCATIONS
+    )
+    norm_focus = {_norm_geo_text(anchor) for anchor in _focus_anchors(scope, geo_context)}
+    return {loc for loc in locations if loc and _norm_geo_text(loc) not in norm_focus}
+
+
+# First-person locators tie a paragraph to its author's own place, which may
+# differ from a place the same message mentions earlier ("Was in X. Here we...").
+_FIRST_PERSON_LOCAL_DEIXIS_RE = re.compile(
+    r"(?<!\w)(?:у нас|в нашем|в нашому|у нашому|у меня|у мене)(?!\w)"
+)
+
+
+@dataclass(frozen=True)
+class FragmentMessageContext:
+    """A fragment's own text and the other paragraphs of its source message."""
+
+    text: str
+    earlier_message_texts: tuple[str, ...] = ()
+    later_message_texts: tuple[str, ...] = ()
+
+
+def fragment_placed_outside_by_message(
+    fragment: FragmentMessageContext,
+    *,
+    scope: EditionScopeConfig,
+    geo_context: EditionGeographyContext | None,
+) -> bool:
+    """Return True when an earlier paragraph of the same message places it outside the edition.
+
+    The fragmenter splits a long post into paragraphs. A later paragraph that names
+    no settlement, or only a neighborhood name that other cities share, keeps the
+    location its message states earlier (for example a headline naming another city).
+    It is placed outside only when no paragraph of the message names the edition's
+    city or district settlements and the fragment has no first-person locator.
+    """
+    if not fragment.earlier_message_texts:
+        return False
+    if _FIRST_PERSON_LOCAL_DEIXIS_RE.search(_norm_geo_text(fragment.text)):
+        return False
+    message_texts = (
+        fragment.text,
+        *fragment.earlier_message_texts,
+        *fragment.later_message_texts,
+    )
+    settlements = _settlement_anchors(scope, geo_context)
+    if any(_contains_any_anchor(text, settlements) for text in message_texts):
+        return False
+    external = _external_locations(scope, geo_context)
+    return any(_contains_any_anchor(text, external) for text in fragment.earlier_message_texts)
+
+
+def story_placed_outside_by_message(
+    *,
+    basis_fragments: tuple[FragmentMessageContext, ...] | list[FragmentMessageContext],
+    story_fragments: tuple[FragmentMessageContext, ...] | list[FragmentMessageContext],
+    scope: EditionScopeConfig,
+    geo_context: EditionGeographyContext | None,
+) -> bool:
+    """Return True when every cited scope basis is placed outside by its own message.
+
+    A Story keeps its scope when any of its fragments carries a local anchor that its
+    own message does not place elsewhere, so one external post cannot remove an
+    unrelated local report that clustered with it.
+    """
+    if not basis_fragments:
+        return False
+    if not all(
+        fragment_placed_outside_by_message(item, scope=scope, geo_context=geo_context)
+        for item in basis_fragments
+    ):
+        return False
+    focus = _focus_anchors(scope, geo_context)
+    return not any(
+        _contains_any_anchor(item.text, focus)
+        and not fragment_placed_outside_by_message(item, scope=scope, geo_context=geo_context)
+        for item in story_fragments
+    )
+
+
+def message_context_names_place(
+    texts: tuple[str, ...] | list[str],
+    *,
+    scope: EditionScopeConfig,
+    geo_context: EditionGeographyContext | None,
+) -> bool:
+    """Return True when any text names a local anchor or a known external place."""
+    anchors = _focus_anchors(scope, geo_context) | _external_locations(scope, geo_context)
+    return any(_contains_any_anchor(text, anchors) for text in texts)
+
+
 def external_city_without_focus_impact(
     *,
     basis_texts: tuple[str, ...] | list[str],
@@ -376,22 +500,8 @@ def external_city_without_focus_impact(
     if not basis_texts:
         return False
 
-    focus_anchors: set[str] = set()
-    focus_anchors.update(scope.focus_places)
-    if geo_context is not None:
-        focus_anchors.update(geo_context.target_locations)
-        focus_anchors.update(geo_context.district_locations)
-
-    out_of_scope_locations: set[str] = set()
-    if geo_context is not None:
-        out_of_scope_locations.update(geo_context.out_of_scope_locations)
-    else:
-        out_of_scope_locations.update(_COMMON_OUT_OF_SCOPE_LOCATIONS)
-
-    norm_focus = {_norm_geo_text(a) for a in focus_anchors if a}
-    filtered_out_of_scope = {
-        loc for loc in out_of_scope_locations if loc and _norm_geo_text(loc) not in norm_focus
-    }
+    focus_anchors = _focus_anchors(scope, geo_context)
+    filtered_out_of_scope = _external_locations(scope, geo_context)
 
     has_out_of_scope = False
     for text in basis_texts:
