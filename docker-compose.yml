@@ -68,7 +68,7 @@ services:
     container_name: telebrief-processing-worker
     restart: unless-stopped
     stop_grace_period: 120s
-    command: ["python", "-m", "src.worker", "--concurrency=2", "--queues=processing,collection,enrichment,default"]
+    command: ["python", "-m", "src.worker", "--concurrency=1", "--queues=processing,collection,enrichment,default"]
     depends_on:
       postgres:
         condition: service_healthy
