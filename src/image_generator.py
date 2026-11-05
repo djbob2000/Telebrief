@@ -6,11 +6,14 @@ import base64
 import json
 import logging
 import os
+import re
+from collections.abc import Sequence
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 import httpx
+import yaml
 
 from src.ai_providers import GoogleProvider, OpenAIProvider, validate_model_allowed
 from src.config_loader import Config
@@ -241,6 +244,22 @@ def _images_api_payload(
     return payload
 
 
+def load_city_visual_notes(edition_slug: str) -> tuple[str, ...]:
+    """Return the edition profile's architecture notes for cover illustrations."""
+    slug = (edition_slug or "").strip()
+    if not slug or not re.fullmatch(r"[A-Za-z0-9_-]+", slug):
+        return ()
+    path = Path("data/city_profiles") / f"{slug}.yaml"
+    try:
+        with open(path, encoding="utf-8") as handle:
+            profile = yaml.safe_load(handle) or {}
+    except (OSError, yaml.YAMLError):
+        return ()
+    visual = (profile.get("stable_context") or {}).get("visual_context") or {}
+    notes = visual.get("architecture") or []
+    return tuple(str(note).strip() for note in notes if isinstance(note, str) and note.strip())
+
+
 class NewsImageGenerator:
     """Generates editorial illustrations for news articles using OpenRouter direct routing with failovers."""
 
@@ -317,9 +336,11 @@ class NewsImageGenerator:
         city_name: str = "Бердянск",
         has_reference_image: bool = False,
         publication_date: Optional[str | datetime | date] = None,
+        local_visual_notes: Sequence[str] = (),
     ) -> str:
         """Generate an English visual prompt for image generation models with multi-provider fallback."""
         city_en = _get_city_name_en(city_name)
+        notes = [" ".join(str(note).split()) for note in local_visual_notes if str(note).strip()]
 
         pub_date_str = ""
         if publication_date is not None:
@@ -347,6 +368,15 @@ class NewsImageGenerator:
             )
         else:
             system_instruction = IMAGE_PROMPT_SYSTEM_INSTRUCTION.format(city_name=city_en)
+            if notes:
+                # Trusted edition-profile knowledge, not article data.
+                system_instruction += (
+                    "\n\nLOCAL ARCHITECTURE\n"
+                    f"These facts about buildings in {city_en} are authoritative. Whenever "
+                    "residential buildings are visible, describe them so they match these facts, "
+                    "and state the building type explicitly in the prompt:\n"
+                    + "\n".join(f"- {note}" for note in notes)
+                )
             task_instruction = (
                 "Write one self-contained English prompt for a 16:9 editorial illustration. "
                 "Choose one grounded subject. Explicit event timing takes precedence; "

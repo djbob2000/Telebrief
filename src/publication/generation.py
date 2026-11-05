@@ -1440,11 +1440,27 @@ class PublicationGenerationService:
                         publication_metadata and publication_metadata.get("photo_path")
                     ):
                         try:
-                            from src.image_generator import NewsImageGenerator
+                            from src.image_generator import (
+                                NewsImageGenerator,
+                                load_city_visual_notes,
+                            )
 
+                            visual_notes: tuple[str, ...] = ()
+                            async with self.uow.transaction() as conn:
+                                slug_row = await (
+                                    await conn.execute(
+                                        "SELECT slug FROM editions WHERE id = %s",
+                                        (run.edition_id,),
+                                    )
+                                ).fetchone()
+                            if slug_row and slug_row[0]:
+                                visual_notes = load_city_visual_notes(str(slug_row[0]))
                             img_gen = NewsImageGenerator(self.config, logger)
                             img_prompt = await img_gen.generate_prompt(
-                                title=title, lead=lead or "", article_text=body
+                                title=title,
+                                lead=lead or "",
+                                article_text=body,
+                                local_visual_notes=visual_notes,
                             )
                             photo_path = await img_gen.generate_image(img_prompt)
                             if photo_path:

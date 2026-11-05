@@ -6787,6 +6787,14 @@ stable_context:
         source_refs:
         - brd_neighborhood_committees_2021
         note: Do not conflate улица Шевченко with бульвар Шевченко.
+  visual_context:
+    # Authoritative for generated cover illustrations; English because the
+    # image prompt is English.
+    architecture:
+    - Concrete-panel (prefabricated) apartment blocks in the city are nine storeys tall; the city has no five-storey panel blocks.
+    - Five-storey apartment blocks are brick buildings, never concrete-panel ones.
+    source_refs:
+    - editor_2026_11_05
 operational_context:
   review_policy:
     mode: manual
@@ -6993,7 +7001,7 @@ operational_context:
         note: Major regional telecom and internet provider (ООО Миранда-медиа).
 sources:
   editor_2026_10_17: Editorial geography note (Gora vs lower city), 2026-10-17
-  editor_2026_11_05: Editorial geography note (Azovkabel on Gora; lower town areas; 8-ха is 8 Марта; Щука is masked profanity, not a place), 2026-11-05
+  editor_2026_11_05: Editorial geography note (Azovkabel on Gora; lower town areas; panel blocks are 9-storey, 5-storey are brick; 8-ха is 8 Марта; Щука is masked profanity, not a place), 2026-11-05
   brd_neighborhood_committees_2021: https://brd.gov.ua/documents/158004-pro-vnesennia-zmin-do-risennia-berdianskoyi-miskoyi-radi-vid-01082002-no-18-pro-nadannia-dozvolu-na-stvorennia-komitetiv-m
   brd_general_plan: https://brd.gov.ua/pages/58950-generalnii-plan-berdianska
   brd_areas_map: https://brd.ua/areas/
