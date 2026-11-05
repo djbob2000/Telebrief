@@ -733,6 +733,7 @@ class CityContextResolver:
     def _build_indexes(self) -> None:
         geography = self._profile["stable_context"]["geography"]
         self._build_area_indexes(geography)
+        self._build_non_place_indexes(geography)
         self._build_place_indexes(geography)
         self._build_commercial_name_indexes(geography)
         self._build_provider_indexes()
@@ -742,12 +743,24 @@ class CityContextResolver:
         self._area_aliases: list[dict[str, Any]] = []
         self._municipal_areas_by_id: dict[str, dict[str, Any]] = {}
         self._local_area_parent_by_id: dict[str, str] = {}
+        self._area_names_by_id: dict[str, str] = {}
+        # Elevation/city-part view (e.g. upland vs lower town), kept apart from
+        # the municipal and colloquial group keys so it never merges areas.
+        self._city_part_by_area_id: dict[str, str] = {}
+        self._city_part_umbrella_ids: set[str] = set()
 
         for area_set in geography.get("area_sets", []):
             set_id = area_set.get("id", "")
             for area in area_set.get("areas", []):
                 area_id = area.get("id", "")
                 area_name = area.get("name", "")
+                if area_id and area_name:
+                    self._area_names_by_id.setdefault(area_id, area_name)
+                city_part = area.get("city_part")
+                if area_id and isinstance(city_part, str) and city_part.strip():
+                    self._city_part_by_area_id[area_id] = city_part.strip()
+                    if area.get("city_part_umbrella") is True:
+                        self._city_part_umbrella_ids.add(area_id)
                 relation = area.get("relation", {})
                 if (
                     isinstance(relation, dict)
@@ -795,6 +808,74 @@ class CityContextResolver:
             if parent_id:
                 keys.add(f"municipal:{parent_id}")
         return frozenset(keys)
+
+    def city_part_ids(self, entity: ResolvedEntity) -> frozenset[str]:
+        """Return the profile city parts (elevation zones) that contain an entity.
+
+        High-confidence municipal areas and colloquial labels contribute their
+        own city part. Ambiguous municipal candidates contribute only when all
+        of them agree on one city part. Unknown city parts stay absent.
+        """
+        area_ids = {
+            area.area_id
+            for area in entity.municipal_areas
+            if area.confidence == "high" and area.area_id
+        }
+        for area_id in entity.colloquial_area_ids:
+            area_ids.add(area_id)
+            parent_id = self._local_area_parent_by_id.get(area_id)
+            if parent_id:
+                area_ids.add(parent_id)
+        parts = {
+            self._city_part_by_area_id[area_id]
+            for area_id in area_ids
+            if area_id in self._city_part_by_area_id
+        }
+        ambiguous = [area.area_id for area in entity.municipal_areas if area.confidence != "high"]
+        if ambiguous and all(area_id in self._city_part_by_area_id for area_id in ambiguous):
+            ambiguous_parts = {self._city_part_by_area_id[area_id] for area_id in ambiguous}
+            if len(ambiguous_parts) == 1:
+                parts.update(ambiguous_parts)
+        return frozenset(parts)
+
+    def is_city_part_umbrella(self, entity: ResolvedEntity) -> bool:
+        """True when an area entity names a whole city part, not one district."""
+        return entity.kind == "area" and entity.entity_id in self._city_part_umbrella_ids
+
+    def area_city_part(self, area_id: str) -> str | None:
+        """Return the profile city part of one area, when the profile states it."""
+        return self._city_part_by_area_id.get(area_id)
+
+    def city_part_name(self, city_part_id: str) -> str:
+        """Return the profile name of a city part, or an empty string."""
+        return self._area_names_by_id.get(city_part_id, "")
+
+    def non_place_name_spans(self, text: str) -> tuple[tuple[int, int, str], ...]:
+        """Return capitalized mentions of profile names known not to be places."""
+        spans: list[tuple[int, int, str]] = []
+        for pattern, name in self._non_place_patterns:
+            spans.extend((m.start(), m.end(), name) for m in pattern.finditer(text))
+        return tuple(sorted(spans))
+
+    def _build_non_place_indexes(self, geography: dict[str, Any]) -> None:
+        self._non_place_patterns: list[tuple[re.Pattern[str], str]] = []
+        for item in geography.get("non_place_names", []) or []:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            forms = [
+                str(form).strip()
+                for form in (item.get("forms") or [name])
+                if isinstance(form, str) and str(form).strip()
+            ]
+            if not name or not forms:
+                continue
+            alternatives = "|".join(
+                re.escape(form) for form in sorted(set(forms), key=len, reverse=True)
+            )
+            # Case-sensitive: only the capitalized proper-noun use, never a
+            # lowercase common noun with the same spelling.
+            self._non_place_patterns.append((re.compile(rf"(?<!\w)(?:{alternatives})(?!\w)"), name))
 
     def local_area_parent(self, area_id: str) -> tuple[str, str] | None:
         """Return the municipal area for a verified local split label, when one exists."""

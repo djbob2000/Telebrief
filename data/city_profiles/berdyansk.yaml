@@ -87,23 +87,28 @@ stable_context:
       areas:
       - id: akz
         name: АКЗ
+        city_part: gora
         aliases:
         - АКЗ
         - район АКЗ
         - мікрорайон АКЗ
       - id: rts
         name: РТС
+        city_part: gora
         aliases:
         - РТС
         - район РТС
         - мікрорайон РТС
       - id: sklovolokno
         name: Скловолокно
+        city_part: gora
         aliases:
         - Скловолокно
         - Стекловолокно
       - id: nahirna
         name: Нагірна частина
+        city_part: gora
+        city_part_umbrella: true
         aliases:
         - Нагірна частина
         - Нагорная часть
@@ -116,6 +121,7 @@ stable_context:
         - Горе
       - id: center
         name: Центр міста
+        city_part: lower_city
         aliases:
         - Центр
         - Центр города
@@ -125,6 +131,7 @@ stable_context:
         - центре
       - id: azmol
         name: АЗМОЛ
+        city_part: gora
         aliases:
         - АЗМОЛ
         - Азмол
@@ -133,6 +140,7 @@ stable_context:
         - Азмола
       - id: liski
         name: Ліски
+        city_part: lower_city
         aliases:
         - Ліски
         - Лиски
@@ -140,49 +148,77 @@ stable_context:
         - Лисках
       - id: koloniia_makorty
         name: Колонія-Макорти
+        city_part: lower_city
         aliases:
         - Колонія-Макорти
         - Колония-Макорты
       - id: eight_march
         name: 8 Березня
+        city_part: eight_march
         aliases:
         - 8 Березня
         - 8 Марта
         - восьмуха
         - восьмухе
+        - восьмухи
+        - восьмуху
+        - восьмухой
         - 8ха
         - 8хе
+        - 8хи
+        - 8ху
+        - 8хой
+        - 8-ха
+        - 8-хе
+        - 8-хи
+        - 8-ху
+        - 8-хой
       - id: military_town
         name: Військове містечко
+        city_part: gora
         aliases:
         - Військове містечко
         - Военный городок
       - id: district_32
         name: Округ №32
+        city_part: lower_city
         aliases:
         - Округ №32
         - Округ 32
         - 32 округ
       - id: kosa_committee
         name: Коса
+        city_part: lower_city
+        description: Бердянская коса — отдельный участок суши, выходящий в море; нижняя часть, не Гора
         aliases:
         - Коса
         - район Коса
+        - Косе
+        - Косы
+        - Косу
         - мікрорайон Коса
       - id: slobidka
         name: Слобідка
+        city_part: lower_city
         aliases:
         - Слобідка
         - Слободка
+        - Слободке
+        - Слободки
+        - Слободку
+        - Слободкой
     - id: local_colloquial_areas
       type: non_exhaustive_local_labels
       exhaustive_for_scale: false
       areas:
       - id: peski
         name: Пески
+        city_part: lower_city
         aliases:
         - Пески
         - Піски
+        - Песках
+        - Песков
         - Пєски
         status: verified
         source_refs:
@@ -190,6 +226,7 @@ stable_context:
         - brd_areas_map
       - id: matrosskaya_slobodka
         name: Матросская слободка
+        city_part: lower_city
         aliases:
         - Матросская слободка
         - Матроська слобода
@@ -201,9 +238,12 @@ stable_context:
         - brd_general_plan
       - id: koloniia
         name: Колония
+        city_part: lower_city
         aliases:
         - Колония
         - Колонии
+        - Колонию
+        - Колонией
         - Колонія
         status: verified
         relation:
@@ -214,9 +254,12 @@ stable_context:
         - brd_areas_map
       - id: makorty
         name: Макорты
+        city_part: lower_city
         aliases:
         - Макорты
         - Макорти
+        - Макортах
+        - Макортов
         status: verified
         relation:
           type: local_split_of
@@ -244,13 +287,20 @@ stable_context:
         - brd_2026_area_reporting
       - id: azovkabel
         name: Азовкабель
+        city_part: gora
         aliases:
         - Азовкабель
+        - Азовкабеля
+        - Азовкабеле
+        - Азовкабелю
+        - Азовкабелем
         - мікрорайон Азовкабель
+        description: Отдельный район в нагорной части города (Гора); не входит в АЗМОЛ или АКЗ
         status: verified_current_local_label
         source_refs:
         - brd_2026_area_reporting
         - zo_mintrans
+        - editor_2026_11_05
       - id: station_berda
         name: Станция Берда
         aliases:
@@ -271,11 +321,13 @@ stable_context:
         - brd_2026_area_reporting
       - id: gora
         name: Гора
+        city_part: gora
+        city_part_umbrella: true
         aliases:
         - Гора
         - на горе
         - горе
-        description: Нагорная часть города (крупный исторический район на возвышенности, объединяющий АЗМОЛ, Скловолокно, АКЗ, РТС, Военный городок; не является отдельным микрорайоном)
+        description: Нагорная часть города (крупный исторический район на возвышенности, объединяющий АЗМОЛ, Азовкабель, Скловолокно, АКЗ, РТС, Военный городок; не является отдельным микрорайоном)
         status: probable_alias
         relation:
           type: probable_alias_of
@@ -292,6 +344,9 @@ stable_context:
         - brd_areas_map
       - id: lower_city
         name: Нижняя часть города
+        city_part: lower_city
+        city_part_umbrella: true
+        description: Нижняя часть города, не Гора — Центр, Колония, Макорты, Слободка, Лиски, Пески, Округ №32 и Коса (Бердянская коса — отдельный участок суши, выходящий в море)
         aliases:
         - нижняя часть города
         - нижней части города
@@ -323,8 +378,12 @@ stable_context:
         - brd_areas_map
       - id: blizhnyaya_kosa
         name: Ближняя коса
+        city_part: lower_city
         aliases:
         - Ближняя коса
+        - Ближней косе
+        - Ближней косы
+        - Ближнюю косу
         - Ближня коса
         status: verified_local_label
         source_refs:
@@ -332,22 +391,42 @@ stable_context:
         - brd_general_plan
       - id: srednyaya_kosa
         name: Средняя коса
+        city_part: lower_city
         aliases:
         - Средняя коса
+        - Средней косе
+        - Средней косы
+        - Среднюю косу
         - Середня коса
         status: probable
         source_refs:
         - brd_areas_map
       - id: dalnyaya_kosa
         name: Дальняя коса
+        city_part: lower_city
         aliases:
         - Дальняя коса
+        - Дальней косе
+        - Дальней косы
+        - Дальнюю косу
         - Дальня коса
         status: verified_current_local_label
         source_refs:
         - brd_areas_map
         - zo_mintrans
         - brd_2026_transit
+    non_place_names:
+    - id: masked_swear_shchuka
+      name: Щука
+      forms:
+      - Щука
+      - Щуки
+      - Щуке
+      - Щуку
+      - Щукой
+      note: Замаскированное ругательство («сука»), написанное так, чтобы его не удалил антимат; такого района или улицы в городе нет.
+      source_refs:
+      - editor_2026_11_05
     landmarks:
     - id: supermarket_zerkalny
       name: супермаркет «Зеркальный»
@@ -6914,6 +6993,7 @@ operational_context:
         note: Major regional telecom and internet provider (ООО Миранда-медиа).
 sources:
   editor_2026_10_17: Editorial geography note (Gora vs lower city), 2026-10-17
+  editor_2026_11_05: Editorial geography note (Azovkabel on Gora; lower town areas; 8-ха is 8 Марта; Щука is masked profanity, not a place), 2026-11-05
   brd_neighborhood_committees_2021: https://brd.gov.ua/documents/158004-pro-vnesennia-zmin-do-risennia-berdianskoyi-miskoyi-radi-vid-01082002-no-18-pro-nadannia-dozvolu-na-stvorennia-komitetiv-m
   brd_general_plan: https://brd.gov.ua/pages/58950-generalnii-plan-berdianska
   brd_areas_map: https://brd.ua/areas/

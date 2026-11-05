@@ -7,6 +7,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 from src.city_context import CityContextResolver, CityProfileError
 from src.publication.article_brief import ArticleBriefLine, ArticleEditorialBrief
@@ -31,20 +32,69 @@ class ArticleStoryGeography:
     place_names: tuple[str, ...] = ()
     distinct_area_focus: tuple[str, ...] = ()
     ambiguous: bool = False
+    # Writer-facing labels: canonical name plus the spelling used in the
+    # reports when it differs (a renamed street), and the profile city part.
+    place_labels: tuple[str, ...] = ()
+    city_part_names: tuple[str, ...] = ()
 
     @property
     def focus(self) -> str | None:
         if self.distinct_area_focus:
             return "separate areas (not one district): " + "; ".join(self.distinct_area_focus)
+        places = self.place_labels or self.place_names
         if self.ambiguous:
+            # The district stays unresolved; a city part every candidate
+            # shares is still safe orientation for headings and grouping.
+            if places and len(self.city_part_names) == 1:
+                return (
+                    f"{', '.join(places)} "
+                    f"[city part: {', '.join(self.city_part_names)}; district not resolved]"
+                )
             return None
-        if self.area_name and self.place_names:
-            return f"{self.area_name} ({', '.join(self.place_names)})"
-        if self.area_name:
-            return self.area_name
-        if self.place_names:
-            return ", ".join(self.place_names)
-        return None
+        if self.area_name and places:
+            label = f"{self.area_name} ({', '.join(places)})"
+        elif self.area_name:
+            label = self.area_name
+        elif places:
+            label = ", ".join(places)
+        else:
+            return None
+        parts = [name for name in self.city_part_names if name and name != self.area_name]
+        if parts:
+            label += f" [city part: {', '.join(parts)}]"
+        return label
+
+
+_OBJECT_TYPE_LABELS = {
+    "boulevard": "бульвар",
+    "prospect": "проспект",
+    "lane": "переулок",
+    "highway": "шоссе",
+}
+
+
+def _fold_place_name(value: str) -> str:
+    return value.casefold().replace("ё", "е").replace("і", "и").replace("ї", "и").replace("є", "е")
+
+
+_STREET_MARKER_RE = re.compile(
+    r"^(?:(?:на|в|по)\s+)?(?:улиц\w*|ул\.?|вулиц\w*|бульвар\w*|б-р|проспект\w*|просп\.?|"
+    r"пр-т|переул\w*|пер\.?|провул\w*|шоссе|площад\w*|пл\.?)\s+",
+    re.IGNORECASE,
+)
+
+
+def article_place_label(entity: Any) -> str:
+    """Canonical place name, its object type, and the reported spelling when renamed."""
+    canonical = str(entity.canonical_name)
+    prefix = _OBJECT_TYPE_LABELS.get(str(getattr(entity, "object_type", "") or ""))
+    label = f"{prefix} {canonical}" if prefix else canonical
+    surface = " ".join(str(getattr(entity, "matched_text", "") or "").split())
+    surface = _STREET_MARKER_RE.sub("", surface)
+    if surface and _fold_place_name(canonical) not in _fold_place_name(surface):
+        reported = " ".join(word[:1].upper() + word[1:] for word in surface.split())
+        label += f" = {reported}"
+    return label
 
 
 @lru_cache(maxsize=16)
@@ -143,6 +193,28 @@ def resolve_article_place_names(
     )
 
 
+def _entity_city_parts(resolver: Any, entity: Any) -> frozenset[str]:
+    lookup = getattr(resolver, "city_part_ids", None)
+    if not callable(lookup):
+        return frozenset()
+    try:
+        return frozenset(lookup(entity))
+    except Exception:
+        return frozenset()
+
+
+def _city_part_display_name(resolver: Any, city_part_id: str) -> str:
+    lookup = getattr(resolver, "city_part_name", None)
+    return str(lookup(city_part_id) or "") if callable(lookup) else ""
+
+
+def _area_city_part_suffix(resolver: Any, area_id: str, area_name: str) -> str:
+    lookup = getattr(resolver, "area_city_part", None)
+    city_part = lookup(area_id) if callable(lookup) else None
+    name = _city_part_display_name(resolver, city_part) if city_part else ""
+    return f" [city part: {name}]" if name and name != area_name else ""
+
+
 def build_article_story_geography_map(
     *,
     context: ArticleEditorialContext,
@@ -178,6 +250,8 @@ def build_article_story_geography_map(
         colloquial_ids: set[str] = set()
         colloquial_names: dict[str, str] = {}
         place_names: dict[str, str] = {}
+        place_labels: dict[str, str] = {}
+        city_part_ids: set[str] = set()
         area_focus_names: dict[str, set[str]] = {}
         has_ambiguous_place = False
         has_citywide_scope = False
@@ -185,8 +259,11 @@ def build_article_story_geography_map(
             has_citywide_scope = has_citywide_scope or bool(_CITYWIDE_SCOPE_RE.search(text))
             annotation = resolver.resolve(text)
             for entity in annotation.entities:
+                if entity.kind in {"place", "area"}:
+                    city_part_ids.update(_entity_city_parts(resolver, entity))
                 if entity.kind == "place":
                     place_names[entity.entity_id] = entity.canonical_name
+                    place_labels.setdefault(entity.entity_id, article_place_label(entity))
                     has_ambiguous_place = has_ambiguous_place or entity.confidence != "high"
                 if entity.kind == "area":
                     for area in entity.municipal_areas:
@@ -200,31 +277,34 @@ def build_article_story_geography_map(
                             parent_id, parent_name = parent
                             area_candidates[parent_id] = parent_name
                 elif entity.kind == "place":
+                    label = article_place_label(entity)
                     if entity.confidence == "high":
                         for area in entity.municipal_areas:
                             if area.confidence == "high":
                                 area_candidates[area.area_id] = area.area_name
                                 area_focus_names.setdefault(f"municipal:{area.area_id}", set()).add(
-                                    entity.canonical_name
+                                    label
                                 )
                     colloquial_ids.update(entity.colloquial_area_ids)
                     for area_id in entity.colloquial_area_ids:
-                        colloquial_names[area_id] = entity.canonical_name
-                        area_focus_names.setdefault(f"colloquial:{area_id}", set()).add(
-                            entity.canonical_name
+                        # A street's colloquial label names its area, not the street.
+                        colloquial_names[area_id] = (
+                            _city_part_display_name(resolver, area_id) or entity.canonical_name
                         )
+                        area_focus_names.setdefault(f"colloquial:{area_id}", set()).add(label)
                         parent = resolver.local_area_parent(area_id)
                         if parent:
                             parent_id, parent_name = parent
                             area_candidates[parent_id] = parent_name
-                            area_focus_names.setdefault(f"municipal:{parent_id}", set()).add(
-                                entity.canonical_name
-                            )
+                            area_focus_names.setdefault(f"municipal:{parent_id}", set()).add(label)
 
         distinct_area_focus = tuple(
-            f"{area_name} ({', '.join(sorted(area_focus_names.get(f'municipal:{area_id}', ())))})"
-            if area_focus_names.get(f"municipal:{area_id}")
-            else area_name
+            (
+                f"{area_name} ({', '.join(sorted(area_focus_names.get(f'municipal:{area_id}', ())))})"
+                if area_focus_names.get(f"municipal:{area_id}")
+                else area_name
+            )
+            + _area_city_part_suffix(resolver, area_id, area_name)
             for area_id, area_name in sorted(area_candidates.items())
         )
         distinct_area_focus += tuple(
@@ -236,6 +316,15 @@ def build_article_story_geography_map(
         )
         if len(distinct_area_focus) < 2:
             distinct_area_focus = ()
+        story_city_parts = tuple(
+            name
+            for name in (_city_part_display_name(resolver, part) for part in sorted(city_part_ids))
+            if name
+        )
+        story_place_labels = tuple(
+            place_labels[entity_id]
+            for entity_id, _name in sorted(place_names.items(), key=lambda item: item[1])
+        )
 
         if has_citywide_scope and (area_candidates or place_names or colloquial_ids):
             result[story_id] = ArticleStoryGeography(
@@ -250,6 +339,8 @@ def build_article_story_geography_map(
                 area_id=area_id,
                 area_name=area_name,
                 place_names=tuple(sorted(place_names.values())),
+                place_labels=story_place_labels,
+                city_part_names=story_city_parts,
             )
         elif len(area_candidates) > 1:
             # Preserve each verified place-to-area mapping for the writer; an
@@ -268,18 +359,24 @@ def build_article_story_geography_map(
                     colloquial_id, colloquial_id.replace("_", " ").capitalize()
                 ),
                 place_names=tuple(sorted(place_names.values())),
+                place_labels=story_place_labels,
+                city_part_names=story_city_parts,
             )
         elif len(place_names) == 1 and not has_ambiguous_place:
             place_id, place_name = next(iter(place_names.items()))
             result[story_id] = ArticleStoryGeography(
                 group_key=f"place:{place_id}",
                 place_names=(place_name,),
+                place_labels=story_place_labels,
+                city_part_names=story_city_parts,
             )
         else:
             result[story_id] = ArticleStoryGeography(
                 place_names=tuple(sorted(place_names.values())),
                 distinct_area_focus=distinct_area_focus,
                 ambiguous=bool(place_names or colloquial_ids),
+                place_labels=story_place_labels,
+                city_part_names=story_city_parts,
             )
     return result
 

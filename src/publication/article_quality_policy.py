@@ -106,6 +106,20 @@ _POLICIES: dict[str, ArticleQualityFindingPolicy] = {
         "block_publication",
         "A paragraph assigns a place or street to the wrong area.",
     ),
+    "HEADING_AREA_MISMATCH": ArticleQualityFindingPolicy(
+        "geography_consistency",
+        "blocking",
+        "unit",
+        "block_publication",
+        "A section heading names areas that the profile shows do not contain its places.",
+    ),
+    "NON_PLACE_NAME_AS_PLACE": ArticleQualityFindingPolicy(
+        "geography_consistency",
+        "blocking",
+        "unit",
+        "block_publication",
+        "A profile non-place name (an address, nickname or masked swear word) is presented as a place.",
+    ),
     "ARTICLE_AREA_BEFORE_STREET_ORDER": ArticleQualityFindingPolicy(
         "geography_precision",
         "repair",

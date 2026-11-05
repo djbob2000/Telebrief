@@ -23,7 +23,10 @@ from src.publication.article_context import (
 )
 from src.publication.article_coverage import ArticleCoveragePlan
 from src.publication.article_coverage_diagnostics import diagnose_article_coverage
-from src.publication.article_geography import resolve_article_place_area_map
+from src.publication.article_geography import (
+    article_place_label,
+    resolve_article_place_area_map,
+)
 from src.publication.article_material import ArticleMaterialProjection
 from src.publication.article_models import StructuredArticleDraft, _split_sentences_safe
 from src.publication.article_quality_policy import (
@@ -2252,6 +2255,186 @@ def _place_area_mismatch_entities(
     return mismatched_place_entities
 
 
+# A heading that announces "other areas" or the whole city is an umbrella,
+# not a claim that every place in the section belongs to the named areas.
+_HEADING_AREA_UMBRELLA_RE = re.compile(
+    r"\b(?:друг\w*|остальн\w*|прочи\w*|разн\w+\s+(?:район\w*|част\w*)|"
+    r"весь\s+город|всего\s+города|по\s+(?:всему\s+)?городу|окраин\w*|"
+    r"и\s+не\s+только)\b",
+    re.IGNORECASE,
+)
+# Idioms that contain an area alias without naming a place.
+_HEADING_AREA_IDIOM_RE = re.compile(
+    r"\bцентр\w*\s+(?:внимани\w*|событий|обсуждени\w*|спор\w*|скандал\w*)",
+    re.IGNORECASE,
+)
+
+
+def _area_keys_in_view(resolver: Any, entity: Any, view: str) -> set[str]:
+    return {
+        key for key in resolver.geographic_area_group_keys(entity) if key.startswith(f"{view}:")
+    }
+
+
+def _place_outside_area(place: Any, area: Any, resolver: Any) -> bool:
+    """The profile proves that a place lies outside one named area.
+
+    City parts (upland vs lower town) are compared first. A whole-city-part
+    area is compared only by city part; a specific area is also compared by
+    municipal committee. Missing profile knowledge never proves anything.
+    """
+    place_parts = resolver.city_part_ids(place)
+    area_parts = resolver.city_part_ids(area)
+    if place_parts and area_parts and not (place_parts & area_parts):
+        return True
+    if resolver.is_city_part_umbrella(area):
+        return False
+    place_municipal = _area_keys_in_view(resolver, place, "municipal")
+    area_municipal = _area_keys_in_view(resolver, area, "municipal")
+    return bool(place_municipal and area_municipal and not (place_municipal & area_municipal))
+
+
+def _heading_area_entities(heading: str, resolver: Any) -> list[Any]:
+    """High-confidence areas a heading names as proper nouns."""
+    text = _HEADING_AREA_IDIOM_RE.sub(lambda match: " " * len(match.group(0)), heading)
+    areas: list[Any] = []
+    for entity in _resolved_entities(text, resolver):
+        if entity.kind != "area" or entity.confidence != "high":
+            continue
+        if not (resolver.geographic_area_group_keys(entity) or resolver.city_part_ids(entity)):
+            continue
+        spans = _entity_text_spans(text, entity)
+        # A lowercase single word ("горе", "коса") is a common noun, while a
+        # multiword area phrase ("нагорной части города") names a part of town.
+        if any(
+            text[start:end][:1].isupper() or " " in text[start:end].strip() for start, end in spans
+        ):
+            areas.append(entity)
+    return areas
+
+
+def _heading_area_mismatch_places(
+    section: Any,
+    resolver: Any,
+) -> tuple[tuple[int, ...], tuple[str, ...]]:
+    """Return section paragraphs whose places the profile puts outside the heading areas.
+
+    A place is left alone when its own sentence names an area that covers it,
+    so an explicit contrast ("на Горе, на улице ...") under a narrower heading
+    is not a finding.
+    """
+    required = ("city_part_ids", "is_city_part_umbrella", "geographic_area_group_keys")
+    if not all(callable(getattr(resolver, name, None)) for name in required):
+        return (), ()
+    heading = section.heading or ""
+    if not heading.strip() or _HEADING_AREA_UMBRELLA_RE.search(heading):
+        return (), ()
+    heading_areas = _heading_area_entities(heading, resolver)
+    if not heading_areas:
+        return (), ()
+
+    flagged_paragraphs: list[int] = []
+    labels: dict[str, str] = {}
+    for paragraph_index, paragraph in enumerate(section.paragraphs):
+        text = paragraph.text or ""
+        entities = _resolved_entities(text, resolver)
+        paragraph_areas = [
+            entity for entity in entities if entity.kind == "area" and entity.confidence == "high"
+        ]
+        sentence_spans = _safe_sentence_spans(text)
+        paragraph_flagged = False
+        for entity in entities:
+            if entity.kind != "place":
+                continue
+            if entity.confidence != "high" and not resolver.city_part_ids(entity):
+                continue
+            if not all(_place_outside_area(entity, area, resolver) for area in heading_areas):
+                continue
+            spans = _entity_text_spans(text, entity)
+            if not spans:
+                continue
+            labelled = False
+            for start, end in spans:
+                sentence = next(
+                    (
+                        (sentence_start, sentence_end)
+                        for sentence_start, sentence_end in sentence_spans
+                        if sentence_start <= start and end <= sentence_end
+                    ),
+                    None,
+                )
+                if sentence is None:
+                    labelled = True
+                    break
+                for area in paragraph_areas:
+                    if _place_outside_area(entity, area, resolver):
+                        continue
+                    if any(
+                        sentence[0] <= area_start and area_end <= sentence[1]
+                        for area_start, area_end in _entity_text_spans(text, area)
+                    ):
+                        labelled = True
+                        break
+                if labelled:
+                    break
+            if labelled:
+                continue
+            paragraph_flagged = True
+            parts = ", ".join(
+                name
+                for name in (
+                    resolver.city_part_name(part) for part in sorted(resolver.city_part_ids(entity))
+                )
+                if name
+            )
+            areas = ", ".join(
+                sorted(
+                    area.area_name
+                    for area in entity.municipal_areas
+                    if area.confidence == "high" and area.area_name
+                )
+            )
+            where = "; ".join(value for value in (areas, parts) if value)
+            label = article_place_label(entity)
+            labels.setdefault(str(entity.entity_id), f"{label} ({where})" if where else label)
+        if paragraph_flagged:
+            flagged_paragraphs.append(paragraph_index)
+    return tuple(flagged_paragraphs), tuple(labels.values())
+
+
+def _non_place_name_as_place(text: str, resolver: Any) -> bool:
+    """A profile non-place name (an address, nickname or masked swear word) is presented as a place.
+
+    Only the capitalized proper-noun form counts, never direct-quote content.
+    Mid-sentence it reads as a name of a place or person in author prose; at
+    the start of a sentence it counts only when listed with a profile place.
+    """
+    lookup = getattr(resolver, "non_place_name_spans", None)
+    if not callable(lookup) or not text.strip():
+        return False
+    spans = lookup(text)
+    if not spans:
+        return False
+    sentence_spans = _safe_sentence_spans(text)
+    for start, end, _name in spans:
+        if _span_is_inside_quote_content(text, (start, end)):
+            continue
+        sentence = next(
+            ((a, b) for a, b in sentence_spans if a <= start and end <= b),
+            (0, len(text)),
+        )
+        prefix = text[sentence[0] : start]
+        if re.search(r"[A-Za-zА-Яа-яЁёІіЇїЄєҐґ0-9]", prefix):
+            return True
+        following = text[end : min(sentence[1], end + 40)]
+        if re.match(r"\s*(?:,|и\b|та\b)", following, re.IGNORECASE) and any(
+            entity.kind in {"place", "area"} and entity.confidence == "high"
+            for entity in _resolved_entities(following, resolver)
+        ):
+            return True
+    return False
+
+
 def diagnose_article_quality(
     draft: StructuredArticleDraft,
     coverage_plan: ArticleCoveragePlan,
@@ -2742,6 +2925,79 @@ def diagnose_article_quality(
                     )
                 )
             p_idx += 1
+
+    if place_resolver is not None:
+        paragraph_offset = 0
+        for section_index, section in enumerate(draft.sections, start=1):
+            flagged, place_labels = _heading_area_mismatch_places(section, place_resolver)
+            if flagged:
+                section_support_ids = [
+                    *section.heading_support_ids,
+                    *(sid for claim in section.heading_claims for sid in claim.cited_support_ids),
+                ]
+                for paragraph_index in flagged:
+                    paragraph = section.paragraphs[paragraph_index]
+                    section_support_ids.extend(_support_ids_for_unit(paragraph))
+                    section_support_ids.extend(
+                        sid for claim in paragraph.claims for sid in claim.cited_support_ids
+                    )
+                flagged_units = ", ".join(
+                    f"P{paragraph_offset + index + 1:03d}" for index in flagged
+                )
+                findings.append(
+                    ArticleReaderQualityFinding(
+                        code="HEADING_AREA_MISMATCH",
+                        unit_id=f"H{section_index:03d}",
+                        message=(
+                            "Заголовок главы называет районы, к которым по профилю города не "
+                            f"относятся места из абзацев {flagged_units}: "
+                            f"{'; '.join(place_labels)}. Назовите в заголовке только части "
+                            "города, к которым относятся все места главы, или дайте "
+                            "заголовок без района."
+                        ),
+                        support_ids=_citable_support_ids(
+                            tuple(section_support_ids), context, material_projection
+                        ),
+                        severity="blocking",
+                    )
+                )
+            paragraph_offset += len(section.paragraphs)
+
+        unit_texts: list[tuple[str, str, tuple[str, ...]]] = [
+            ("TITLE", draft.title, tuple(draft.title_support_ids)),
+            ("LEAD", draft.lead, tuple(draft.lead_support_ids)),
+        ]
+        paragraph_number = 0
+        for section_index, section in enumerate(draft.sections, start=1):
+            unit_texts.append(
+                (f"H{section_index:03d}", section.heading, tuple(section.heading_support_ids))
+            )
+            for paragraph in section.paragraphs:
+                paragraph_number += 1
+                unit_texts.append(
+                    (
+                        f"P{paragraph_number:03d}",
+                        paragraph.text,
+                        _support_ids_for_unit(paragraph),
+                    )
+                )
+        for unit_id, unit_text, unit_support_ids in unit_texts:
+            if _non_place_name_as_place(unit_text or "", place_resolver):
+                findings.append(
+                    ArticleReaderQualityFinding(
+                        code="NON_PLACE_NAME_AS_PLACE",
+                        unit_id=unit_id,
+                        message=(
+                            "Имя, которое по профилю города не является районом или улицей "
+                            "(обращение, кличка или замаскированное ругательство), подано как место. "
+                            "Уберите его и оставьте сообщение при подтверждённом месте."
+                        ),
+                        support_ids=_citable_support_ids(
+                            unit_support_ids, context, material_projection
+                        ),
+                        severity="blocking",
+                    )
+                )
     finish_phase("place_and_name_precision")
 
     # A packed roster is a sentence/claim-level shape, not a paragraph-wide

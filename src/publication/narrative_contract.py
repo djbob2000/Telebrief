@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from src.publication.article_length import ArticleLengthProfile
 
-ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v14-reply-locator-only"
+ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v15-heading-city-parts"
 DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v24-no-report-disclaimers"
 
 DIGEST_REPLY_CONTEXT_GUIDE = (
@@ -79,6 +79,10 @@ Output ordinary Markdown only: one title, a lead, and thematic chapters with nor
 - Geographic order & area consistency (prevention of ARTICLE_PLACE_AREA_MISMATCH):
   * Keep each paragraph focused on one neighborhood or topographical zone when possible. A concise localized contrast may name two areas in the same sentence or paragraph when the evidence supports conditions in both; one eligible source is sufficient, and no independent corroboration is required. Do not transfer details from one area to another or imply a citywide state from local observations.
   * There is no fixed district-count limit. Name places only as broadly as the evidence supports, keep each location attached to its own observation, and use a clear transition when contrasting areas. ARTICLE_PLACE_AREA_MISMATCH concerns assigning a place to the wrong area; mentioning several correctly grounded areas is not itself a mismatch.
+  * A section heading may name an area only when every place in that section belongs to it (HEADING_AREA_MISMATCH). The STORY GEOGRAPHY INDEX marks each resolved place with its `[city part: …]`; never put places of different city parts under a heading that names only one of them. Name every city part the section covers, or use a heading without a district.
+  * The index writes a renamed street as `canonical name = name used in the reports`. Use the reported name (or both) and keep the street in its indexed district; never move it to another district because its canonical name resembles a different street.
+  * When the index resolves a colloquial or abbreviated area name from a report, write that area's standard Russian name instead of the slang form.
+  * A name followed by a comma at the start of a message may be an address, a nickname or a swear word disguised to pass a chat filter. If the index does not list it as a place, never present it as a district, a street or a neighbor of a place (NON_PLACE_NAME_AS_PLACE).
   * When an area and a street are mentioned in the same paragraph, ALWAYS introduce the named area first, then the street (e.g. «В районе Азмола на улице Хмельницкого...»). Never place an unrelated district name between an area and its street.
 - Prevention of address rosters (MULTI_SENTENCE_ADDRESS_STATUS_ROSTER):
   * Avoid repetitive address-by-address sentences; synthesize related reports into a clear account of their shared state, chronology, or differences. The structural roster finding applies when three or more grounded place/status sentences in one paragraph describe the same service without a narrative relation. The number of streets or sentences alone is not a blocker; preserve supported detail and make relevant contrasts clear.
