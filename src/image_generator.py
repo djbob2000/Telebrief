@@ -79,11 +79,19 @@ focus; light and seasonal cues if justified; a short constraint sentence.
 Identify it as a photorealistic editorial illustration in documentary style, in a single horizontal
 16:9 frame. Make it self-contained: the image model will not receive the article. Describe the
 desired scene positively rather than repeating a long blacklist. Keep these final constraints
-explicit: no readable text, added captions, logos, watermarks, borders, collage, or split screen; no
-invented incident details. Prefer framing away from signage and unbranded objects over unnaturally
-blank city surfaces.
+explicit: no added captions, logos, watermarks, borders, collage, or split screen; no invented
+incident details. Prefer framing away from signage and unbranded objects over unnaturally blank city
+surfaces. Any lettering that remains visible on signs, shopfronts, vehicles, or posters must be in
+Russian (Cyrillic script); state explicitly that there is no English or other Latin-alphabet text.
 Before returning, silently check that the scene is coherent, relevant, and does not visually assert
 unsupported news facts."""
+
+# Appended to every scene-generation prompt, because image models default to English
+# signage and the text-stage model may drop the rule from its paragraph.
+IMAGE_TEXT_LANGUAGE_RULE = (
+    "All visible lettering, if any (signs, shopfronts, vehicles, posters), must be in Russian "
+    "Cyrillic script; no English or other Latin-alphabet text anywhere in the image."
+)
 
 # The text-stage model does not receive image pixels. This instruction must remain
 # reference-relative; only the image-stage model can inspect the attached photo.
@@ -191,6 +199,10 @@ def _requires_images_api(status_code: int, body: str) -> bool:
     return status_code == 404 and "/api/v1/images" in body
 
 
+# Muse ignores aspect_ratio (returns 3:2) but honours an explicit WxH size.
+_IMAGES_API_SIZE_BY_MODEL: dict[str, str] = {"meta/muse-image": "1920x1080"}
+
+
 def _images_api_payload(
     model: str, prompt: str, reference_image_bytes: Optional[bytes]
 ) -> dict[str, Any]:
@@ -200,6 +212,9 @@ def _images_api_payload(
         "aspect_ratio": "16:9",
         "output_format": "jpeg",
     }
+    size = _IMAGES_API_SIZE_BY_MODEL.get(model.split(":", 1)[0])
+    if size:
+        payload["size"] = size
     if reference_image_bytes:
         b64_ref = base64.b64encode(reference_image_bytes).decode("utf-8")
         payload["input_references"] = [
@@ -371,6 +386,8 @@ class NewsImageGenerator:
             output_dir = Path(output_dir)
 
         output_dir.mkdir(parents=True, exist_ok=True)
+        if not reference_image_bytes:
+            prompt = f"{prompt.rstrip()} {IMAGE_TEXT_LANGUAGE_RULE}"
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         target_file = output_dir / f"editorial_{timestamp}.jpg"
 

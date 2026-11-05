@@ -13,6 +13,7 @@ import pytest
 
 from src import image_generator
 from src.image_generator import (
+    IMAGE_TEXT_LANGUAGE_RULE,
     NewsImageGenerator,
     _extract_images_api_bytes,
     _images_api_payload,
@@ -37,6 +38,8 @@ def test_images_api_helpers() -> None:
 
     payload = _images_api_payload("meta/muse-image", "a street", b"ref")
     assert payload["aspect_ratio"] == "16:9"
+    assert payload["size"] == "1920x1080"
+    assert "size" not in _images_api_payload("openai/gpt-image-2.5-sunburst", "a street", None)
     assert payload["input_references"][0]["image_url"]["url"].startswith("data:image/jpeg;base64,")
     assert "input_references" not in _images_api_payload("meta/muse-image", "a street", None)
 
@@ -81,3 +84,11 @@ async def test_image_only_model_falls_through_to_images_api(monkeypatch, tmp_pat
     assert path is not None and path.read_bytes() == JPEG
     assert [url.rsplit("/", 1)[1] for url, _ in FakeClient.calls] == ["completions", "images"]
     assert FakeClient.calls[1][1]["model"] == "meta/muse-image"
+    assert FakeClient.calls[1][1]["prompt"] == f"a street {IMAGE_TEXT_LANGUAGE_RULE}"
+
+    FakeClient.calls = []
+    await generator.generate_image(
+        "clean the photo", output_dir=tmp_path, reference_image_bytes=b"r"
+    )
+    assert FakeClient.calls[1][1]["prompt"] == "clean the photo"
+    assert "input_references" in FakeClient.calls[1][1]
