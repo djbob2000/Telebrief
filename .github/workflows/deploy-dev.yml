@@ -159,7 +159,10 @@ jobs:
               test "$container_status" = "running"
               test "$container_revision" = "$expected_revision"
             done
-            container_config_sha256="$(docker compose exec -T telebrief-app sha256sum /app/config.yaml | awk '{print $1}')"
+            # </dev/null: without it, exec -T reads the rest of this heredoc
+            # script from stdin and bash exits 0 here, skipping every later
+            # check and the image prune.
+            container_config_sha256="$(docker compose exec -T telebrief-app sha256sum /app/config.yaml </dev/null | awk '{print $1}')"
             test "$container_config_sha256" = "$CONFIG_SHA256"
             runtime_authority_config="$(docker compose exec -T telebrief-app python -c 'from src.config_loader import load_config; c=load_config(); print(str(c.settings.event_pipeline.background_authority_enabled).lower(), c.settings.event_pipeline.authority_shard_count)' </dev/null)"
             expected_authority_config="${EXPECTED_BACKGROUND_AUTHORITY,,} $EXPECTED_AUTHORITY_SHARDS"
