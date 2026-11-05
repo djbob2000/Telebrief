@@ -92,3 +92,34 @@ async def test_image_only_model_falls_through_to_images_api(monkeypatch, tmp_pat
     )
     assert FakeClient.calls[1][1]["prompt"] == "clean the photo"
     assert "input_references" in FakeClient.calls[1][1]
+
+
+def _prompt_config() -> SimpleNamespace:
+    return SimpleNamespace(
+        openrouter_api_key="test-key",
+        openrouter_base_url="https://openrouter.ai/api/v1",
+        openrouter_model="deepseek/deepseek-v4.1-flash-1017:floor",
+        openrouter_image_model="meta/muse-image",
+        google_api_keys=["g1", "g2"],
+        settings=SimpleNamespace(ai_model="deepseek/deepseek-v4.1-flash-1017:floor,openai/x"),
+    )
+
+
+def test_prompt_slots_skip_google_without_gemini_model(monkeypatch) -> None:
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    generator = NewsImageGenerator(_prompt_config(), logging.getLogger("test"))  # type: ignore[arg-type]
+
+    assert [(label, model) for label, _, model in generator.prompt_providers] == [
+        ("openrouter-text", "deepseek/deepseek-v4.1-flash-1017:floor")
+    ]
+
+
+def test_prompt_slots_use_declared_gemini_model(monkeypatch) -> None:
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-3.7-flash, gemini-3.1-pro")
+    generator = NewsImageGenerator(_prompt_config(), logging.getLogger("test"))  # type: ignore[arg-type]
+
+    assert [(label, model) for label, _, model in generator.prompt_providers] == [
+        ("google-1", "gemini-3.7-flash"),
+        ("google-2", "gemini-3.7-flash"),
+        ("openrouter-text", "deepseek/deepseek-v4.1-flash-1017:floor"),
+    ]

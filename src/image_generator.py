@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -184,6 +185,14 @@ def _extract_openrouter_image_bytes(data: dict) -> Optional[bytes]:
     return None
 
 
+def _gemini_text_model() -> str:
+    """Return the first Gemini model declared in GEMINI_MODEL, or "" when none is set."""
+    for item in (os.getenv("GEMINI_MODEL") or "").split(","):
+        if item.strip():
+            return item.strip()
+    return ""
+
+
 def _extract_images_api_bytes(data: dict) -> Optional[bytes]:
     """Extract raw image bytes from an OpenRouter Images API response."""
     items = data.get("data") or []
@@ -258,16 +267,20 @@ class NewsImageGenerator:
             getattr(config, "openrouter_image_model", "") or "google/gemini-3.1-flash-lite-image"
         )
 
-        # Build prompt generation providers cascade with round-robin and quota cooldown
+        # Build prompt generation providers cascade with round-robin and quota cooldown.
+        # Google slots need a Gemini model declared in .env (GEMINI_MODEL); settings.ai_model
+        # holds OpenRouter ids, which the Gemini API rejects.
         self.prompt_providers: list[tuple[str, GoogleProvider | OpenAIProvider, str]] = []
-        for idx, key in enumerate(self.gemini_keys, start=1):
-            self.prompt_providers.append(
-                (
-                    f"google-{idx}",
-                    GoogleProvider(api_key=key, logger=logger, timeout=45),
-                    getattr(config.settings, "ai_model", "gemini-3.7-flash"),
+        gemini_text_model = _gemini_text_model()
+        if gemini_text_model:
+            for idx, key in enumerate(self.gemini_keys, start=1):
+                self.prompt_providers.append(
+                    (
+                        f"google-{idx}",
+                        GoogleProvider(api_key=key, logger=logger, timeout=45),
+                        gemini_text_model,
+                    )
                 )
-            )
         if self.openrouter_api_key:
             self.prompt_providers.append(
                 (
