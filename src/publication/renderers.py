@@ -914,10 +914,19 @@ def render_longitudinal_telegram_teaser(
     lines: list[str] = []
 
     # 1. Header with emoji badge
+    review_badges = {
+        "quarterly_article": ("🏛 <b>ИТОГИ КВАРТАЛА", "квартала"),
+        "half_year_article": ("🏛 <b>ИТОГИ ПОЛУГОДИЯ", "полугодия"),
+        "yearly_article": ("🏛 <b>ИТОГИ ГОДА", "года"),
+    }
     if publication_type == "monthly_article":
         badge = "🏛 <b>ПАНОРАМА МЕСЯЦА"
         themes_header = "Ключевые процессы месяца:"
         read_prompt = "Читать полную панораму месяца на Telegraph"
+    elif publication_type in review_badges:
+        badge, period_word = review_badges[publication_type]
+        themes_header = f"Главные сюжеты {period_word}:"
+        read_prompt = f"Читать полные итоги {period_word} на Telegraph"
     else:
         badge = "📰 <b>ИТОГИ НЕДЕЛИ"
         themes_header = "Главные темы выпуска:"

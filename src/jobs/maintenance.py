@@ -129,3 +129,43 @@ async def update_situation_memory_job(timestamp: int) -> None:
                 config.settings.publication_editorial, "reasoning_headroom_tokens", 12000
             ),
         )
+
+
+@procrastinate_app.periodic(cron="35 */2 * * *", periodic_id="storyline-chronicle")
+@procrastinate_app.task(queue="maintenance", queueing_lock="storyline-chronicle")
+async def advance_storyline_chronicle(timestamp: int) -> None:
+    """Build closed chronicle weeks and roll up completed periods (AGENTS.md §0.12)."""
+    import datetime as dt
+    import logging
+
+    from src.article_generator import ArticleGenerator
+    from src.config_loader import load_config
+    from src.publication.chronicle import advance_chronicle
+    from src.runtime import get_runtime
+
+    log = logging.getLogger(__name__)
+    config = load_config()
+    editorial = config.settings.publication_editorial
+    if not getattr(editorial, "chronicle_enabled", False):
+        return
+    runtime = get_runtime()
+    generator = ArticleGenerator(config=config, logger=log)
+    model = getattr(config.settings, "openai_model", None) or getattr(
+        config.settings, "ai_model", None
+    )
+    now = dt.datetime.fromtimestamp(timestamp, dt.timezone.utc)
+    async with runtime.uow.transaction() as conn:
+        cursor = await conn.execute("SELECT id FROM editions WHERE enabled ORDER BY id")
+        edition_ids = [int(row[0]) for row in await cursor.fetchall()]
+    for edition_id in edition_ids:
+        summary = await advance_chronicle(
+            uow=runtime.uow,
+            provider=generator.provider,
+            model=model,
+            edition_id=edition_id,
+            now=now,
+            reasoning_effort=getattr(editorial, "chronicle_reasoning_effort", "none"),
+            headroom_tokens=getattr(editorial, "reasoning_headroom_tokens", 12000),
+            log=log,
+        )
+        log.info("storyline chronicle edition %s: %s", edition_id, summary)

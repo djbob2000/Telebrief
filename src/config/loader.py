@@ -343,6 +343,36 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
             default_words=3500,
             default_lookback=720,
         ),
+        quarterly_article=_parse_article_schedule_config(
+            settings_dict,
+            "quarterly_article",
+            default_day=3,
+            default_time="20:00",
+            default_words=4000,
+            default_lookback=2208,
+            default_enabled=False,
+            default_months=(1, 4, 7, 10),
+        ),
+        half_year_article=_parse_article_schedule_config(
+            settings_dict,
+            "half_year_article",
+            default_day=5,
+            default_time="20:00",
+            default_words=4500,
+            default_lookback=4416,
+            default_enabled=False,
+            default_months=(1, 7),
+        ),
+        yearly_article=_parse_article_schedule_config(
+            settings_dict,
+            "yearly_article",
+            default_day=7,
+            default_time="20:00",
+            default_words=5000,
+            default_lookback=8784,
+            default_enabled=False,
+            default_months=(1,),
+        ),
     )
 
     if settings.target_user_id == 0:

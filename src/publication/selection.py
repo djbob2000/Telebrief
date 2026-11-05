@@ -24,6 +24,7 @@ from src.publication.models import (
     PublicationRun,
     PublicationSelectionDecision,
 )
+from src.publication.period_review import review_fragments, run_review_plan
 from src.publication.policies import (
     ARTICLE_PUBLICATION_TYPES,
     SUPPORTED_SELECTION_SEMANTICS_VERSIONS,
@@ -236,11 +237,17 @@ class EditorialSelectionService:
             FailOpenSelectionModel,
         )
 
-        if is_digest and (
+        review_plan = run_review_plan(run)
+        if (is_digest or review_plan is not None) and (
             self.model is None
             or isinstance(self.model, (AIPublicationSelectionModel, FailOpenSelectionModel))
         ):
-            logger.info("Using fast heuristic selection for digest publication run %s", run_id)
+            # A period review takes depth from its chronicle storylines.
+            logger.info(
+                "Using fast heuristic selection for %s publication run %s",
+                run.publication_type,
+                run_id,
+            )
             selector_model: SelectionModel = HeuristicSelectionModel()
         else:
             selector_model = self.model or AIPublicationSelectionModel(config=self.config)
@@ -541,6 +548,10 @@ class EditorialSelectionService:
                         (cand.story_id, run.snapshot_at, excluded_platforms, excluded_platforms),
                     )
                     fragment_ids = [r[0] for r in await f_cur.fetchall()]
+                    if review_plan is not None:
+                        # A review cites only the fragments its chronicle entries cite.
+                        cited = review_fragments(review_plan, cand.story_id)
+                        fragment_ids = [fid for fid in fragment_ids if fid in cited]
 
                 # Stories with 0 valid claims and 0 valid fragments must never reach publication
                 if not claim_ids and not fragment_ids:

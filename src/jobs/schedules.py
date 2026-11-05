@@ -41,6 +41,9 @@ DIGEST_PUBLICATION_TYPE = "digest_grouped"
 ARTICLE_PUBLICATION_TYPE = "daily_article"
 WEEKLY_ARTICLE_PUBLICATION_TYPE = "weekly_article"
 MONTHLY_ARTICLE_PUBLICATION_TYPE = "monthly_article"
+QUARTERLY_ARTICLE_PUBLICATION_TYPE = "quarterly_article"
+HALF_YEAR_ARTICLE_PUBLICATION_TYPE = "half_year_article"
+YEARLY_ARTICLE_PUBLICATION_TYPE = "yearly_article"
 DEFAULT_EDITION_SLUG = "berdyansk"
 
 PRE_PUBLISH_FANOUT_RETRY_STRATEGY = procrastinate.RetryStrategy(
@@ -99,13 +102,28 @@ def _matches_schedule_day(day_val: str | int | None, target_dt: dt.datetime) -> 
     return False
 
 
-def _publication_types(config: Config) -> list[tuple[str, str, str | int | None]]:
-    """(publication_type, schedule_time, schedule_day) tuples enabled in config."""
-    entries: list[tuple[str, str, str | int | None]] = [
-        (DIGEST_PUBLICATION_TYPE, config.settings.schedule_time, None)
+def _matches_schedule_month(months: tuple[int, ...], target_dt: dt.datetime) -> bool:
+    return not months or target_dt.month in months
+
+
+# Period reviews in calendar order; each publishes on its own day (AGENTS.md §0.12).
+PERIOD_REVIEW_SCHEDULES: tuple[tuple[str, int], ...] = (
+    (MONTHLY_ARTICLE_PUBLICATION_TYPE, 1),
+    (QUARTERLY_ARTICLE_PUBLICATION_TYPE, 3),
+    (HALF_YEAR_ARTICLE_PUBLICATION_TYPE, 5),
+    (YEARLY_ARTICLE_PUBLICATION_TYPE, 7),
+)
+
+
+def _publication_types(
+    config: Config,
+) -> list[tuple[str, str, str | int | None, tuple[int, ...]]]:
+    """(publication_type, schedule_time, schedule_day, schedule_months) enabled in config."""
+    entries: list[tuple[str, str, str | int | None, tuple[int, ...]]] = [
+        (DIGEST_PUBLICATION_TYPE, config.settings.schedule_time, None, ())
     ]
     if config.settings.article.enabled:
-        entries.append((ARTICLE_PUBLICATION_TYPE, config.settings.article.schedule_time, None))
+        entries.append((ARTICLE_PUBLICATION_TYPE, config.settings.article.schedule_time, None, ()))
     weekly_cfg = getattr(config.settings, "weekly_article", None)
     if weekly_cfg is not None and getattr(weekly_cfg, "enabled", False):
         entries.append(
@@ -113,17 +131,20 @@ def _publication_types(config: Config) -> list[tuple[str, str, str | int | None]
                 WEEKLY_ARTICLE_PUBLICATION_TYPE,
                 weekly_cfg.schedule_time,
                 getattr(weekly_cfg, "schedule_day", "sunday"),
+                (),
             )
         )
-    monthly_cfg = getattr(config.settings, "monthly_article", None)
-    if monthly_cfg is not None and getattr(monthly_cfg, "enabled", False):
-        entries.append(
-            (
-                MONTHLY_ARTICLE_PUBLICATION_TYPE,
-                monthly_cfg.schedule_time,
-                getattr(monthly_cfg, "schedule_day", 1),
+    for publication_type, default_day in PERIOD_REVIEW_SCHEDULES:
+        review_cfg = getattr(config.settings, publication_type, None)
+        if review_cfg is not None and getattr(review_cfg, "enabled", False):
+            entries.append(
+                (
+                    publication_type,
+                    review_cfg.schedule_time,
+                    getattr(review_cfg, "schedule_day", default_day),
+                    tuple(getattr(review_cfg, "schedule_months", ()) or ()),
+                )
             )
-        )
     return entries
 
 
@@ -151,9 +172,11 @@ def due_publication_actions(
     actions: list[DuePublicationAction] = []
 
     entries = _publication_types(config)
-    weekly_days = [day for kind, _, day in entries if kind == WEEKLY_ARTICLE_PUBLICATION_TYPE]
-    for publication_type, time_str, schedule_day in entries:
+    weekly_days = [day for kind, _, day, _ in entries if kind == WEEKLY_ARTICLE_PUBLICATION_TYPE]
+    for publication_type, time_str, schedule_day, schedule_months in entries:
         if not _matches_schedule_day(schedule_day, local_minute):
+            continue
+        if not _matches_schedule_month(schedule_months, local_minute):
             continue
         # The weekly review replaces the daily article on its day.
         if publication_type == ARTICLE_PUBLICATION_TYPE and any(

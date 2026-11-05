@@ -14,6 +14,7 @@ from src.publication.models import (
     PublicationPolicySet,
     PublicationRun,
 )
+from src.publication.period_review import is_period_review, seal_period_review
 from src.publication.policies import PublicationPolicyService
 from src.publication.repository import PublicationRepository
 from src.runtime import get_runtime
@@ -217,6 +218,11 @@ class PublicationSnapshotService:
 
         if run.status != "created":
             return await self.repo.load_sealed_candidates(conn, run_id)
+
+        if is_period_review(run.publication_type):
+            # A period review seals the Stories its chronicle period cites
+            # (AGENTS.md §0.12), not every Story active in a months-long window.
+            return await seal_period_review(conn, self.repo, run)
 
         eligible_rows = await self.repo.eligible_story_revisions(
             conn,

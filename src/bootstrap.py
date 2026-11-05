@@ -37,9 +37,10 @@ if TYPE_CHECKING:
 # event authority query indexes land version 36, telegram_photo_post payload
 # format lands version 37, article planner attempt tracking lands version 38,
 # telegram_entities delivery payloads land version 39, edition situation
-# memory lands version 40, and vector retention lands version 41.
+# memory lands version 40, vector retention lands version 41, and the
+# storyline chronicle lands version 42.
 SCHEMA_VERSION_MINIMUM = 7
-SCHEMA_VERSION_MAXIMUM = 41
+SCHEMA_VERSION_MAXIMUM = 42
 
 
 __all__ = ["ApplicationInfrastructure", "build_infrastructure"]

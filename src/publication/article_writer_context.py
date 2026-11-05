@@ -966,6 +966,8 @@ def render_article_writer_context_with_stats(
                     geography_lines.append(f"- {story.story_id}: {focus}")
             if len(geography_lines) > 2:
                 blocks.append("\n".join(geography_lines))
+    if context.period_outline:
+        blocks.append(context.period_outline)
 
     allowed_support_ids: set[str] | None = None
     if coverage_plan is not None:

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Literal
 
 from src.config_loader import PublicationEditorialConfig
 from src.publication.article_context import ArticleEditorialContext
+from src.publication.period_review import PERIOD_REVIEW_WORDS
 
 if TYPE_CHECKING:
     from src.publication.article_composition import ArticleCompositionRichnessSummary
@@ -64,7 +65,22 @@ def derive_article_length_profile(
         delta = context.publication_window.snapshot_at - context.publication_window.lookback_start
         lookback_hours = int(delta.total_seconds() // 3600)
 
-    if lookback_hours >= 336:
+    review_words = PERIOD_REVIEW_WORDS.get(getattr(context, "period_review_kind", "") or "")
+    if review_words and (is_thin or is_standard):
+        # A thin period stays concise; the long-window profile would demand padding.
+        lookback_hours = 24
+    if review_words and not (is_thin or is_standard):
+        # Period reviews (AGENTS.md §0.12): one chapter per theme of the period.
+        profile = ArticleLengthProfile(
+            richness="rich",
+            target_min_words=review_words - 500,
+            target_max_words=review_words,
+            target_min_sections=min(5, config.article_max_sections),
+            target_max_sections=config.article_max_sections,
+            hard_min_words=1500,
+            hard_max_words=max(review_words + 1500, hard_max),
+        )
+    elif lookback_hours >= 336:
         profile = ArticleLengthProfile(
             richness="rich",
             target_min_words=3000,

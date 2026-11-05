@@ -1278,6 +1278,7 @@ class ArticleGenerator:
         length_profile: ArticleLengthProfile | None = None,
         is_longitudinal: bool = False,
         period_label: str = "",
+        period_review_note: str = "",
     ) -> str:
         """Compose one authoritative narrative contract and a narrow source boundary."""
         narrative_contract = build_article_narrative_contract(
@@ -1290,7 +1291,9 @@ class ArticleGenerator:
                 "For this multi-day reporting window, show chronology only where event times in the "
                 "evidence establish it."
             )
-            if period_label:
+            if period_review_note:
+                longitudinal_note += f" {period_review_note}"
+            elif period_label:
                 longitudinal_note += (
                     f" This is a periodic review covering {period_label}, not a daily report. "
                     "Make the title and lead say explicitly that this is a review of the whole period "
@@ -1498,6 +1501,7 @@ class ArticleGenerator:
             )
             if is_longitudinal
             else "",
+            period_review_note=getattr(article_ctx, "period_review_note", ""),
         )
         user_prompt = (
             "Напишите подробный городской лонгрид (статью о жизни города) на русском языке на основе приведённого ниже полного фактического досье.\n\n"

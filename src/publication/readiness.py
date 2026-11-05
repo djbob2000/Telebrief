@@ -11,6 +11,7 @@ from typing import Literal
 import psycopg
 
 from src.domain.event_authority import AuthorityBarrierState
+from src.publication.period_review import is_period_review, period_review_ready
 from src.publication.readiness_repository import (
     PublicationReadinessRepository,
     PublicationRefreshRun,
@@ -147,6 +148,11 @@ class PublicationReadinessService:
                 )
                 return self._normal_decision(refresh)
 
+        if is_period_review(refresh.publication_type):
+            return await self._reconcile_period_review(
+                conn, refresh, now=now, knowledge_snapshot_at=knowledge_snapshot_at
+            )
+
         evaluation_at = min(now, refresh.deadline_at)
         try:
             sources = await self.repo.reconcile_qualifying_collection_runs(
@@ -281,6 +287,75 @@ class PublicationReadinessService:
             now=now,
         )
         return PublicationReadinessDecision("failed", None, "readiness_deadline")
+
+    async def _reconcile_period_review(
+        self,
+        conn: psycopg.AsyncConnection,
+        refresh: PublicationRefreshRun,
+        *,
+        now: dt.datetime,
+        knowledge_snapshot_at: dt.datetime | None,
+    ) -> PublicationReadinessDecision:
+        """A period review is ready when the chronicle marks its period complete.
+
+        It needs no fresh collection and no processing barrier over the whole
+        period: closed weeks were chronicled once processing caught up
+        (AGENTS.md §0.12), so a backlog delays the review instead of failing it.
+        """
+        ready = await period_review_ready(
+            conn,
+            edition_id=refresh.edition_id,
+            publication_type=refresh.publication_type,
+            slot_at=refresh.slot_at,
+        )
+        if not ready:
+            if now >= refresh.deadline_at:
+                await self._transition(
+                    conn,
+                    refresh.id,
+                    status="failed",
+                    error_kind="chronicle_not_ready",
+                    now=now,
+                )
+                return PublicationReadinessDecision("failed", None, "chronicle_not_ready")
+            if refresh.status != "processing":
+                await self._transition(
+                    conn,
+                    refresh.id,
+                    status="processing",
+                    collection_ready_at=refresh.collection_ready_at or now,
+                    now=now,
+                )
+            return PublicationReadinessDecision("processing", None, None)
+
+        evaluation_at = min(now, refresh.deadline_at)
+        await self._transition(
+            conn,
+            refresh.id,
+            status="ready_for_preparation",
+            collection_ready_at=refresh.collection_ready_at or evaluation_at,
+            processing_ready_at=evaluation_at,
+            now=now,
+        )
+        if refresh.knowledge_snapshot_at is None and hasattr(
+            self.repo, "freeze_knowledge_snapshot"
+        ):
+            await self.repo.freeze_knowledge_snapshot(
+                conn,
+                refresh_run_id=refresh.id,
+                snapshot_at=_utc(knowledge_snapshot_at or evaluation_at),
+            )
+        if refresh.trigger == "scheduled" and now < refresh.slot_at:
+            await self._transition(
+                conn,
+                refresh.id,
+                status="ready_waiting_slot",
+                collection_ready_at=refresh.collection_ready_at or evaluation_at,
+                processing_ready_at=evaluation_at,
+                now=now,
+            )
+            return PublicationReadinessDecision("ready_waiting_slot", None)
+        return self._normal_decision(refresh)
 
     @staticmethod
     def _normal_decision(refresh: PublicationRefreshRun) -> PublicationReadinessDecision:

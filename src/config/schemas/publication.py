@@ -92,13 +92,15 @@ class ArticleConfig:
 
 @dataclass
 class ArticleScheduleConfig:
-    """Configuration for periodic longitudinal articles (weekly/monthly)."""
+    """Configuration for periodic longitudinal articles (weekly through yearly)."""
 
     enabled: bool = True
     schedule_day: str | int = "sunday"  # "sunday" or 1
     schedule_time: str = "19:00"
     target_word_count: int = 2000
     lookback_hours: int = 168
+    # Months (1-12) a period review publishes in; empty means every month.
+    schedule_months: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -214,6 +216,9 @@ class PublicationEditorialConfig:
     digest_writer_reasoning_effort: str | None = "none"
     digest_editor_reasoning_effort: str | None = "none"
     situation_memory_reasoning_effort: str | None = "none"
+    # Storyline chronicle behind period reviews (AGENTS.md §0.12).
+    chronicle_enabled: bool = False
+    chronicle_reasoning_effort: str | None = "none"
     # None keeps the global settings.reasoning_effort for the article writer.
     article_writer_reasoning_effort: str | None = None
     reasoning_headroom_tokens: int = 12000
@@ -259,6 +264,7 @@ class PublicationEditorialConfig:
             "digest_writer_reasoning_effort",
             "digest_editor_reasoning_effort",
             "situation_memory_reasoning_effort",
+            "chronicle_reasoning_effort",
             "article_writer_reasoning_effort",
         ):
             effort = getattr(self, field_name)

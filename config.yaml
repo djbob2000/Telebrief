@@ -179,6 +179,9 @@ settings:
     digest_writer_reasoning_effort: "low"
     digest_editor_reasoning_effort: "low"
     situation_memory_reasoning_effort: "low"
+    # Storyline chronicle for period reviews; enable after the backfill estimate.
+    chronicle_enabled: false
+    chronicle_reasoning_effort: "low"
     # Reasoning tokens count against max_tokens; medium used ~13k on one window.
     reasoning_headroom_tokens: 32000
 
@@ -312,13 +315,40 @@ settings:
     lookback_hours: 168
     target_word_count: 2000
 
-  # Monthly Panorama Articles (Панорама месяца)
+  # Monthly review (Итоги месяца), built on the storyline chronicle
   monthly_article:
     enabled: true
     schedule_day: 1
     schedule_time: "20:00"
     lookback_hours: 720
     target_word_count: 3500
+
+  # Period reviews on the storyline chronicle (AGENTS.md §0.12). The window is
+  # the closed calendar period before the slot; lookback_hours is only a
+  # fallback. Enable each review after a successful frozen preview.
+  quarterly_article:
+    enabled: false
+    schedule_day: 3
+    schedule_months: [1, 4, 7, 10]
+    schedule_time: "20:00"
+    lookback_hours: 2208
+    target_word_count: 4000
+
+  half_year_article:
+    enabled: false
+    schedule_day: 5
+    schedule_months: [1, 7]
+    schedule_time: "20:00"
+    lookback_hours: 4416
+    target_word_count: 4500
+
+  yearly_article:
+    enabled: false
+    schedule_day: 7
+    schedule_months: [1]
+    schedule_time: "20:00"
+    lookback_hours: 8784
+    target_word_count: 5000
 
 database:
   enabled: true

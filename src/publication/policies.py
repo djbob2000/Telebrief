@@ -23,7 +23,15 @@ DIGEST_EDITORIALIZER_PROMPT_VERSION = "digest-editorializer-v22-item-cohesion"
 DIGEST_EDITOR_PROMPT_VERSION = "digest-editor-v4-item-cohesion"
 
 ARTICLE_PUBLICATION_TYPES: frozenset[str] = frozenset(
-    {"daily_article", "article", "weekly_article", "monthly_article"}
+    {
+        "daily_article",
+        "article",
+        "weekly_article",
+        "monthly_article",
+        "quarterly_article",
+        "half_year_article",
+        "yearly_article",
+    }
 )
 
 DEFAULT_ELIGIBILITY_CONFIG_HASH = "elig-cfg-default"
@@ -130,6 +138,9 @@ def resolve_publication_lookback_hours(
     default_by_type = {
         "weekly_article": 168,
         "monthly_article": 720,
+        "quarterly_article": 2208,
+        "half_year_article": 4416,
+        "yearly_article": 8784,
         "daily_article": 24,
         "article": 24,
     }
@@ -140,10 +151,15 @@ def resolve_publication_lookback_hours(
 
     # 1. Check publication-specific settings on config
     cfg_attr_name = (
-        "weekly_article"
-        if publication_type == "weekly_article"
-        else "monthly_article"
-        if publication_type == "monthly_article"
+        publication_type
+        if publication_type
+        in (
+            "weekly_article",
+            "monthly_article",
+            "quarterly_article",
+            "half_year_article",
+            "yearly_article",
+        )
         else "article"
         if publication_type in ("daily_article", "article")
         else None

@@ -448,23 +448,35 @@ def _parse_article_schedule_config(
     default_time: str = "19:00",
     default_words: int = 2000,
     default_lookback: int = 168,
+    default_enabled: bool = True,
+    default_months: tuple[int, ...] = (),
 ) -> ArticleScheduleConfig:
-    """Parse periodic article schedule settings (weekly_article or monthly_article)."""
+    """Parse periodic article schedule settings (weekly through yearly reviews)."""
     raw = settings_dict.get(key)
     if raw is None:
         return ArticleScheduleConfig(
-            enabled=True,
+            enabled=default_enabled,
             schedule_day=default_day,
             schedule_time=default_time,
             target_word_count=default_words,
             lookback_hours=default_lookback,
+            schedule_months=default_months,
         )
     if not isinstance(raw, dict):
         raise ValueError(f"settings.{key} must be a mapping, got {type(raw).__name__}")
 
-    enabled = raw.get("enabled", True)
+    enabled = raw.get("enabled", default_enabled)
     if not isinstance(enabled, bool):
         raise ValueError(f"settings.{key}.enabled must be a bool, got {type(enabled).__name__}")
+
+    raw_months = raw.get("schedule_months", list(default_months))
+    if not isinstance(raw_months, (list, tuple)) or any(
+        not isinstance(month, int) or isinstance(month, bool) or not 1 <= month <= 12
+        for month in raw_months
+    ):
+        raise ValueError(
+            f"settings.{key}.schedule_months must be a list of months 1-12, got {raw_months!r}"
+        )
 
     schedule_day = raw.get("schedule_day", default_day)
     if not isinstance(schedule_day, (str, int)):
@@ -506,6 +518,7 @@ def _parse_article_schedule_config(
         schedule_time=schedule_time.strip(),
         target_word_count=target_word_count,
         lookback_hours=lookback_hours,
+        schedule_months=tuple(sorted(set(raw_months))),
     )
 
 
@@ -711,6 +724,8 @@ def _parse_publication_editorial_config(settings_dict: dict) -> PublicationEdito
         situation_memory_reasoning_effort=_val_reasoning_effort(
             "situation_memory_reasoning_effort", "none"
         ),
+        chronicle_enabled=bool(raw.get("chronicle_enabled", False)),
+        chronicle_reasoning_effort=_val_reasoning_effort("chronicle_reasoning_effort", "none"),
         reasoning_headroom_tokens=_val_nonneg_int("reasoning_headroom_tokens", 12000),
         article_writer_reasoning_effort=_val_reasoning_effort(
             "article_writer_reasoning_effort", None

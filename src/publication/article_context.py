@@ -242,6 +242,11 @@ class ArticleEditorialContext:
     story_cards: tuple[StoryCard, ...] = ()
     selection_by_story: dict[str, ArticleSelectionSignal] = field(default_factory=dict)
     coverage_plan: Any | None = None
+    # Period reviews (AGENTS.md §0.12): the chronicle period kind, the system-prompt
+    # note naming the period, and non-citable storyline navigation for the writer.
+    period_review_kind: str = ""
+    period_review_note: str = ""
+    period_outline: str = ""
 
     @property
     def supports(self) -> tuple[ArticleSupport, ...]:

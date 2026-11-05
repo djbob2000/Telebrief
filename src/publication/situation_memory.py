@@ -31,6 +31,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from src.publication.grounding import REF_RE, clean_text, grounded_claim, parse_refs
+
 MEMORY_VERSION = "situation-memory-v2-digest-line"
 MAX_SITUATIONS = 10
 STALE_AFTER_DAYS = 21
@@ -52,7 +54,7 @@ _SERVICES = (
     "other",
 )
 _STATUSES = ("ongoing", "improving", "worsening", "resolved")
-_REF_RE = re.compile(r"^fragment:\d+$")
+_REF_RE = REF_RE
 _DATE_LIKE_RE = re.compile(
     r"\b\d{1,2}\s+(?:январ|феврал|март|апрел|ма[яй]|июн|июл|август|сентябр|октябр|ноябр|декабр)",
     re.IGNORECASE,
@@ -368,18 +370,12 @@ def _situation_id(service: str, title: str) -> str:
     return f"sit:{digest[:12]}"
 
 
-def _clean_text(value: Any, limit: int = 400) -> str:
-    return " ".join(str(value or "").split())[:limit]
+_clean_text = clean_text
 
 
 def _grounded(text: str, refs: Sequence[str], texts: Mapping[str, Sequence[str]]) -> bool:
     """A field is kept only when its concrete claims occur in its own cited sources."""
-    from src.publication.article_claims import find_unsupported_claims
-
-    if not text or not refs or any(ref not in texts for ref in refs):
-        return False
-    supports = [support for ref in refs for support in texts[ref]]
-    return not find_unsupported_claims(text, supports)
+    return grounded_claim(text, refs, texts)
 
 
 _ATTRIBUTION_RE = re.compile(
@@ -406,10 +402,7 @@ def _valid_digest_line(text: str, refs: Sequence[str], texts: Mapping[str, Seque
     )
 
 
-def _refs(value: Any) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return [str(ref) for ref in value if _REF_RE.match(str(ref))]
+_refs = parse_refs
 
 
 def apply_memory_operations(

@@ -25,6 +25,14 @@ from src.processing.event_analysis import EventAnalysisPayload
 from src.processing.operational_semantics import derive_operational_observations
 from src.publication.editorial_adapter import FrozenEditorialInput
 from src.publication.models import PublicationInput
+from src.publication.period_review import (
+    build_review_coverage_plan,
+    render_review_outline,
+    review_window_hours,
+    review_writer_note,
+    review_zone,
+    run_review_plan,
+)
 from src.publication.policies import ARTICLE_PUBLICATION_TYPES, DIGEST_PUBLICATION_TYPES
 from src.publication.repository import PublicationRepository
 from src.timezones import normalize_timezone_name
@@ -631,6 +639,14 @@ class EventEditorialAdapter:
             if ed_row and len(ed_row) > 2 and ed_row[2]:
                 edition_slug = str(ed_row[2])
 
+            review_plan = run_review_plan(run)
+            if review_plan is not None:
+                # The review window starts at the period's local start, even
+                # when the chronicle completed after the scheduled slot.
+                lookback_hours = review_window_hours(
+                    review_plan, run.snapshot_at, review_zone(edition_timezone)
+                )
+
             article_ctx = build_article_editorial_context(
                 cards=story_cards,
                 evidence_items=list(all_evidence.values()),
@@ -644,7 +660,18 @@ class EventEditorialAdapter:
                 selection_by_story=sel_signals,
             )
 
-            if run.publication_type in ("weekly_article", "monthly_article") and story_cards:
+            if review_plan is not None:
+                from dataclasses import replace
+
+                review_coverage = build_review_coverage_plan(review_plan, article_ctx)
+                article_ctx = replace(
+                    article_ctx,
+                    coverage_plan=review_coverage,
+                    period_review_kind=str(review_plan.get("kind") or ""),
+                    period_review_note=review_writer_note(review_plan),
+                    period_outline=render_review_outline(review_plan, review_coverage),
+                )
+            elif run.publication_type == "weekly_article" and story_cards:
                 from dataclasses import replace
 
                 from src.publication.story_threads import (

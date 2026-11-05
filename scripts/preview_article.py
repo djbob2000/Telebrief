@@ -2,7 +2,7 @@
 
 Usage:
     python scripts/preview_article.py [--edition berdyansk] [--hours 24]
-        [--date YYYY-MM-DD] [--output PATH]
+        [--date YYYY-MM-DD] [--type daily_article|monthly_article|...] [--output PATH]
     python scripts/preview_article.py --run-id ID [--output PATH]
 
 Ordinary preview mode uses the Event-First snapshot and selection pipeline.
@@ -28,6 +28,8 @@ from src.publication.article_preview import (
     build_article_preview_from_run,
 )
 from src.publication.facade import build_publication_preview
+from src.publication.period_review import is_period_review
+from src.publication.policies import ARTICLE_PUBLICATION_TYPES
 from src.runtime import install_runtime
 from src.timezones import get_timezone, normalize_timezone_name
 
@@ -37,6 +39,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="Generate a daily Event-First article preview without delivery."
     )
     parser.add_argument("--edition", default=None, help="Edition slug")
+    parser.add_argument(
+        "--type",
+        dest="publication_type",
+        default="daily_article",
+        choices=sorted(ARTICLE_PUBLICATION_TYPES - {"article"}),
+        help="Article type; a period review covers the closed period before --date (default: now)",
+    )
     parser.add_argument(
         "--run-id",
         type=int,
@@ -114,11 +123,14 @@ async def main() -> None:
         if args.date is not None:
             edition_timezone = await _load_edition_timezone(infra, edition_slug)
             snapshot_at = _snapshot_at(args.date, edition_timezone)
+        period_review = is_period_review(args.publication_type)
         publication_preview = await build_publication_preview(
-            publication_type="daily_article",
+            publication_type=args.publication_type,
             edition_slug=edition_slug,
             snapshot_at=snapshot_at,
-            lookback_hours=args.hours if args.hours is not None else 24,
+            lookback_hours=args.hours
+            if args.hours is not None
+            else (None if period_review else 24),
             config=config,
         )
         parts = [

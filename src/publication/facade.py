@@ -242,6 +242,16 @@ async def build_publication_preview(
         lookback_hours=lookback_hours,
         defer_preparation=False,
     )
+    from src.publication.period_review import is_period_review
+
+    if is_period_review(publication_type) and intent.readiness_status != "ready_for_preparation":
+        # The chronicle period is either complete or not; there is nothing to wait for.
+        from src.publication.snapshot import IncompleteTriageError
+
+        raise IncompleteTriageError(
+            f"preview readiness did not complete: {intent.readiness_status} "
+            "(the chronicle period of this review is not complete)"
+        )
     if intent.readiness_status != "ready_for_preparation":
         await _wait_for_preview_readiness(
             orchestrator,

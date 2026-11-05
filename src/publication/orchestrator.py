@@ -19,6 +19,12 @@ from procrastinate.exceptions import AlreadyEnqueued, UniqueViolation
 
 from src.config_loader import Config
 from src.ingestion.models import CollectionTrigger
+from src.publication.period_review import (
+    PERIOD_REVIEW_DEADLINE_MINUTES,
+    is_period_review,
+    review_lookback_hours,
+    review_zone,
+)
 from src.publication.policies import ARTICLE_PUBLICATION_TYPES, resolve_publication_lookback_hours
 from src.publication.readiness import (
     PublicationReadinessDecision,
@@ -133,13 +139,27 @@ class PublicationOrchestrator:
         if effective_lookback_hours <= 0:
             raise ValueError("lookback_hours must be positive")
 
+        period_review = is_period_review(publication_type)
+        deadline_minutes = self.config.settings.publication_readiness_deadline_minutes
+        if period_review:
+            # A period review waits for the chronicle, not for a fresh collection.
+            deadline_minutes = PERIOD_REVIEW_DEADLINE_MINUTES
+            deadline_at = target_at + dt.timedelta(minutes=deadline_minutes)
+
         async with self.uow.transaction() as conn:
             edition = await EditionRepository().get_by_slug(conn, edition_slug)
             if edition is None:
                 raise ValueError(f"edition slug {edition_slug!r} not found")
-            source_ids = await EditionRepository().list_enabled_source_ids(conn, edition.id)
+            if period_review:
+                source_ids: list[int] = []
+                if lookback_hours is None:
+                    effective_lookback_hours = review_lookback_hours(
+                        publication_type, target_at, review_zone(edition.timezone)
+                    )
+            else:
+                source_ids = await EditionRepository().list_enabled_source_ids(conn, edition.id)
             reusable_refresh = None
-            if publication_type in ARTICLE_PUBLICATION_TYPES:
+            if publication_type in ARTICLE_PUBLICATION_TYPES and not period_review:
                 reusable_refresh = await self.readiness_repo.find_reusable_frozen_refresh(
                     conn,
                     edition_id=edition.id,
@@ -188,7 +208,7 @@ class PublicationOrchestrator:
                     freshness_cutoff_at=freshness_cutoff_at,
                     requested_by_user_id=requested_by_user_id,
                     lookback_hours=effective_lookback_hours,
-                    deadline_minutes=self.config.settings.publication_readiness_deadline_minutes,
+                    deadline_minutes=deadline_minutes,
                 )
             if intent.status in {"preparing", "publication_queued", "failed"}:
                 # The scheduler may submit the same stable request key on

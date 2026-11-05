@@ -47,6 +47,9 @@ def _default_telegram_destination() -> str | None:
 _PERIODIC_ARTICLE_BADGES = {
     "weekly_article": "*ИТОГИ НЕДЕЛИ*\n",
     "monthly_article": "*ПАНОРАМА МЕСЯЦА*\n",
+    "quarterly_article": "*ИТОГИ КВАРТАЛА*\n",
+    "half_year_article": "*ИТОГИ ПОЛУГОДИЯ*\n",
+    "yearly_article": "*ИТОГИ ГОДА*\n",
 }
 
 
@@ -86,7 +89,7 @@ def _render_payload(platform: str, pub: Any) -> tuple[str, dict[str, Any]]:
                 "entities": list(entities) if isinstance(entities, (list, tuple)) else [],
             }
 
-        if pub_type in ("weekly_article", "monthly_article") and not photo_path:
+        if pub_type in _PERIODIC_ARTICLE_BADGES and not photo_path:
             from src.publication.renderers import render_longitudinal_telegram_teaser
 
             raw_text = render_longitudinal_telegram_teaser(
@@ -279,7 +282,7 @@ class PublicationDeliveryService:
                     platform="telegram_channel",
                     destination_key=destination_key,
                 )
-                if run.publication_type in ("weekly_article", "monthly_article"):
+                if run.publication_type in _PERIODIC_ARTICLE_BADGES:
                     telegraph_dest = await self.delivery_repo.get_or_create_destination(
                         conn,
                         edition_id=run.edition_id,

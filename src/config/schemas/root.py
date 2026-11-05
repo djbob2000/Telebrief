@@ -93,6 +93,36 @@ class Settings:
             lookback_hours=720,
         )
     )
+    quarterly_article: ArticleScheduleConfig = field(
+        default_factory=lambda: ArticleScheduleConfig(
+            enabled=False,
+            schedule_day=3,
+            schedule_time="20:00",
+            target_word_count=4000,
+            lookback_hours=2208,
+            schedule_months=(1, 4, 7, 10),
+        )
+    )
+    half_year_article: ArticleScheduleConfig = field(
+        default_factory=lambda: ArticleScheduleConfig(
+            enabled=False,
+            schedule_day=5,
+            schedule_time="20:00",
+            target_word_count=4500,
+            lookback_hours=4416,
+            schedule_months=(1, 7),
+        )
+    )
+    yearly_article: ArticleScheduleConfig = field(
+        default_factory=lambda: ArticleScheduleConfig(
+            enabled=False,
+            schedule_day=7,
+            schedule_time="20:00",
+            target_word_count=5000,
+            lookback_hours=8784,
+            schedule_months=(1,),
+        )
+    )
 
 
 @dataclass
