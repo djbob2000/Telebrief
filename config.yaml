@@ -325,9 +325,9 @@ settings:
 
   # Period reviews on the storyline chronicle (AGENTS.md §0.12). The window is
   # the closed calendar period before the slot; lookback_hours is only a
-  # fallback. Enable each review after a successful frozen preview.
+  # fallback.
   quarterly_article:
-    enabled: false
+    enabled: true
     schedule_day: 3
     schedule_months: [1, 4, 7, 10]
     schedule_time: "20:00"
@@ -335,7 +335,7 @@ settings:
     target_word_count: 4000
 
   half_year_article:
-    enabled: false
+    enabled: true
     schedule_day: 5
     schedule_months: [1, 7]
     schedule_time: "20:00"
@@ -343,7 +343,7 @@ settings:
     target_word_count: 4500
 
   yearly_article:
-    enabled: false
+    enabled: true
     schedule_day: 7
     schedule_months: [1]
     schedule_time: "20:00"

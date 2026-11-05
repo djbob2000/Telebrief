@@ -60,7 +60,9 @@ ROLLUP_FACTS = {"month": 12, "quarter": 12, "half_year": 12, "year": 14}
 ROLLUP_STORYLINES_PER_THEME = {"month": 20, "quarter": 20, "half_year": 20, "year": 24}
 ROLLUP_OTHER_FACTS = {"month": 12, "quarter": 12, "half_year": 12, "year": 14}
 LATE_LINK_DAYS = 60
-MODEL_MAX_TOKENS = 16_000
+# Visible answer cap; only generated tokens are billed, and a truncated JSON
+# answer falls back to a deterministic entry, so the cap stays generous.
+MODEL_MAX_TOKENS = 32_000
 
 THEME_LABELS: dict[str, str] = {
     "safety": "Безопасность",
