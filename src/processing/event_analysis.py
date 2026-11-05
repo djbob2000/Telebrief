@@ -27,6 +27,10 @@ from src.processing.evidence_sampling import (
     RepresentativeEvidenceSampler,
     SampledFragment,
 )
+from src.processing.fire_reading import (
+    LIT_WINDOWS_VS_FIRE_RULES,
+    unsupported_fire_reading,
+)
 from src.processing.operational_semantics import (
     ServiceStateAudit,
     has_unstructured_publish_service_access,
@@ -41,7 +45,8 @@ logger = logging.getLogger(__name__)
 
 ANALYSIS_VERSION = "v10"
 
-_EVENT_ANALYSIS_SYSTEM_PROMPT = """You are an expert investigative regional news editor.
+_EVENT_ANALYSIS_SYSTEM_PROMPT = (
+    """You are an expert investigative regional news editor.
 Analyze the following chronological source fragments from multiple channels regarding a single local event.
 Extract objective facts, distinguish official statements from community observations, highlight contradictions or uncertainties, and summarize the event.
 
@@ -61,6 +66,9 @@ A Story reaches this rich-analysis stage only after Event-First retention has ke
 
 Tags are descriptive metadata, not digest sections. Use whatever concise terms best describe the event (3-8 short topic tags in Russian; open vocabulary; do not choose from a predefined taxonomy). Never force an event into a predefined city category.
 
+"""
+    + LIT_WINDOWS_VS_FIRE_RULES
+    + """
 SERVICE-STATE CONTRACT:
 - Operational service truth exists only inside a PUBLISH evidence item with kind=service_access and a non-null service_state object.
 - Do not create a separate operational observations array.
@@ -111,6 +119,7 @@ Respond ONLY with a valid JSON object with the exact keys:
   "confidence_score": 0.95
 }
 """
+)
 
 EventAnalysisPayload = EventPayload
 
@@ -394,6 +403,13 @@ class EventAnalysisService:
             payload, service_audit = _normalize_analysis_payload(
                 parsed_payload, sampled, edition_name=ed_name
             )
+            if unsupported_fire_reading(
+                payload,
+                source_texts=[fragment.text_content for fragment in sampled],
+                context_texts=[fragment.reply_parent_context_text for fragment in sampled],
+            ):
+                # Keep the Gate brief rather than publish lit windows as a fire.
+                raise ValueError("event analysis read lit-up buildings as a fire")
             if service_audit.rejected_count > 0:
                 self.logger.debug(
                     "Analysis normalized %s unsupported service claims/states for story %s: %s",

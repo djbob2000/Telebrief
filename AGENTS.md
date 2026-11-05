@@ -544,6 +544,10 @@ Gate v7 outputs `scope_basis_fragment_ids` identifying which fragments support t
 
 Service availability truth is unified in `EvidenceItemPayload.service_state: ServiceStatePayload`. LLMs output nested `service_state` within `service_access` evidence items only; there is no separate top-level LLM-authored operational observations array. Deterministic pipeline normalization (`normalize_service_state_evidence` / `derive_operational_observations`) cleans states and projects them into `OperationalObservationPayload` for downstream rollups and card building.
 
+### Lit windows vs fire
+
+In residents' messages, "горит/горят" said of windows, apartment blocks, a street or a district usually means that the electric light is on there. Gate and Rich Analysis receive this rule (`LIT_WINDOWS_VS_FIRE_RULES`), and the service taxonomy treats lit-up windows or apartment blocks as a power marker (`reports_lit_buildings`). A payload that names a fire when its sources only say "горит", with no fire word, strike, or burning object in any source, reply parent, or same-message text, is a misread extraction (`unsupported_fire_reading`): Gate routes it to bounded recovery and Rich Analysis keeps the Gate brief. "Горит трава", "горит дом" and "прилёт, всё горит" keep their fire reading.
+
 ### Resident questions
 
 Evidence kind `resident_question` means:

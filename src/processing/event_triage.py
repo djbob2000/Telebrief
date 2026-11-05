@@ -38,6 +38,10 @@ from src.processing.edition_scope import (
     message_context_names_place,
     story_placed_outside_by_message,
 )
+from src.processing.fire_reading import (
+    LIT_WINDOWS_VS_FIRE_RULES,
+    unsupported_fire_reading,
+)
 from src.processing.hard_exclusion import evaluate_story_hard_exclusion
 from src.processing.operational_semantics import (
     has_unstructured_publish_service_access,
@@ -286,7 +290,8 @@ _ALLOWED_EXCLUSION_REASONS = frozenset(
     }
 )
 
-_GATE_V2_SYSTEM_PROMPT = """You are a fast geographic, editorial retention, and operational triage classifier for a regional newsroom digest.
+_GATE_V2_SYSTEM_PROMPT = (
+    """You are a fast geographic, editorial retention, and operational triage classifier for a regional newsroom digest.
 You are evaluating candidate event Stories for ONE configured edition.
 For every Story return three judgments in the same result:
 1. geographic scope: exactly LOCAL, DIRECT_IMPACT, OUT_OF_SCOPE, or UNCERTAIN;
@@ -354,6 +359,9 @@ EVIDENCE SOURCE OWNERSHIP:
 - Preserve the role of a duration, not just its number. "Слободка 1 раз кажется тоже со светом побыла 3 дня" means an episode of availability lasting three days, reported tentatively. It does not mean one switch-on within a three-day observation period. Do not infer present availability from this past episode.
 - An interval-only reply such as "На Тверской один раз в неделю на сутки" may answer a unique explicit question about how often power is supplied or interrupted. Keep the question's action and the reply's own interval together. If the parent instead mixes a house with power and a house without power, the reply does not resolve which action the interval describes: preserve it as CONTEXT, without inventing supply or outage polarity.
 
+"""
+    + LIT_WINDOWS_VS_FIRE_RULES
+    + """
 CHAT SARCASM, RUMORS, AND SCHEDULED OUTAGES:
 - Informal chat banter, sarcasm, emotional reactions, and ungrounded rumors/predictions about future outages (e.g. "после 20-го всё вырубят", "зимой тепла не будет", "завтра опять отключат") MUST NEVER be classified as service_access or SCHEDULED.
 - SCHEDULED with basis=scheduled_change requires an authoritative announced schedule, planned maintenance notification, or official utility/municipal notice (e.g. РЭС, Водоканал, Горгаз, Горсвет, администрация).
@@ -418,6 +426,7 @@ Respond ONLY with a valid JSON object containing a "results" array:
   ]
 }
 """
+)
 
 
 def build_gate_response_format(story_count: int) -> dict[str, Any]:
@@ -1470,6 +1479,32 @@ class StoryTriageService:
             else:
                 mark_invalid(s.story_id, "invalid_scope_classification")
                 continue
+
+            # "Девятиэтажки все горят" reports lit windows. A fire reading whose
+            # sources only say "горит", with no fire, strike, or burning object in
+            # any source, parent, or same-message text, is a misread extraction:
+            # route it to bounded recovery, never publish it.
+            if retention == "KEEP" and brief_payload is not None:
+                message_contexts = [
+                    _fragment_message_context(sf, same_message_context) for sf in story_frags
+                ]
+                if unsupported_fire_reading(
+                    brief_payload,
+                    source_texts=[context.text for context in message_contexts],
+                    context_texts=[
+                        *story_reply_parent_contexts.values(),
+                        *(
+                            text
+                            for context in message_contexts
+                            for text in (
+                                *context.earlier_message_texts,
+                                *context.later_message_texts,
+                            )
+                        ),
+                    ],
+                ):
+                    mark_invalid(s.story_id, "unsupported_fire_reading")
+                    continue
 
             gate_res = StoryGateResult(
                 story_id=s.story_id,
