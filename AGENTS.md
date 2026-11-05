@@ -435,6 +435,21 @@ Agents must not make changes whose effect is to:
 
 **Article:** rich, readable, concrete city-life long read. Major developments dominate; secondary stories enrich; microdetails make the city feel real; advertisements and directory payload do not take over the prose.
 
+**Period review:** the same long read for a closed month, quarter, half-year or year, where the storylines that ran longest and touched the most residents lead (§0.12).
+
+## 0.12 Period review contract
+
+Monthly, quarterly, half-year and yearly reviews are city-life long reads for a closed calendar period. §0.3–§0.9 apply in full, with these additions.
+
+- **Storyline chronicle.** Every Story that has a current revision is linked to one storyline. Each active storyline gets a weekly chronicle entry; month, quarter, half-year and year entries roll up from their child entries. The chronicle is navigation and editorial memory, like situation memory: it is never citable evidence. A review publishes only facts grounded in the PUBLISH supports of the Stories its chronicle entries reference, under the unchanged Evidence Boundary.
+- **Grounded entries.** Each chronicle fact cites source fragments from its own input. Numbers and dates in a fact must appear in a cited fragment. A rollup may cite only refs of its child entries. A field that fails these checks is dropped, not repaired by guesswork.
+- **Depth by weight, not deletion.** The review's coverage plan assigns DEVELOP/WEAVE/BRIEF from storyline weight across the period: Story count, distinct sources and active days. Long-running storylines dominate; smaller legitimate storylines stay compactly. Bounding facts per storyline keeps the dossier within the §0.7 ceiling; it never drops a storyline from the plan.
+- **Writer budget unchanged.** Chronicle entries are written by background maintenance, outside the publication run. A review run keeps the §0.7 budget: one logical writer stage, at most two editor calls, one run-level retry.
+- **Honest partial periods.** When collection began after the period start, the review covers the actual span and says so in the title and lead (for example, «Итоги 2026 года: сентябрь–декабрь»). It must not imply full-period coverage.
+- **Readiness.** A review is ready when chronicle entries exist for every week of its period. A processing backlog in the final days delays the review; it does not shrink it.
+- **Schedule.** Monthly reviews publish on the 1st, quarterly on the 3rd of January, April, July and October, half-year on 5 January and 5 July, and yearly on 7 January, each at 20:00 local time.
+- **Retention.** Knowledge is kept forever: source texts, Stories, revisions, chronicle entries and publications. Fragment vectors and Story centroids are working state for clustering; nightly retention evicts them 14 days after a Story goes quiet, after copying each published Story's centroid into `story_semantic_vectors`. Longitudinal features use those vectors, never fragment vectors.
+
 ---
 
 # 1. Canonical System Architecture
