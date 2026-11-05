@@ -176,6 +176,38 @@ def _extract_openrouter_image_bytes(data: dict) -> Optional[bytes]:
     return None
 
 
+def _extract_images_api_bytes(data: dict) -> Optional[bytes]:
+    """Extract raw image bytes from an OpenRouter Images API response."""
+    items = data.get("data") or []
+    if items and isinstance(items[0], dict):
+        b64_str = items[0].get("b64_json")
+        if isinstance(b64_str, str) and b64_str:
+            return base64.b64decode(b64_str)
+    return None
+
+
+def _requires_images_api(status_code: int, body: str) -> bool:
+    """Image-only models (e.g. Muse, GPT Image) reject chat/completions with a 404."""
+    return status_code == 404 and "/api/v1/images" in body
+
+
+def _images_api_payload(
+    model: str, prompt: str, reference_image_bytes: Optional[bytes]
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "model": model,
+        "prompt": prompt,
+        "aspect_ratio": "16:9",
+        "output_format": "jpeg",
+    }
+    if reference_image_bytes:
+        b64_ref = base64.b64encode(reference_image_bytes).decode("utf-8")
+        payload["input_references"] = [
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_ref}"}}
+        ]
+    return payload
+
+
 class NewsImageGenerator:
     """Generates editorial illustrations for news articles using OpenRouter direct routing with failovers."""
 
@@ -374,11 +406,38 @@ class NewsImageGenerator:
                 self.logger.info(
                     "Trying OpenRouter image slot with model %s", self.openrouter_image_model
                 )
-                async with httpx.AsyncClient(timeout=60.0) as client:
+                async with httpx.AsyncClient(timeout=90.0) as client:
                     resp = await client.post(
                         openrouter_url, json=openrouter_payload, headers=headers
                     )
-                    if resp.status_code != 200:
+                    if _requires_images_api(resp.status_code, resp.text):
+                        resp = await client.post(
+                            f"{self.openrouter_base_url.rstrip('/')}/images",
+                            json=_images_api_payload(
+                                self.openrouter_image_model, prompt, reference_image_bytes
+                            ),
+                            headers=headers,
+                        )
+                        images_api_bytes = (
+                            _extract_images_api_bytes(resp.json())
+                            if resp.status_code == 200
+                            else None
+                        )
+                        if images_api_bytes:
+                            target_file.write_bytes(images_api_bytes)
+                            self.logger.info(
+                                "Saved generated editorial image (via OpenRouter Images API %s) to %s",
+                                self.openrouter_image_model,
+                                target_file,
+                            )
+                            return target_file
+                        self.logger.warning(
+                            "OpenRouter Images API returned HTTP %s without an image: %s; "
+                            "trying fallback slots",
+                            resp.status_code,
+                            resp.text[:200],
+                        )
+                    elif resp.status_code != 200:
                         self.logger.warning(
                             "OpenRouter image generation returned HTTP %s: %s; trying fallback slots",
                             resp.status_code,
