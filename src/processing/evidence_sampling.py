@@ -43,6 +43,10 @@ class SampledFragment:
 
 
 def _cosine_similarity(v1: Sequence[float], v2: Sequence[float]) -> float:
+    # An evicted vector or centroid arrives empty; it carries no similarity
+    # signal, so sampling falls back to source diversity and recency.
+    if not v1 or not v2 or len(v1) != len(v2):
+        return 0.0
     dot = sum(a * b for a, b in zip(v1, v2, strict=True))
     norm1 = math.sqrt(sum(a * a for a, b in zip(v1, v1, strict=True)))
     norm2 = math.sqrt(sum(b * b for b, b in zip(v2, v2, strict=True)))

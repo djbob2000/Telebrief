@@ -312,6 +312,18 @@ class EventAnalysisService:
             ed_slug = str(row_ed[0]) if row_ed else "unknown"
             ed_name = str(row_ed[1]) if row_ed and row_ed[1] else ed_slug.capitalize()
 
+        evicted = sum(1 for ctx in contexts if not ctx.vector)
+        if evicted or not cluster_state.centroid:
+            # Retention evicts vectors only for Stories that are quiet and
+            # clean; seeing them here means an old Story was marked dirty again.
+            self.logger.warning(
+                "Analysis of story %d runs with %d evicted fragment vectors "
+                "(centroid present: %s); sampling falls back to source diversity",
+                story_id,
+                evicted,
+                bool(cluster_state.centroid),
+            )
+
         # 2. Sample representative fragments (CPU)
         sampled = self.sampler.sample_fragments(
             contexts,

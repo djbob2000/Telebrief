@@ -80,7 +80,7 @@ async def redrive_publication_failure_notifications(timestamp: int) -> None:
 @procrastinate_app.periodic(cron="15 3 * * *", periodic_id="retention-cleanup")
 @procrastinate_app.task(queue="maintenance", queueing_lock="retention-cleanup")
 async def retention_cleanup(timestamp: int) -> None:
-    """Periodic cleanup of expired diagnostic artifacts."""
+    """Nightly cleanup: expired artifacts, idle vectors, old job and collection history."""
     import datetime as dt
 
     from src.retention import RetentionService

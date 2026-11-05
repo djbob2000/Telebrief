@@ -404,6 +404,8 @@ class FragmentEmbeddingRepository:
     ) -> dict[str, tuple[int, list[float]]]:
         """Fetch existing deduplicated embedding vectors by normalized hash.
 
+        An evicted vector (NULL embedding) is a cache miss: the caller embeds
+        the text again and ``insert_vectors_batch`` refills the same row.
         Returns {normalized_hash: (vector_id, vector_floats)}.
         """
         unique_hashes = sorted(set(hashes))
@@ -417,6 +419,7 @@ class FragmentEmbeddingRepository:
             WHERE normalized_hash = ANY(%s)
               AND model = %s
               AND dimensions = %s
+              AND embedding IS NOT NULL
             """,
             (unique_hashes, model, dimensions),
         )
@@ -450,7 +453,15 @@ class FragmentEmbeddingRepository:
                 INSERT INTO fragment_embedding_vectors (normalized_hash, embedding, model, dimensions)
                 VALUES (%s, %s, %s, %s)
                 ON CONFLICT (normalized_hash, model, dimensions)
-                DO UPDATE SET created_at = fragment_embedding_vectors.created_at
+                DO UPDATE SET
+                    embedding = COALESCE(
+                        fragment_embedding_vectors.embedding, EXCLUDED.embedding
+                    ),
+                    evicted_at = NULL,
+                    created_at = CASE
+                        WHEN fragment_embedding_vectors.embedding IS NULL THEN now()
+                        ELSE fragment_embedding_vectors.created_at
+                    END
                 """,
                 (h, Vector(list(vec)), model, dimensions),
             )
@@ -510,6 +521,8 @@ class FragmentEmbeddingRepository:
     ) -> dict[int, tuple[int, list[float]]]:
         """Get source_fragment_embedding_id and vector for fragments.
 
+        Fragments whose vector was evicted are left out, so the embedding
+        service treats them as missing and embeds them again.
         Returns {fragment_id: (fragment_embedding_id, vector_floats)}.
         """
         unique_ids = sorted(set(fragment_ids))
@@ -522,6 +535,7 @@ class FragmentEmbeddingRepository:
             FROM source_fragment_embeddings sfe
             JOIN fragment_embedding_vectors fev ON fev.id = sfe.vector_id
             WHERE sfe.fragment_id = ANY(%s)
+              AND fev.embedding IS NOT NULL
             """,
             (unique_ids,),
         )

@@ -41,6 +41,7 @@ class EventClusterRepository:
               AND sc.model = %s
               AND sc.dimensions = %s
               AND sc.last_seen_at >= %s
+              AND sc.centroid IS NOT NULL
             ORDER BY sc.centroid <=> %s ASC
             LIMIT %s
             """,
