@@ -12,7 +12,7 @@ from typing import Any, Optional
 
 import httpx
 
-from src.ai_providers import GoogleProvider, OpenAIProvider
+from src.ai_providers import GoogleProvider, OpenAIProvider, validate_model_allowed
 from src.config_loader import Config
 
 # Prompting references: https://ai.google.dev/gemini-api/docs/image-generation
@@ -185,12 +185,21 @@ def _extract_openrouter_image_bytes(data: dict) -> Optional[bytes]:
     return None
 
 
-def _gemini_text_model() -> str:
-    """Return the first Gemini model declared in GEMINI_MODEL, or "" when none is set."""
-    for item in (os.getenv("GEMINI_MODEL") or "").split(","):
+def _first_env_model(env_var: str) -> str:
+    """Return the first model declared in a .env model variable, or "" when none is set."""
+    for item in (os.getenv(env_var) or "").split(","):
         if item.strip():
             return item.strip()
     return ""
+
+
+def _gemini_text_model() -> str:
+    return _first_env_model("GEMINI_MODEL")
+
+
+def _native_gemini_model_name(model: str) -> str:
+    """Return a model id as the native Gemini API names it ("google/x:floor" -> "x")."""
+    return model.split(":", 1)[0].removeprefix("models/").removeprefix("google/")
 
 
 def _extract_images_api_bytes(data: dict) -> Optional[bytes]:
@@ -389,7 +398,6 @@ class NewsImageGenerator:
         self,
         prompt: str,
         output_dir: Optional[Path | str] = None,
-        model_name: str = "gemini-3.1-flash-lite-image",
         reference_image_bytes: Optional[bytes] = None,
     ) -> Optional[Path]:
         """Generate image using OpenRouter direct routing with Google key failover and save to disk."""
@@ -493,8 +501,18 @@ class NewsImageGenerator:
                     "OpenRouter image generation exception: %s; trying fallback slots", exc
                 )
 
-        # Tier 2: Direct Google Gemini API keys (Fallback if OpenRouter unconfigured/failed)
-        for idx, key in enumerate(self.gemini_keys, start=1):
+        # Tier 2: Direct Google Gemini API keys (Fallback if OpenRouter unconfigured/failed).
+        # Runs only with a model declared in .env (GEMINI_IMAGE_MODEL), per the model allowlist.
+        configured_image_model = _first_env_model("GEMINI_IMAGE_MODEL")
+        gemini_image_keys = self.gemini_keys if configured_image_model else []
+        if self.gemini_keys and not configured_image_model:
+            self.logger.info(
+                "GEMINI_IMAGE_MODEL is not set; skipping the direct Google image fallback"
+            )
+        if gemini_image_keys:
+            validate_model_allowed(configured_image_model)
+        model_name = _native_gemini_model_name(configured_image_model)
+        for idx, key in enumerate(gemini_image_keys, start=1):
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={key}"
             parts: list[dict[str, Any]] = []
             if reference_image_bytes:

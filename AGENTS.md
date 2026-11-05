@@ -1176,7 +1176,7 @@ Model declarations are configured exclusively via `.env`, NEVER in `config.yaml`
 
 **STRICT MODEL ALLOWLIST**:
 - Telebrief strictly enforces a runtime allowlist in `src/ai_providers.py` (`validate_model_allowed`).
-- ONLY models explicitly configured in `.env` (`OPENROUTER_MODEL`, `OPENROUTER_MODEL_2`, `OPENROUTER_IMAGE_MODEL`, `OPENAI_MODEL`, `AI_MODEL`, `GEMINI_MODEL`, `EMBEDDING_MODEL`) are permitted to execute.
+- ONLY models explicitly configured in `.env` (`OPENROUTER_MODEL`, `OPENROUTER_MODEL_2`, `OPENROUTER_IMAGE_MODEL`, `OPENAI_MODEL`, `AI_MODEL`, `GEMINI_MODEL`, `GEMINI_IMAGE_MODEL`, `EMBEDDING_MODEL`) are permitted to execute. The direct Google image fallback runs only when `GEMINI_IMAGE_MODEL` is set.
 - Any attempt to call an unconfigured model fails immediately before any network request with a `ValueError`.
 
 

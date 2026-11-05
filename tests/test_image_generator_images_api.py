@@ -123,3 +123,44 @@ def test_prompt_slots_use_declared_gemini_model(monkeypatch) -> None:
         ("google-2", "gemini-3.7-flash"),
         ("openrouter-text", "deepseek/deepseek-v4.1-flash-1017:floor"),
     ]
+
+
+class GoogleImageClient(FakeClient):
+    async def post(self, url: str, json: dict[str, Any], headers: Any = None) -> httpx.Response:
+        self.calls.append((url, json))
+        part = {"inlineData": {"data": base64.b64encode(JPEG).decode()}}
+        body = {"candidates": [{"content": {"parts": [part]}}]}
+        return httpx.Response(200, json=body, request=httpx.Request("POST", url))
+
+
+def _google_only_generator() -> NewsImageGenerator:
+    config = _prompt_config()
+    config.openrouter_api_key = ""
+    return NewsImageGenerator(config, logging.getLogger("test"))  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_google_image_fallback_skipped_without_declared_model(monkeypatch, tmp_path) -> None:
+    GoogleImageClient.calls = []
+    monkeypatch.setattr(image_generator.httpx, "AsyncClient", GoogleImageClient)
+    monkeypatch.delenv("GEMINI_IMAGE_MODEL", raising=False)
+
+    path = await _google_only_generator().generate_image("a street", output_dir=tmp_path)
+
+    assert path is None
+    assert GoogleImageClient.calls == []
+
+
+@pytest.mark.asyncio
+async def test_google_image_fallback_uses_declared_model(monkeypatch, tmp_path) -> None:
+    GoogleImageClient.calls = []
+    monkeypatch.setattr(image_generator.httpx, "AsyncClient", GoogleImageClient)
+    monkeypatch.setenv("GEMINI_IMAGE_MODEL", "google/gemini-3.1-flash-lite-image:floor")
+
+    path = await _google_only_generator().generate_image("a street", output_dir=tmp_path)
+
+    assert path is not None and path.read_bytes() == JPEG
+    assert (
+        "/models/gemini-3.1-flash-lite-image:generateContent?key=g1"
+        in GoogleImageClient.calls[0][0]
+    )
