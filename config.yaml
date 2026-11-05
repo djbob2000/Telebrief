@@ -179,8 +179,8 @@ settings:
     digest_writer_reasoning_effort: "low"
     digest_editor_reasoning_effort: "low"
     situation_memory_reasoning_effort: "low"
-    # Storyline chronicle for period reviews; enable after the backfill estimate.
-    chronicle_enabled: false
+    # Storyline chronicle for period reviews (AGENTS.md §0.12).
+    chronicle_enabled: true
     chronicle_reasoning_effort: "low"
     # Reasoning tokens count against max_tokens; medium used ~13k on one window.
     reasoning_headroom_tokens: 32000
