@@ -356,6 +356,7 @@ class NewsImageGenerator:
                     ],
                     model=model,
                     max_tokens=8192,
+                    reasoning_effort="high",
                 )
                 clean_prompt = response.strip().strip('"').strip("'")
                 if clean_prompt:
