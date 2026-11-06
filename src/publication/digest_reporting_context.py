@@ -228,7 +228,12 @@ def find_unsupported_digest_claims(
             continue
         occurrences = list(re.finditer(re.escape(failure.raw), text, re.IGNORECASE))
         area_prefix = re.compile(r"\b(?:район[а-яё]*|микрорайон[а-яё]*)\s*$", re.IGNORECASE)
-        if not occurrences or not all(area_prefix.search(text[: m.start()]) for m in occurrences):
+        area_on_prefix = re.compile(r"\bна\s*$", re.IGNORECASE)
+        if not occurrences or not all(
+            area_prefix.search(text[: m.start()])
+            or (area_on_prefix.search(text[: m.start()]) and m[0] != m[0].lower())
+            for m in occurrences
+        ):
             output.append(failure)
             continue
         named_areas = area_ids(failure.raw)

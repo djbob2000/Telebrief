@@ -496,17 +496,23 @@ def _fix_attribution_agreement(text: str) -> str:
     return corrected
 
 
-def sanitize_digest_narrative_draft(draft: DigestNarrativeDraft) -> DigestNarrativeDraft:
+def sanitize_digest_narrative_draft(
+    draft: DigestNarrativeDraft, *, edition_slug: str = ""
+) -> DigestNarrativeDraft:
     """Sanitize all items in a narrative digest draft before quality audit and rendering."""
+    from src.domain.edition_geography import standardize_edition_area_slang
+
     new_blocks = []
     for b in draft.blocks:
         new_items = []
         for it in b.items:
             clean_hl = _fix_chat_leaks(it.headline)
+            clean_hl = standardize_edition_area_slang(clean_hl, edition_slug)
             clean_hl = _fix_attribution_agreement(clean_hl)
             clean_hl = re.sub(r"\s{2,}", " ", clean_hl).strip()
 
             clean_body = _fix_chat_leaks(it.body)
+            clean_body = standardize_edition_area_slang(clean_body, edition_slug)
             clean_body = _fix_attribution_agreement(clean_body)
             clean_body = re.sub(r"\s{2,}", " ", clean_body).strip()
 

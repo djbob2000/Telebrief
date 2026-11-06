@@ -15,6 +15,7 @@ from typing import Any, Callable, Literal, Mapping, Protocol
 from uuid import uuid4
 
 from src.config_loader import PublicationEditorialConfig
+from src.domain.edition_geography import standardize_edition_area_slang
 from src.publication.article_context import ArticleEditorialContext
 from src.publication.article_coverage import ArticleCoveragePlan
 from src.publication.article_coverage_diagnostics import (
@@ -1315,7 +1316,10 @@ def _prepare_text_and_claims(
     )
     citable_unit_ids = _citable_support_ids(all_unit_support_ids, context, material_projection)
     prepared_text = _wrap_supported_organization_names(
-        repair_chat_kitchen_phrases(text), citable_unit_ids, context, place_resolver
+        standardize_edition_area_slang(repair_chat_kitchen_phrases(text), context.edition_slug),
+        citable_unit_ids,
+        context,
+        place_resolver,
     )
     added_claim_supports: tuple[str, ...] = ()
     if clarify_unknown_district:
@@ -1332,7 +1336,9 @@ def _prepare_text_and_claims(
         for claim in claims
         for formatted_text in (
             _wrap_supported_organization_names(
-                repair_chat_kitchen_phrases(claim.text),
+                standardize_edition_area_slang(
+                    repair_chat_kitchen_phrases(claim.text), context.edition_slug
+                ),
                 _citable_support_ids(claim.cited_support_ids, context, material_projection),
                 context,
                 place_resolver,

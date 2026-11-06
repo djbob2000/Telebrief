@@ -1241,12 +1241,62 @@ def _is_unlocated_personal_positive_service_check(
     )
 
 
+def _is_unlocated_personal_outage_complaint(
+    card: Any,
+    evidence: Mapping[str, Any],
+    *,
+    edition_slug: str,
+) -> bool:
+    """Skip one speaker's outage complaint that names no place: it may be from anywhere."""
+    resolver = _load_digest_geography_resolver(edition_slug)
+    if resolver is None:
+        return False
+    story_id = str(getattr(card, "id", "")).removeprefix("story:")
+    story_rows = [
+        item for item in evidence.values() if str(getattr(item, "story_id", "")) == story_id
+    ]
+    rows = [item for item in story_rows if getattr(item, "publication_use", "") == "PUBLISH"]
+    source_items = {
+        (getattr(item, "source_id", None), getattr(item, "source_item_id", None))
+        for item in rows
+        if getattr(item, "source_item_id", None) is not None
+    }
+    if (
+        len(source_items) > 1
+        or any(getattr(item, "kind", "") == "official_statement" for item in rows)
+        or any(
+            getattr(obs, "location", "")
+            for obs in (getattr(card, "operational_observations", None) or ())
+        )
+    ):
+        return False
+
+    from src.publication.digest_reporting_context import writer_citable_text
+    from src.publication.digest_status_chatter import is_unlocated_outage_complaint
+
+    return is_unlocated_outage_complaint(
+        [writer_citable_text(str(getattr(item, "text", "") or "")) for item in rows],
+        [
+            str(getattr(item, field, "") or "")
+            for item in story_rows
+            for field in (
+                "text",
+                "source_text",
+                "reply_parent_context_text",
+                "source_item_context_text",
+            )
+        ],
+        resolver=resolver,
+    )
+
+
 def build_digest_presentation_plan(
     *,
     cards: Sequence[Any],
     city_situation: CitySituationRollup | None = None,
     evidence: Mapping[str, Any] | None = None,
     include_all_candidates: bool = False,
+    edition_slug: str = "",
     **kwargs: Any,
 ) -> DigestPresentationPlan:
     """Build the presentation plan, optionally retaining every input candidate for composition."""
@@ -1345,7 +1395,12 @@ def build_digest_presentation_plan(
         card
         for card in balanced_cards
         if card.id in cards_with_city_situation
-        or not _is_unlocated_personal_positive_service_check(card, evidence_map)
+        or not (
+            _is_unlocated_personal_positive_service_check(card, evidence_map)
+            or _is_unlocated_personal_outage_complaint(
+                card, evidence_map, edition_slug=edition_slug
+            )
+        )
     ]
 
     return DigestPresentationPlan(

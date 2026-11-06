@@ -479,7 +479,9 @@ async def _repair_digest_candidate(
                     recompose_block_ids=recompose_ids,
                     **extra_kwargs,
                 )
-            candidate = sanitize_digest_narrative_draft(edited)
+            candidate = sanitize_digest_narrative_draft(
+                edited, edition_slug=getattr(plan, "edition_slug", "")
+            )
             validation, coverage, artifact, audit = evaluate_candidate(candidate)
             safe = (
                 validation.is_valid
@@ -1006,27 +1008,10 @@ class PublicationGenerationService:
                 )
                 evidence_dict = getattr(frozen.analysis, "evidence", {}) or {}
 
-                presentation_plan = build_digest_presentation_plan(
-                    cards=frozen.analysis.cards,
-                    city_situation=frozen.analysis.city_situation,
-                    evidence=evidence_dict,
-                    max_city_situation_items=max_sit_items,
-                    max_city_situation_details=max_sit_details,
-                    max_city_situation_positive_items=max_positive_items,
-                    include_all_candidates=True,
-                )
-
-                # Freeze fact-level composition and budget admission before any writer call.
+                edition_slug = ""
                 if frozen.analysis.cards:
-                    from src.publication.digest_composition import build_digest_composition
                     from src.publication.errors import PublicationGenerationError
 
-                    input_by_decision = {
-                        int(inp.selection_decision_id): (f"story:{inp.story_id}", str(inp.story_id))
-                        for inp in inputs
-                    }
-                    selection_suggestions: dict[str, Any] = {}
-                    edition_slug = ""
                     async with self.uow.transaction() as conn:
                         edition_cur = await conn.execute(
                             """
@@ -1038,13 +1023,34 @@ class PublicationGenerationService:
                             (run.id,),
                         )
                         edition_row = await edition_cur.fetchone()
-                        if edition_row and edition_row[0]:
-                            edition_slug = str(edition_row[0])
-                        if not edition_slug:
-                            raise PublicationGenerationError(
-                                "DIGEST_EDITION_GEOGRAPHY_UNAVAILABLE:missing frozen run edition slug"
-                            )
+                    if edition_row and edition_row[0]:
+                        edition_slug = str(edition_row[0])
+                    if not edition_slug:
+                        raise PublicationGenerationError(
+                            "DIGEST_EDITION_GEOGRAPHY_UNAVAILABLE:missing frozen run edition slug"
+                        )
 
+                presentation_plan = build_digest_presentation_plan(
+                    cards=frozen.analysis.cards,
+                    city_situation=frozen.analysis.city_situation,
+                    evidence=evidence_dict,
+                    max_city_situation_items=max_sit_items,
+                    max_city_situation_details=max_sit_details,
+                    max_city_situation_positive_items=max_positive_items,
+                    include_all_candidates=True,
+                    edition_slug=edition_slug,
+                )
+
+                # Freeze fact-level composition and budget admission before any writer call.
+                if frozen.analysis.cards:
+                    from src.publication.digest_composition import build_digest_composition
+
+                    input_by_decision = {
+                        int(inp.selection_decision_id): (f"story:{inp.story_id}", str(inp.story_id))
+                        for inp in inputs
+                    }
+                    selection_suggestions: dict[str, Any] = {}
+                    async with self.uow.transaction() as conn:
                         if input_by_decision:
                             decision_cur = await conn.execute(
                                 """
@@ -1220,7 +1226,9 @@ class PublicationGenerationService:
                                 allow_incomplete_coverage=allow_incomplete_coverage,
                             ).checks()
 
-                        draft_cand = sanitize_digest_narrative_draft(draft_cand)
+                        draft_cand = sanitize_digest_narrative_draft(
+                            draft_cand, edition_slug=edition_slug
+                        )
                         val_res, coverage_trace, rendered_artifact, rendered_audit = (
                             _evaluate_candidate(draft_cand, allow_incomplete_coverage=True)
                         )

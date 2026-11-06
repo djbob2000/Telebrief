@@ -79,7 +79,9 @@ def assess_digest_candidate(
     context: DigestAssessmentContext,
     allow_incomplete_coverage: bool = False,
 ) -> DigestAssessment:
-    candidate = sanitize_digest_narrative_draft(draft)
+    candidate = sanitize_digest_narrative_draft(
+        draft, edition_slug=getattr(context.plan, "edition_slug", "")
+    )
     from src.publication.situation_memory import strip_verified_background_lines
 
     validation = validate_digest_narrative(

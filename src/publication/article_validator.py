@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
 from src.config_loader import PublicationEditorialConfig
+from src.domain.edition_geography import standardize_edition_area_slang
 from src.publication.article_claim_support import assess_claim_against_supports
 from src.publication.article_claims import (
     ConcreteClaim,
@@ -807,6 +809,17 @@ class ArticleValidationResult:
         return tuple(claims)
 
 
+def _official_area_source_texts(supports: Sequence[ArticleSupport], edition_slug: str) -> list[str]:
+    """Sources restated with the official area name that prepared prose uses for their slang."""
+    return [
+        official
+        for support in supports
+        if support.source_text
+        and (official := standardize_edition_area_slang(support.source_text, edition_slug))
+        != support.source_text
+    ]
+
+
 def validate_article_draft(
     draft: StructuredArticleDraft,
     context: ArticleEditorialContext,
@@ -966,8 +979,10 @@ def validate_article_draft(
     all_known_draft_supports: list[ArticleSupport] = [
         support_map[sid] for sid in all_cited_ids if sid in support_map
     ]
-    all_draft_support_texts: list[str] = [s.text for s in all_known_draft_supports if s.text] + [
-        s.source_text for s in all_known_draft_supports if s.source_text
+    all_draft_support_texts: list[str] = [
+        *(s.text for s in all_known_draft_supports if s.text),
+        *(s.source_text for s in all_known_draft_supports if s.source_text),
+        *_official_area_source_texts(all_known_draft_supports, context.edition_slug),
     ]
     for s in all_known_draft_supports:
         if (obs := getattr(s, "observed_at", None)) is not None:
@@ -989,8 +1004,10 @@ def validate_article_draft(
             if getattr(sc, "story_id", None) and getattr(sc, "topic", None):
                 story_topics[sc.story_id] = sc.topic
 
-    all_edition_support_texts = [s.text for s in context.supports if s.text] + [
-        s.source_text for s in context.supports if s.source_text
+    all_edition_support_texts = [
+        *(s.text for s in context.supports if s.text),
+        *(s.source_text for s in context.supports if s.source_text),
+        *_official_area_source_texts(context.supports, context.edition_slug),
     ]
     for s in context.supports:
         s_story_id = getattr(s, "story_id", "") or _story_id_from_support_id(
@@ -1539,6 +1556,7 @@ def validate_article_draft(
                     )
 
         support_texts = [t for s in valid_supports for t in (s.text, s.source_text) if t]
+        support_texts.extend(_official_area_source_texts(valid_supports, context.edition_slug))
         for s in valid_supports:
             if (obs := getattr(s, "observed_at", None)) is not None:
                 support_texts.append(obs.strftime("%H:%M"))
