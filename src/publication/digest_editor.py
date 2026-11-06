@@ -25,6 +25,7 @@ from src.publication.digest_narrative import (
     _same_situation_groups,
     sanitize_digest_narrative_draft,
 )
+from src.publication.digest_place_areas import non_place_fields
 from src.publication.digest_quality_diagnostics import (
     MAX_POWER_REPORT_ITEMS_PER_BLOCK,
 )
@@ -365,6 +366,7 @@ class DigestEditor:
                         {
                             "fact_id": fact_id,
                             "text": fact.text,
+                            **non_place_fields(plan.edition_slug, fact.text),
                             "story_ids": list(record.story_ids),
                             "epistemic_kind": record.epistemic_kind,
                             "support_ids": list(record.support_ids),
@@ -606,6 +608,7 @@ class DigestEditor:
                         {
                             "fact_id": fact_id,
                             "text": fact.text,
+                            **non_place_fields(plan.edition_slug, fact.text),
                             "block_id": block.block_id,
                             "story_ids": list(record.story_ids),
                             "support_ids": list(record.support_ids),

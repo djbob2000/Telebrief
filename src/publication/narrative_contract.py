@@ -173,6 +173,11 @@ Output ordinary Markdown only: one title, a lead, and thematic chapters with nor
 
 
 DIGEST_ITEM_COMPOSITION_GUIDE = """Digest item composition:
+- A fact or support may list not_place_names: words in its text that the city profile
+  says are not places, such as a masked swear word or a nickname. Never present one as a
+  district, street or neighbor of a place, in a headline or a body, and never quote a
+  sentence containing it. Keep the report with the places that remain, or without a
+  location when none remains (NON_PLACE_NAME_AS_PLACE).
 - Plan the reader-facing subjects within each rubric before writing. Related reports
   normally share an item; source, Story and street boundaries are not paragraph boundaries.
 - A developed item may have a short informative headline naming the actual development

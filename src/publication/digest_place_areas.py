@@ -3,6 +3,8 @@
 The checked-in city profile is the only source of district membership. A hint
 tells the writer which district a named street or place belongs to. It is not a
 statement about the event and it does not imply proximity to other places.
+The profile also lists words that only look like places (a masked swear word, a
+nickname); the writer is told about them and the digest audit blocks them.
 """
 
 from __future__ import annotations
@@ -52,3 +54,31 @@ def place_area_hints(edition_slug: str, text: str) -> tuple[str, ...]:
         if districts:
             hints.append(f"{entity.canonical_name}: {', '.join(districts)}")
     return tuple(dict.fromkeys(hints))
+
+
+def _non_place_hint(resolver: CityContextResolver, name: str) -> str:
+    note = resolver.non_place_name_note(name)
+    return f"{name}: {note}" if note else name
+
+
+def non_place_fields(edition_slug: str, text: str) -> dict[str, list[str]]:
+    """Return the writer-material field for profile non-place names in one text."""
+    resolver = _resolver_for_slug(edition_slug)
+    if resolver is None or not text.strip():
+        return {}
+    names = dict.fromkeys(name for _, _, name in resolver.non_place_name_spans(text))
+    if not names:
+        return {}
+    return {"not_place_names": [_non_place_hint(resolver, name) for name in names]}
+
+
+def non_places_presented_as_places(edition_slug: str, text: str) -> tuple[str, ...]:
+    """Return "name: why" for each profile non-place name this prose presents as a place."""
+    resolver = _resolver_for_slug(edition_slug)
+    if resolver is None or not text.strip():
+        return ()
+    from src.publication.article_quality import non_place_names_as_places
+
+    return tuple(
+        _non_place_hint(resolver, name) for name in non_place_names_as_places(text, resolver)
+    )

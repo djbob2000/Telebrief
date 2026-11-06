@@ -857,8 +857,13 @@ class CityContextResolver:
             spans.extend((m.start(), m.end(), name) for m in pattern.finditer(text))
         return tuple(sorted(spans))
 
+    def non_place_name_note(self, name: str) -> str:
+        """Return the profile's explanation of why a name is not a place."""
+        return self._non_place_notes.get(name, "")
+
     def _build_non_place_indexes(self, geography: dict[str, Any]) -> None:
         self._non_place_patterns: list[tuple[re.Pattern[str], str]] = []
+        self._non_place_notes: dict[str, str] = {}
         for item in geography.get("non_place_names", []) or []:
             if not isinstance(item, dict):
                 continue
@@ -870,6 +875,7 @@ class CityContextResolver:
             ]
             if not name or not forms:
                 continue
+            self._non_place_notes[name] = str(item.get("note") or "").strip()
             alternatives = "|".join(
                 re.escape(form) for form in sorted(set(forms), key=len, reverse=True)
             )

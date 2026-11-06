@@ -2402,8 +2402,8 @@ def _heading_area_mismatch_places(
     return tuple(flagged_paragraphs), tuple(labels.values())
 
 
-def _non_place_name_as_place(text: str, resolver: Any) -> bool:
-    """A profile non-place name (an address, nickname or masked swear word) is presented as a place.
+def non_place_names_as_places(text: str, resolver: Any) -> tuple[str, ...]:
+    """Return profile non-place names (a nickname or masked swear word) presented as places.
 
     Only the capitalized proper-noun form counts, never direct-quote content.
     Mid-sentence it reads as a name of a place or person in author prose; at
@@ -2411,12 +2411,13 @@ def _non_place_name_as_place(text: str, resolver: Any) -> bool:
     """
     lookup = getattr(resolver, "non_place_name_spans", None)
     if not callable(lookup) or not text.strip():
-        return False
+        return ()
     spans = lookup(text)
     if not spans:
-        return False
+        return ()
+    found: list[str] = []
     sentence_spans = _safe_sentence_spans(text)
-    for start, end, _name in spans:
+    for start, end, name in spans:
         if _span_is_inside_quote_content(text, (start, end)):
             continue
         sentence = next(
@@ -2425,14 +2426,15 @@ def _non_place_name_as_place(text: str, resolver: Any) -> bool:
         )
         prefix = text[sentence[0] : start]
         if re.search(r"[A-Za-zА-Яа-яЁёІіЇїЄєҐґ0-9]", prefix):
-            return True
+            found.append(name)
+            continue
         following = text[end : min(sentence[1], end + 40)]
         if re.match(r"\s*(?:,|и\b|та\b)", following, re.IGNORECASE) and any(
             entity.kind in {"place", "area"} and entity.confidence == "high"
             for entity in _resolved_entities(following, resolver)
         ):
-            return True
-    return False
+            found.append(name)
+    return tuple(dict.fromkeys(found))
 
 
 def diagnose_article_quality(
@@ -2982,7 +2984,7 @@ def diagnose_article_quality(
                     )
                 )
         for unit_id, unit_text, unit_support_ids in unit_texts:
-            if _non_place_name_as_place(unit_text or "", place_resolver):
+            if non_place_names_as_places(unit_text or "", place_resolver):
                 findings.append(
                     ArticleReaderQualityFinding(
                         code="NON_PLACE_NAME_AS_PLACE",

@@ -8,6 +8,7 @@ from enum import StrEnum
 from typing import Any, Literal, Mapping, Sequence
 
 from src.publication.digest_narrative import DigestNarrativeDraft
+from src.publication.digest_place_areas import non_places_presented_as_places
 from src.publication.evidence import PublicationEvidence
 
 DIGEST_DIAGNOSTICS_VERSION = "digest-diagnostics-v18-report-disclaimers"
@@ -159,6 +160,7 @@ _BLOCKING_PROSE_CODES = frozenset(
         "CHAT_SLANG_OR_METADATA",
         "PROFANITY_OR_ABUSIVE_LANGUAGE",
         "MALFORMED_CHAT_SYNTAX",
+        "NON_PLACE_NAME_AS_PLACE",
     }
 )
 
@@ -508,8 +510,10 @@ def audit_digest_prose_quality(
     draft: DigestNarrativeDraft,
     evidence: Mapping[str, PublicationEvidence],
     presentation_plan: Any | None = None,
+    *,
+    edition_slug: str = "",
 ) -> DigestProseQualityAudit:
-    """Run non-blocking diagnostics on a narrative digest draft."""
+    """Run prose diagnostics on a narrative digest draft; _BLOCKING_PROSE_CODES block it."""
     warnings = _repeated_measurement_warnings(draft, presentation_plan)
 
     detail_item_count = 0
@@ -776,6 +780,28 @@ def audit_digest_prose_quality(
                     )
                 )
 
+            not_places = tuple(
+                dict.fromkeys(
+                    hint
+                    for part in (item.headline, item.body)
+                    for hint in non_places_presented_as_places(edition_slug, part or "")
+                )
+            )
+            if not_places:
+                warnings.append(
+                    DigestQualityWarning(
+                        code="NON_PLACE_NAME_AS_PLACE",
+                        message=(
+                            "This item presents a word as a place, but the city profile says it "
+                            f"is not one ({'; '.join(not_places)}). Remove the word and keep the "
+                            "report with the places that remain; add no new place."
+                        ),
+                        block_id=block.block_id,
+                        item_index=idx,
+                        headline=item.headline,
+                    )
+                )
+
             if _MALFORMED_CHAT_SYNTAX_RE.search(item_full_text):
                 warnings.append(
                     DigestQualityWarning(
@@ -869,6 +895,7 @@ def audit_rendered_digest(
     coverage_trace: Any,
     *,
     narrative_validation: Any | None = None,
+    edition_slug: str = "",
 ) -> DigestQualityAudit:
     """Audit the whole canonical post; only completed mandatory checks can block.
 
@@ -904,7 +931,9 @@ def audit_rendered_digest(
             )
         )
 
-    prose = audit_digest_prose_quality(draft, evidence, presentation_plan)
+    prose = audit_digest_prose_quality(
+        draft, evidence, presentation_plan, edition_slug=edition_slug
+    )
     full_text = artifact.visible_text
     length_ok = artifact.visible_character_count <= 4096 and artifact.utf16_character_count <= 4096
     add(

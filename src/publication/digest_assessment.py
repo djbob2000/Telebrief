@@ -110,5 +110,6 @@ def assess_digest_candidate(
         context.presentation_plan,
         coverage,
         narrative_validation=validation,
+        edition_slug=getattr(context.plan, "edition_slug", ""),
     )
     return DigestAssessment(candidate, validation, coverage, artifact, audit)

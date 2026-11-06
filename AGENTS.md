@@ -641,7 +641,9 @@ Rules:
 - explicit external geography overrides assumptions based on a local source;
 - a fragment keeps the geography of its own source message: Gate receives the message's other place-naming paragraphs as non-citable `SAME-MESSAGE CONTEXT`, and a deterministic guard (`story_placed_outside_by_message`) normalizes a Story to `OUT_OF_SCOPE` when every cited basis paragraph follows an earlier paragraph that names an external place, the message names no edition settlement, and the paragraph has no first-person locator. Neighborhood names repeat across cities, so a shared one (e.g. "Slobodka") does not make another city's post local;
 - writer must never decide geography;
-- do not hardcode one edition's city, streets, districts, or local examples in generic production prompt code.
+- do not hardcode one edition's city, streets, districts, or local examples in generic production prompt code;
+- a profile's `geography.non_place_names` lists words that only look like places, such as a masked swear word or a nickname. Writers receive them as `not_place_names`, and presenting one as a place blocks a digest or an article (`NON_PLACE_NAME_AS_PLACE`) until the editor removes it. The report itself stays with its real places;
+- `data/` is excluded from the image and bind-mounted from the host. City profiles reach production only through the deploy step that copies `data/city_profiles/` and checks its hash inside the container.
 
 ---
 

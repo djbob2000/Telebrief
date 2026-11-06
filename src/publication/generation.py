@@ -103,6 +103,8 @@ def compute_digest_allowed_terms(
 def _digest_repair_request(
     checkpoint: tuple[Any, ...],
 ) -> tuple[list[str], tuple[str, ...], tuple[str, ...]]:
+    from src.publication.digest_quality_diagnostics import _BLOCKING_PROSE_CODES
+
     draft, validation, _, _, audit = checkpoint
     findings = list(validation.violations)
     findings.extend(
@@ -140,7 +142,9 @@ def _digest_repair_request(
                 *(
                     item.item_id
                     for warning in audit.prose_audit.warnings
-                    if not recompose_ids or warning.code in structural_codes
+                    if not recompose_ids
+                    or warning.code in structural_codes
+                    or warning.code in _BLOCKING_PROSE_CODES
                     for block in draft.blocks
                     if block.block_id == warning.block_id
                     for index, item in enumerate(block.items)

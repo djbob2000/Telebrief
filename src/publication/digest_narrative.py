@@ -16,7 +16,7 @@ from src.publication.article_claims import (
     find_unsupported_claims,
 )
 from src.publication.digest_fact_labels import FACT_LABEL_INSTRUCTION, fact_labels_for_plan
-from src.publication.digest_place_areas import place_area_hints
+from src.publication.digest_place_areas import non_place_fields, place_area_hints
 from src.publication.digest_presentation import (
     RequiredDigestFact,
     validate_digest_fact_ids,
@@ -4288,6 +4288,7 @@ def _composition_writer_payload(
                 district_hints = place_area_hints(plan.edition_slug, " ".join(texts))
                 if district_hints:
                     row["district_hints"] = list(district_hints)
+                row.update(non_place_fields(plan.edition_slug, " ".join(texts)))
                 support_rows.append(row)
 
             facts_payload: list[dict[str, Any]] = []
@@ -4311,6 +4312,7 @@ def _composition_writer_payload(
                         "text": writer_citable_text(str(fact.text)),
                         "story_ids": list(record.story_ids),
                         "support_ids": list(fact_support_ids),
+                        **non_place_fields(plan.edition_slug, fact.text),
                         "original_location": str(getattr(record, "original_location", "")),
                         "canonical_area": str(getattr(record, "canonical_area", "")),
                         "canonical_place": list(getattr(record, "canonical_place", ()) or ()),
