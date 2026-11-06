@@ -141,6 +141,13 @@ _POLICIES: dict[str, ArticleQualityFindingPolicy] = {
         "repair_recommended",
         "A supported provider name needs typographic quotation marks.",
     ),
+    "UNQUOTED_ORGANIZATION_NAME": ArticleQualityFindingPolicy(
+        "name_typography",
+        "repair",
+        "unit",
+        "repair_recommended",
+        "A cited utility organization name needs its source form in typographic quotes.",
+    ),
     "COLLOQUIAL_AUTHOR_PROSE": ArticleQualityFindingPolicy(
         "author_register",
         "repair",

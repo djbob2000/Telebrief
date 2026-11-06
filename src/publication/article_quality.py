@@ -868,6 +868,77 @@ def _supported_commercial_landmark_mentions(
     return tuple(sorted(mentions))
 
 
+# Closed roots of municipal utility company names. A root matches a declined or
+# plural prose form of the cited name ("Теплосетях" for "Теплосеть"), while a
+# lowercase common noun never matches because the prose word must be capitalized.
+_UTILITY_ORGANIZATION_ROOTS: tuple[str, ...] = (
+    "теплосет",
+    "водоканал",
+    "энергосбыт",
+    "электросет",
+    "газораспредел",
+    "облэнерго",
+)
+_UTILITY_ORGANIZATION_TOKEN_RE = re.compile(r"(?<![\w-])[А-ЯЁІЇЄҐA-Z][А-Яа-яЁёІіЇїЄєҐґA-Za-z-]*")
+
+
+# Acronyms of power grid companies (РЭС, БГРЭС). They match only as whole
+# capitalized tokens, optionally with a Russian case ending, so they never match
+# inside longer words.
+_UTILITY_ORGANIZATION_ACRONYMS: tuple[str, ...] = ("бгрэс", "рэс")
+_UTILITY_ACRONYM_ENDINGS: tuple[str, ...] = ("", "а", "у", "е", "ы", "ом")
+
+
+def _utility_organization_root(word: str) -> str | None:
+    folded = unicodedata.normalize("NFKC", word).casefold().replace("ё", "е")
+    for acronym in _UTILITY_ORGANIZATION_ACRONYMS:
+        if folded.startswith(acronym) and folded[len(acronym) :] in _UTILITY_ACRONYM_ENDINGS:
+            return acronym
+    return next((root for root in _UTILITY_ORGANIZATION_ROOTS if root in folded), None)
+
+
+def utility_organization_name_spans(
+    text: str,
+    support_ids: Sequence[str],
+    context: ArticleEditorialContext,
+) -> tuple[tuple[str, str, tuple[int, int], bool], ...]:
+    """Return unquoted prose mentions of utility organizations named in cited supports.
+
+    Each item is ``(root, prose_word, span, exact)``. ``exact`` means the prose word
+    is spelled exactly as a cited source word, so it may be wrapped in typographic
+    quotes without changing its form. A declined or plural form is returned with
+    ``exact=False``; it is repaired by the editor, never by inflecting the name here.
+    Direct speech is never a name mention.
+    """
+    source_words: dict[str, set[str]] = {}
+    for support_id in support_ids:
+        support = context.support_by_id.get(support_id)
+        if (
+            support is None
+            or support.publication_use != "PUBLISH"
+            or support.evidence_kind == "resident_question"
+        ):
+            continue
+        for source_text in (support.text or "", support.source_text or ""):
+            for match in _UTILITY_ORGANIZATION_TOKEN_RE.finditer(source_text):
+                root_name = _utility_organization_root(match.group(0))
+                if root_name is not None:
+                    source_words.setdefault(root_name, set()).add(match.group(0))
+    if not source_words:
+        return ()
+    mentions: list[tuple[str, str, tuple[int, int], bool]] = []
+    for match in _UTILITY_ORGANIZATION_TOKEN_RE.finditer(text):
+        word = match.group(0)
+        root_name = _utility_organization_root(word)
+        if root_name is None or root_name not in source_words:
+            continue
+        span = match.span()
+        if _span_is_quoted_name(text, span) or _span_is_inside_quote_content(text, span):
+            continue
+        mentions.append((root_name, word, span, word in source_words[root_name]))
+    return tuple(mentions)
+
+
 def supported_organization_name_mentions(
     text: str,
     support_ids: Sequence[str],
@@ -938,6 +1009,12 @@ def supported_organization_name_mentions(
                 unicodedata.normalize("NFKC", name).casefold().replace("ё", "е").strip(),
             )
             mentions.add((f"organization:{normalized}", match.span("name")))
+
+    for root_name, _word, span, exact in utility_organization_name_spans(
+        text, support_ids, context
+    ):
+        if exact:
+            mentions.add((f"organization:{root_name}", span))
 
     return tuple(sorted(mentions, key=lambda item: (item[1][0], item[1][1], item[0])))
 
@@ -2906,6 +2983,25 @@ def diagnose_article_quality(
                             "Название провайдера подтверждено источником, но оформлено как обычное "
                             "слово. Выделите название русскими кавычками «…»; это название, "
                             "а не прямая речь. Не расширяйте сокращение без опоры в источнике."
+                        ),
+                        support_ids=paragraph_support_ids,
+                        severity="repair",
+                    )
+                )
+            if utility_organization_name_spans(
+                paragraph.text,
+                paragraph_support_ids,
+                context,
+            ):
+                findings.append(
+                    ArticleReaderQualityFinding(
+                        code="UNQUOTED_ORGANIZATION_NAME",
+                        unit_id=f"P{p_idx:03d}",
+                        message=(
+                            "Название организации подтверждено источником, но оформлено без "
+                            "кавычек или в склонённой форме. Выделите его русскими кавычками «…» "
+                            "в той форме, в какой оно названо в источнике, например «Теплосеть»; "
+                            "не склоняйте название и согласуйте с ним предлог и глагол."
                         ),
                         support_ids=paragraph_support_ids,
                         severity="repair",
