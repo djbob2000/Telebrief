@@ -80,6 +80,10 @@ jobs:
           WORK_DIR: ${{ secrets.WORK_DIR }}
         run: |
           scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new docker-compose.yml config.yaml "$SSH_USER@$SSH_HOST:$WORK_DIR/"
+          # data/ is excluded from the image and bind-mounted from the host, so
+          # this is the only way city profile changes reach production.
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "$SSH_USER@$SSH_HOST" "mkdir -p \"$WORK_DIR/data/city_profiles\""
+          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new data/city_profiles/*.yaml "$SSH_USER@$SSH_HOST:$WORK_DIR/data/city_profiles/"
 
       - name: Execute Remote Deployment
         env:
@@ -89,12 +93,13 @@ jobs:
           DEPLOY_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '' && github.event.inputs.tag || format('dev-{0}', github.sha) }}
         run: |
           CONFIG_SHA256="$(sha256sum config.yaml | awk '{print $1}')"
+          PROFILES_SHA256="$(cat data/city_profiles/*.yaml | sha256sum | awk '{print $1}')"
           EXPECTED_BACKGROUND_AUTHORITY="$(awk -F': *' '$1 ~ /^[[:space:]]*background_authority_enabled[[:space:]]*$/ {print $2; exit}' config.yaml)"
           EXPECTED_AUTHORITY_SHARDS="$(awk -F': *' '$1 ~ /^[[:space:]]*authority_shard_count[[:space:]]*$/ {print $2; exit}' config.yaml)"
           test -n "$CONFIG_SHA256"
           test -n "$EXPECTED_BACKGROUND_AUTHORITY"
           test -n "$EXPECTED_AUTHORITY_SHARDS"
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "$SSH_USER@$SSH_HOST" "WORK_DIR=\"$WORK_DIR\" DEPLOY_TAG=\"$DEPLOY_TAG\" GITHUB_REPOSITORY=\"$GITHUB_REPOSITORY\" GITHUB_SHA=\"$GITHUB_SHA\" CONFIG_SHA256=\"$CONFIG_SHA256\" EXPECTED_BACKGROUND_AUTHORITY=\"$EXPECTED_BACKGROUND_AUTHORITY\" EXPECTED_AUTHORITY_SHARDS=\"$EXPECTED_AUTHORITY_SHARDS\" bash -s" << 'EOF'
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "$SSH_USER@$SSH_HOST" "WORK_DIR=\"$WORK_DIR\" DEPLOY_TAG=\"$DEPLOY_TAG\" GITHUB_REPOSITORY=\"$GITHUB_REPOSITORY\" GITHUB_SHA=\"$GITHUB_SHA\" CONFIG_SHA256=\"$CONFIG_SHA256\" PROFILES_SHA256=\"$PROFILES_SHA256\" EXPECTED_BACKGROUND_AUTHORITY=\"$EXPECTED_BACKGROUND_AUTHORITY\" EXPECTED_AUTHORITY_SHARDS=\"$EXPECTED_AUTHORITY_SHARDS\" bash -s" << 'EOF'
             set -euo pipefail
             cd "$WORK_DIR"
             export IMAGE_TAG="$DEPLOY_TAG"
@@ -104,6 +109,8 @@ jobs:
             # verify the copied host file before recreating services.
             host_config_sha256="$(sha256sum config.yaml | awk '{print $1}')"
             test "$host_config_sha256" = "$CONFIG_SHA256"
+            host_profiles_sha256="$(cat data/city_profiles/*.yaml | sha256sum | awk '{print $1}')"
+            test "$host_profiles_sha256" = "$PROFILES_SHA256"
 
             repository="$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
             image_ref="ghcr.io/${repository}:${IMAGE_TAG}"
@@ -164,6 +171,8 @@ jobs:
             # check and the image prune.
             container_config_sha256="$(docker compose exec -T telebrief-app sha256sum /app/config.yaml </dev/null | awk '{print $1}')"
             test "$container_config_sha256" = "$CONFIG_SHA256"
+            container_profiles_sha256="$(docker compose exec -T telebrief-app sh -c 'cat /app/data/city_profiles/*.yaml | sha256sum' </dev/null | awk '{print $1}')"
+            test "$container_profiles_sha256" = "$PROFILES_SHA256"
             runtime_authority_config="$(docker compose exec -T telebrief-app python -c 'from src.config_loader import load_config; c=load_config(); print(str(c.settings.event_pipeline.background_authority_enabled).lower(), c.settings.event_pipeline.authority_shard_count)' </dev/null)"
             expected_authority_config="${EXPECTED_BACKGROUND_AUTHORITY,,} $EXPECTED_AUTHORITY_SHARDS"
             echo "==> Runtime authority config: ${runtime_authority_config}"
