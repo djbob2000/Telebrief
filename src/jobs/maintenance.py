@@ -169,3 +169,28 @@ async def advance_storyline_chronicle(timestamp: int) -> None:
             log=log,
         )
         log.info("storyline chronicle edition %s: %s", edition_id, summary)
+
+
+@procrastinate_app.periodic(cron="0 7 * * *", periodic_id="openrouter-balance-check")
+@procrastinate_app.task(queue="maintenance", queueing_lock="openrouter-balance-check")
+async def check_openrouter_balance_job(timestamp: int) -> None:
+    """Daily: warn the operators before OpenRouter credits or the daily budget run out."""
+    from telegram import Bot
+
+    from src.config_loader import load_config
+    from src.openrouter_balance import check_openrouter_balance
+
+    config = load_config()
+    if not config.openrouter_api_key or not config.settings.admin_user_ids:
+        return
+    async with Bot(token=config.telegram_bot_token) as bot:
+
+        async def send(chat_id: int, text: str) -> None:
+            await bot.send_message(chat_id=chat_id, text=text, disable_web_page_preview=True)
+
+        await check_openrouter_balance(
+            api_key=config.openrouter_api_key,
+            base_url=config.openrouter_base_url,
+            recipient_ids=config.settings.admin_user_ids,
+            send_message=send,
+        )
