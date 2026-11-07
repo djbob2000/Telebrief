@@ -38,9 +38,10 @@ if TYPE_CHECKING:
 # format lands version 37, article planner attempt tracking lands version 38,
 # telegram_entities delivery payloads land version 39, edition situation
 # memory lands version 40, vector retention lands version 41, and the
-# storyline chronicle lands version 42.
+# storyline chronicle lands version 42, and the live refresh slot barrier
+# lands version 43.
 SCHEMA_VERSION_MINIMUM = 7
-SCHEMA_VERSION_MAXIMUM = 42
+SCHEMA_VERSION_MAXIMUM = 43
 
 
 __all__ = ["ApplicationInfrastructure", "build_infrastructure"]

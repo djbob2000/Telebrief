@@ -164,8 +164,7 @@ class PublicationReadinessRepository:
                 status, trigger, request_key, freshness_cutoff_at,
                 requested_by_user_id, lookback_hours
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'collecting', %s, %s, %s, %s, %s)
-            ON CONFLICT (request_key)
-            DO NOTHING
+            ON CONFLICT DO NOTHING
             RETURNING id, edition_id, publication_type, slot_at, requested_at,
                       normal_source_cutoff_at, fallback_snapshot_at, deadline_at,
                       status, collection_ready_at, processing_ready_at, prepared_at,
@@ -196,6 +195,18 @@ class PublicationReadinessRepository:
                 (request_key,),
             )
             row = await cursor.fetchone()
+            if row is None:
+                # A different request already holds the live barrier for this
+                # slot (migration 0043). Join it, as a repeated request key would.
+                cursor = await conn.execute(
+                    self._RUN_SELECT
+                    + """
+                    WHERE edition_id = %s AND publication_type = %s AND slot_at = %s
+                      AND status <> 'failed' AND request_key NOT LIKE 'preview:%%'
+                    """,
+                    (edition_id, publication_type, slot_at),
+                )
+                row = await cursor.fetchone()
             if row is None:
                 raise RuntimeError("refresh run conflict returned no existing row")
         refresh = PublicationRefreshRun.from_row(row)

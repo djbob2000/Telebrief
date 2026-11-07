@@ -21,8 +21,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.bootstrap import build_infrastructure
-from src.config_loader import load_config
+from src.bootstrap import ApplicationInfrastructure, build_infrastructure
+from src.config_loader import Config, load_config
 from src.publication.article_preview import (
     ArticleRunPreviewOutcome,
     build_article_preview_from_run,
@@ -119,40 +119,73 @@ async def main() -> None:
 
     try:
         edition_slug = args.edition or "berdyansk"
-        snapshot_at = None
-        if args.date is not None:
-            edition_timezone = await _load_edition_timezone(infra, edition_slug)
-            snapshot_at = _snapshot_at(args.date, edition_timezone)
-        period_review = is_period_review(args.publication_type)
-        publication_preview = await build_publication_preview(
-            publication_type=args.publication_type,
-            edition_slug=edition_slug,
-            snapshot_at=snapshot_at,
-            lookback_hours=args.hours
-            if args.hours is not None
-            else (None if period_review else 24),
-            config=config,
-        )
-        parts = [
-            f"# {publication_preview.title}" if publication_preview.title else "# Вечерняя статья"
-        ]
-        if publication_preview.lead and not (
-            publication_preview.body
-            and publication_preview.body.startswith(publication_preview.lead)
-        ):
-            parts.extend(["", publication_preview.lead])
-        if publication_preview.body:
-            parts.extend(["", publication_preview.body])
-        article = "\n".join(parts).rstrip() + "\n"
+        try:
+            article = await _ordinary_preview_markdown(infra, config, args, edition_slug)
+        except Exception as exc:
+            # A failed preview still leaves a labelled file behind, so an
+            # operator can see that the run stopped. Only the exception type is
+            # printed: messages can carry source or prompt text (AGENTS.md §0.7).
+            failure = _failed_preview_markdown(args, edition_slug, exc)
+            if args.output is not None:
+                _write_text(args.output, failure)
+                print(f"Preview saved to {args.output}")
+            else:
+                print(failure, end="")
+            print(f"Preview failed: {type(exc).__name__}", file=sys.stderr)
+            raise SystemExit(1) from None
 
         if args.output is not None:
-            args.output.parent.mkdir(parents=True, exist_ok=True)
-            args.output.write_text(article, encoding="utf-8")
+            _write_text(args.output, article)
             print(f"Preview saved to {args.output}")
         else:
             print(article, end="")
     finally:
         await infra.close()
+
+
+async def _ordinary_preview_markdown(
+    infra: ApplicationInfrastructure,
+    config: Config,
+    args: argparse.Namespace,
+    edition_slug: str,
+) -> str:
+    snapshot_at = None
+    if args.date is not None:
+        edition_timezone = await _load_edition_timezone(infra, edition_slug)
+        snapshot_at = _snapshot_at(args.date, edition_timezone)
+    period_review = is_period_review(args.publication_type)
+    publication_preview = await build_publication_preview(
+        publication_type=args.publication_type,
+        edition_slug=edition_slug,
+        snapshot_at=snapshot_at,
+        lookback_hours=args.hours if args.hours is not None else (None if period_review else 24),
+        config=config,
+    )
+    parts = [f"# {publication_preview.title}" if publication_preview.title else "# Вечерняя статья"]
+    if publication_preview.lead and not (
+        publication_preview.body and publication_preview.body.startswith(publication_preview.lead)
+    ):
+        parts.extend(["", publication_preview.lead])
+    if publication_preview.body:
+        parts.extend(["", publication_preview.body])
+    return "\n".join(parts).rstrip() + "\n"
+
+
+def _failed_preview_markdown(
+    args: argparse.Namespace, edition_slug: str, error: BaseException
+) -> str:
+    """Labelled placeholder for a preview that stopped before any draft existed."""
+    what = f"{args.publication_type} for {args.date or 'the current snapshot'} ({edition_slug})"
+    return (
+        "# FAILED PREVIEW — DO NOT PUBLISH\n\n"
+        f"No draft was produced for {what}: the preview stopped before generation finished.\n\n"
+        f"Failure: `{type(error).__name__}`. Fix the cause and run the preview again.\n"
+    )
+
+
+def _write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
 
 
 async def _run_frozen_run_preview(args: argparse.Namespace) -> None:
@@ -262,7 +295,7 @@ def _render_frozen_run_outcome(outcome: ArticleRunPreviewOutcome) -> str:
     return f"# {label}\n\n{assessment_note}{outcome.candidate.markdown.lstrip()}"
 
 
-async def _load_edition_timezone(infra: object, edition_slug: str) -> str:
+async def _load_edition_timezone(infra: ApplicationInfrastructure, edition_slug: str) -> str:
     """Read the selected edition's timezone for explicit local-date previews."""
     uow = getattr(infra, "uow", None)
     if uow is None:
