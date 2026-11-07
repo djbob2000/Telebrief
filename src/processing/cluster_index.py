@@ -13,7 +13,9 @@ writer changed mid-batch is never written from stale data.
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -120,6 +122,24 @@ class ClusterIndex:
             for row in order.tolist()
         ]
 
+    def prune(self, cutoff: dt.datetime) -> int:
+        """Drop rows last seen before the cutoff, keeping the rest in order. Returns rows removed."""
+        count = len(self._story_ids)
+        if count == 0:
+            return 0
+        keep = np.flatnonzero(self._last_seen[:count] >= _micros(cutoff))
+        removed = count - int(keep.shape[0])
+        if removed == 0:
+            return 0
+        kept_count = int(keep.shape[0])
+        self._matrix[:kept_count] = self._matrix[keep]
+        self._last_seen[:kept_count] = self._last_seen[keep]
+        self._story_ids = [self._story_ids[i] for i in keep.tolist()]
+        self._fragment_counts = [self._fragment_counts[i] for i in keep.tolist()]
+        self._last_seen_at = [self._last_seen_at[i] for i in keep.tolist()]
+        self._row_by_story = {story_id: row for row, story_id in enumerate(self._story_ids)}
+        return removed
+
     def _grow(self) -> None:
         capacity = max(1, self._matrix.shape[0] * 2)
         matrix = np.zeros((capacity, self._dimensions), dtype=np.float32)
@@ -128,6 +148,71 @@ class ClusterIndex:
         last_seen[: self._last_seen.shape[0]] = self._last_seen
         self._matrix = matrix
         self._last_seen = last_seen
+
+
+@dataclass
+class _CacheEntry:
+    index: ClusterIndex
+    floor: dt.datetime  # rows last seen before this are not guaranteed to be present
+    loaded_at: float  # monotonic seconds
+
+
+class ClusterIndexCache:
+    """Indexes kept between batches in one worker process.
+
+    Only the event-processing worker writes candidate centroids, and it runs one
+    job at a time, so a kept index stays exact. As a safety net it is reloaded
+    from the database every reload_seconds, and whenever a batch needs rows
+    older than the index's floor (for example, a backlog of old revisions).
+    """
+
+    def __init__(
+        self,
+        *,
+        reload_seconds: float = 1800.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._reload_seconds = reload_seconds
+        self._clock = clock
+        self._entries: dict[tuple[int, str, int], _CacheEntry] = {}
+
+    async def get(
+        self,
+        conn: psycopg.AsyncConnection,
+        cluster_repo: EventClusterRepository,
+        edition_id: int,
+        *,
+        model: str,
+        dimensions: int,
+        active_since: dt.datetime,
+        extra_capacity: int,
+    ) -> ClusterIndex:
+        key = (edition_id, model, dimensions)
+        entry = self._entries.get(key)
+        now = self._clock()
+        if (
+            entry is None
+            or active_since < entry.floor
+            or now - entry.loaded_at >= self._reload_seconds
+        ):
+            index = await load_cluster_index(
+                conn,
+                cluster_repo,
+                edition_id,
+                model=model,
+                dimensions=dimensions,
+                active_since=active_since,
+                extra_capacity=extra_capacity,
+            )
+            self._entries[key] = _CacheEntry(index=index, floor=active_since, loaded_at=now)
+            return index
+        entry.index.prune(active_since)
+        entry.floor = active_since
+        return entry.index
+
+    def invalidate(self) -> None:
+        """Forget every index. Call after a failed transaction, whose in-memory updates were never committed."""
+        self._entries.clear()
 
 
 async def load_cluster_index(

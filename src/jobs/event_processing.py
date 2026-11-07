@@ -16,10 +16,9 @@ import psycopg
 from procrastinate.types import JSONValue
 
 from src.config_loader import load_config
-from src.domain.event_clusters import ClusterAssignmentResult
 from src.embedding_providers import create_embedding_provider
 from src.jobs.app import procrastinate_app
-from src.processing.cluster_index import ClusterIndex, load_cluster_index
+from src.processing.cluster_index import ClusterIndex, ClusterIndexCache
 from src.processing.edition_scope import resolve_edition_scope, scope_config_hash
 from src.processing.embeddings import (
     EmbeddingBatch,
@@ -51,6 +50,9 @@ logger = logging.getLogger(__name__)
 
 _GATE_SPLIT_ERROR_KINDS = frozenset({"token_budget", "context_size", "other"})
 _CLUSTER_UNIT_MAX_RETRIES = 3
+_CLUSTER_CHUNK_SIZE = 20
+# Kept for the life of the worker process; see ClusterIndexCache.
+_CLUSTER_INDEX_CACHE = ClusterIndexCache()
 
 
 def _should_split_gate(error_kind: str | None, batch_size: int) -> bool:
@@ -348,51 +350,32 @@ async def _process_event_revisions(
 
     timings["embed"] = time.monotonic() - embed_started
     clusterable = [f for f in prepared.candidates if f.id in embeddings_map]
-    index_started = time.monotonic()
-    cluster_indexes = await _load_cluster_indexes(
-        runtime,
-        cluster_repo,
-        clusterable,
-        frag_meta,
-        model=emb_cfg.model,
-        dimensions=emb_cfg.dimensions,
-        active_window_hours=cfg.active_window_hours,
-    )
-    timings["index"] = time.monotonic() - index_started
     cluster_started = time.monotonic()
-    # 4. Each cluster assignment owns only one short transaction. A failure
-    # cannot roll back earlier embedding checkpoints or cluster units.
-    for f in clusterable:
-        sfe_id, vec = embeddings_map[f.id]
-        edition_id, collected_at = frag_meta[f.id]
-        index = cluster_indexes.get(edition_id)
-
-        result = await _process_cluster_unit_with_retry(
+    # 4. Each chunk of fragments owns one short transaction. A failure cannot
+    # roll back earlier embedding checkpoints or earlier chunks.
+    for start in range(0, len(clusterable), _CLUSTER_CHUNK_SIZE):
+        chunk = clusterable[start : start + _CLUSTER_CHUNK_SIZE]
+        await _cluster_chunk_with_retry(
             runtime,
+            cluster_repo,
             clustering_service,
-            f,
+            chunk,
+            embeddings_map=embeddings_map,
+            frag_meta=frag_meta,
             processing_repo=EventRevisionProcessingRepository(),
             revision_ids=revision_ids,
             claim_token=claim_token,
             claim_lost=claim_lost,
-            edition_id=edition_id,
-            fragment_embedding_id=sfe_id,
-            vector=vec,
             model=emb_cfg.model,
             dimensions=emb_cfg.dimensions,
-            item_timestamp=collected_at,
             join_similarity=cfg.join_similarity,
             active_window_hours=cfg.active_window_hours,
             max_cluster_candidates=cfg.max_cluster_candidates,
-            candidate_index=index,
+            timings=timings,
         )
-        # Only a committed assignment reaches the index; a retried or failed
-        # transaction never returns a result here.
-        if index is not None and result.state_change is not None:
-            index.apply(result.state_change)
-        stats["assignments"] += 1
+        stats["assignments"] += len(chunk)
 
-    timings["cluster"] = time.monotonic() - cluster_started
+    timings["cluster"] = time.monotonic() - cluster_started - timings["index"]
     logger.info(
         "revision batch timing revisions=%d fragments=%d candidates=%d assignments=%d "
         "load_s=%.2f embed_s=%.2f embed_provider_s=%.2f cluster_s=%.2f index_s=%.2f",
@@ -433,15 +416,18 @@ async def _load_cluster_indexes(
     model: str,
     dimensions: int,
     active_window_hours: int,
+    timings: dict[str, float],
 ) -> dict[int, ClusterIndex]:
-    """Load one candidate index per edition in one short read transaction.
+    """Return one candidate index per edition for these fragments.
 
-    The cutoff is the earliest fragment's window start, so every fragment in
-    the batch sees a superset of its own candidates; each lookup applies its
-    own cutoff.
+    Indexes are kept by the process between batches; a lookup prunes them to
+    this chunk's window. The cutoff is the earliest fragment's window start, so
+    every fragment sees a superset of its own candidates. If the index cannot be
+    read, the chunk falls back to the database candidate query.
     """
     if not fragments:
         return {}
+    started = time.monotonic()
     per_edition: dict[int, int] = {}
     for f in fragments:
         edition_id = frag_meta[f.id][0]
@@ -452,7 +438,7 @@ async def _load_cluster_indexes(
     try:
         async with runtime.uow.transaction() as conn:
             for edition_id, fragment_count in sorted(per_edition.items()):
-                indexes[edition_id] = await load_cluster_index(
+                indexes[edition_id] = await _CLUSTER_INDEX_CACHE.get(
                     conn,
                     cluster_repo,
                     edition_id,
@@ -464,61 +450,83 @@ async def _load_cluster_indexes(
     except Exception as exc:
         # The batch still clusters correctly through the database candidate query.
         logger.warning("cluster candidate index unavailable, using database search: %s", exc)
-        return {}
+        _CLUSTER_INDEX_CACHE.invalidate()
+        indexes = {}
+    timings["index"] += time.monotonic() - started
     return indexes
 
 
-async def _process_cluster_unit_with_retry(
+async def _cluster_chunk_with_retry(
     runtime: Any,
+    cluster_repo: EventClusterRepository,
     clustering_service: EventClusteringService,
-    fragment: Any,
+    chunk: list[Any],
     *,
+    embeddings_map: dict[int, tuple[int, list[float]]],
+    frag_meta: dict[int, tuple[int, dt.datetime]],
     processing_repo: EventRevisionProcessingRepository,
     revision_ids: list[int],
     claim_token: uuid.UUID,
     claim_lost: asyncio.Event,
-    edition_id: int,
-    fragment_embedding_id: int,
-    vector: list[float],
     model: str,
     dimensions: int,
-    item_timestamp: dt.datetime,
     join_similarity: float,
     active_window_hours: int,
     max_cluster_candidates: int,
-    candidate_index: ClusterIndex | None = None,
-) -> ClusterAssignmentResult:
-    """Retry only a short cluster transaction after a retryable serialization error."""
+    timings: dict[str, float],
+) -> None:
+    """Cluster one chunk of fragments in one transaction, retrying conflicts.
+
+    The in-memory indexes change as fragments are assigned. If the transaction
+    does not commit, those changes never happened, so the indexes are dropped
+    and rebuilt from the database before any retry.
+    """
     for attempt in range(_CLUSTER_UNIT_MAX_RETRIES):
+        indexes = await _load_cluster_indexes(
+            runtime,
+            cluster_repo,
+            chunk,
+            frag_meta,
+            model=model,
+            dimensions=dimensions,
+            active_window_hours=active_window_hours,
+            timings=timings,
+        )
         try:
             async with runtime.uow.transaction() as conn:
                 await _require_revision_claim(
-                    conn,
-                    processing_repo,
-                    revision_ids,
-                    claim_token,
-                    claim_lost,
+                    conn, processing_repo, revision_ids, claim_token, claim_lost
                 )
-                result = await clustering_service.process_fragment(
-                    conn,
-                    fragment,
-                    edition_id=edition_id,
-                    fragment_embedding_id=fragment_embedding_id,
-                    vector=vector,
-                    model=model,
-                    dimensions=dimensions,
-                    item_timestamp=item_timestamp,
-                    join_similarity=join_similarity,
-                    active_window_hours=active_window_hours,
-                    max_cluster_candidates=max_cluster_candidates,
-                    candidate_index=candidate_index,
-                )
-            return result
+                for f in chunk:
+                    sfe_id, vec = embeddings_map[f.id]
+                    edition_id, collected_at = frag_meta[f.id]
+                    index = indexes.get(edition_id)
+                    result = await clustering_service.process_fragment(
+                        conn,
+                        f,
+                        edition_id=edition_id,
+                        fragment_embedding_id=sfe_id,
+                        vector=vec,
+                        model=model,
+                        dimensions=dimensions,
+                        item_timestamp=collected_at,
+                        join_similarity=join_similarity,
+                        active_window_hours=active_window_hours,
+                        max_cluster_candidates=max_cluster_candidates,
+                        candidate_index=index,
+                    )
+                    if index is not None and result.state_change is not None:
+                        index.apply(result.state_change)
+            return
         except (psycopg.errors.DeadlockDetected, psycopg.errors.SerializationFailure):
+            _CLUSTER_INDEX_CACHE.invalidate()
             if attempt + 1 >= _CLUSTER_UNIT_MAX_RETRIES:
                 raise
             await asyncio.sleep(0.05 * (attempt + 1))
-    raise RuntimeError("cluster unit retries exhausted")
+        except BaseException:
+            _CLUSTER_INDEX_CACHE.invalidate()
+            raise
+    raise RuntimeError("cluster chunk retries exhausted")
 
 
 async def run_legacy_coalesce_dirty_stories(

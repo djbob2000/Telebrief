@@ -13,7 +13,12 @@ from typing import Any
 
 import numpy as np
 
-from src.domain.event_clusters import ActiveCentroid, ClusterJoinCandidate, StoryClusterState
+from src.domain.event_clusters import (
+    ActiveCentroid,
+    ClusterJoinCandidate,
+    ClusterStateChange,
+    StoryClusterState,
+)
 from src.processing.cluster_index import ClusterIndex, load_cluster_index
 from src.processing.event_clustering import EventClusteringService
 
@@ -333,3 +338,125 @@ def test_index_path_assigns_like_database_path() -> None:
         assert index_row.centroid == db_row.centroid
         assert index_row.fragment_count == db_row.fragment_count
         assert index_row.last_seen_at == db_row.last_seen_at
+
+
+def test_persistent_cache_across_batches_matches_database_path() -> None:
+    """A cache kept between batches (pruned each time) assigns exactly like the database path."""
+    from src.processing.cluster_index import ClusterIndexCache
+
+    rng = random.Random(23)
+    centers = _centers(rng, 60)
+    fragments = _fragments(rng, centers, 600)
+    split = 150
+
+    async def run() -> tuple[list[tuple[int, str]], list[tuple[int, str]]]:
+        repo_db = FakeClusterRepo()
+        repo_cache = FakeClusterRepo()
+        svc_db = EventClusteringService(cluster_repo=repo_db, story_repo=FakeStoryRepo(repo_db))  # type: ignore[arg-type]
+        svc_cache = EventClusteringService(
+            cluster_repo=repo_cache,  # type: ignore[arg-type]
+            story_repo=FakeStoryRepo(repo_cache),  # type: ignore[arg-type]
+        )
+        await _process_sequence(svc_db, repo_db, fragments[:split], indexes=None)
+        await _process_sequence(svc_cache, repo_cache, fragments[:split], indexes=None)
+
+        cache = ClusterIndexCache(clock=lambda: 0.0)
+        db_all: list[tuple[int, str]] = []
+        cache_all: list[tuple[int, str]] = []
+        # Batches of 50 fragments; the same cache object serves all of them.
+        for start in range(split, len(fragments), 50):
+            batch = fragments[start : start + 50]
+            floor = min(f["ts"] for f in batch) - dt.timedelta(hours=WINDOW_HOURS)
+            indexes = {}
+            for edition in (1, 2):
+                count = sum(1 for f in batch if f["edition"] == edition)
+                indexes[edition] = await cache.get(
+                    None,  # type: ignore[arg-type]
+                    repo_cache,  # type: ignore[arg-type]
+                    edition,
+                    model=MODEL,
+                    dimensions=DIMS,
+                    active_since=floor,
+                    extra_capacity=count,
+                )
+            db_all += await _process_sequence(svc_db, repo_db, batch, indexes=None)
+            cache_all += await _process_sequence(svc_cache, repo_cache, batch, indexes=indexes)
+        return db_all, cache_all
+
+    db_decisions, cache_decisions = asyncio.run(run())
+    assert cache_decisions == db_decisions
+    kinds = [kind for _story, kind in db_decisions]
+    assert kinds.count("vector_join") > 50
+    assert kinds.count("new_story") > 5
+
+
+def test_cache_reuses_reloads_and_invalidates() -> None:
+    from src.processing.cluster_index import ClusterIndexCache
+
+    class CountingRepo(FakeClusterRepo):
+        def __init__(self) -> None:
+            super().__init__()
+            self.loads = 0
+
+        async def count_active_centroids(self, conn: Any, edition_id: int, **kwargs: Any) -> int:
+            self.loads += 1
+            return await super().count_active_centroids(conn, edition_id, **kwargs)
+
+    repo = CountingRepo()
+    repo.story_editions[1] = 1
+    repo.rows[1] = _Row(1, 1, [1.0] + [0.0] * (DIMS - 1), MODEL, DIMS, 1, BASE, BASE)
+    now = [0.0]
+    cache = ClusterIndexCache(reload_seconds=100.0, clock=lambda: now[0])
+
+    async def get(active_since: dt.datetime) -> ClusterIndex:
+        return await cache.get(
+            None,  # type: ignore[arg-type]
+            repo,  # type: ignore[arg-type]
+            1,
+            model=MODEL,
+            dimensions=DIMS,
+            active_since=active_since,
+            extra_capacity=4,
+        )
+
+    async def main() -> None:
+        first = await get(BASE)
+        assert await get(BASE + dt.timedelta(hours=1)) is first  # reused, pruned
+        assert repo.loads == 1
+        await get(BASE - dt.timedelta(hours=5))  # older than the floor: reload
+        assert repo.loads == 2
+        now[0] = 150.0  # past reload_seconds
+        await get(BASE)
+        assert repo.loads == 3
+        cache.invalidate()
+        await get(BASE)
+        assert repo.loads == 4
+
+    asyncio.run(main())
+
+
+def test_prune_keeps_rows_in_order_and_lookup_consistent() -> None:
+    index = ClusterIndex(dimensions=DIMS, capacity=2)
+    rng = random.Random(5)
+    for story_id in range(1, 9):
+        index.set_row(
+            story_id,
+            [rng.gauss(0, 1) for _ in range(DIMS)],
+            BASE + dt.timedelta(hours=story_id),
+            story_id,
+        )
+    removed = index.prune(BASE + dt.timedelta(hours=5))
+    assert removed == 4
+    assert len(index) == 4
+    query = [1.0] + [0.0] * (DIMS - 1)
+    ranked = index.nearest(query, active_since=BASE, limit=10)
+    assert {c.story_id for c in ranked} == {5, 6, 7, 8}
+    # A row updated after pruning is still found by its story id.
+    index.apply(
+        ClusterStateChange(
+            story_id=6, centroid=query, fragment_count=9, last_seen_at=BASE + dt.timedelta(hours=20)
+        )
+    )
+    top = index.nearest(query, active_since=BASE, limit=1)
+    assert top[0].story_id == 6
+    assert top[0].fragment_count == 9
