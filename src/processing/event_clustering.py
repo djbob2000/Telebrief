@@ -10,8 +10,9 @@ from typing import Literal, cast
 
 import psycopg
 
-from src.domain.event_clusters import ClusterAssignmentResult
+from src.domain.event_clusters import ClusterAssignmentResult, ClusterStateChange
 from src.domain.event_pipeline import SourceFragment
+from src.processing.cluster_index import ClusterIndex
 from src.repositories.event_clusters import EventClusterRepository
 from src.repositories.stories import StoryRepository
 
@@ -64,8 +65,14 @@ class EventClusteringService:
         join_similarity: float = 0.84,
         active_window_hours: int = 72,
         max_cluster_candidates: int = 20,
+        candidate_index: ClusterIndex | None = None,
     ) -> ClusterAssignmentResult:
-        """Assign one candidate fragment to an existing active story cluster or seed a new one."""
+        """Assign one candidate fragment to an existing active story cluster or seed a new one.
+
+        With candidate_index, join candidates are ranked in memory instead of by
+        the database query. The caller applies the returned state_change to that
+        index only after this transaction commits.
+        """
         norm_vec = normalize_vector(vector)
         active_since = item_timestamp - dt.timedelta(hours=active_window_hours)
 
@@ -87,15 +94,20 @@ class EventClusteringService:
             )
 
         # 1. Search candidate clusters
-        candidates = await self.cluster_repo.find_candidate_clusters(
-            conn,
-            edition_id,
-            norm_vec,
-            model=model,
-            dimensions=dimensions,
-            active_since=active_since,
-            limit=max_cluster_candidates,
-        )
+        if candidate_index is None:
+            candidates = await self.cluster_repo.find_candidate_clusters(
+                conn,
+                edition_id,
+                norm_vec,
+                model=model,
+                dimensions=dimensions,
+                active_since=active_since,
+                limit=max_cluster_candidates,
+            )
+        else:
+            candidates = candidate_index.nearest(
+                norm_vec, active_since=active_since, limit=max_cluster_candidates
+            )
 
         # 2. Check if closest cluster meets join threshold
         if candidates and candidates[0].similarity >= join_similarity:
@@ -155,6 +167,12 @@ class EventClusteringService:
                 assignment_kind="vector_join",
                 similarity=similarity,
                 assignment_id=assignment_id,
+                state_change=ClusterStateChange(
+                    story_id=target_story_id,
+                    centroid=new_centroid,
+                    fragment_count=new_frag_count,
+                    last_seen_at=last_seen,
+                ),
             )
 
         # 3. No match -> Seed new Story shell
@@ -189,4 +207,10 @@ class EventClusteringService:
             assignment_kind="new_story",
             similarity=None,
             assignment_id=assignment_id,
+            state_change=ClusterStateChange(
+                story_id=story_id,
+                centroid=norm_vec,
+                fragment_count=1,
+                last_seen_at=item_timestamp,
+            ),
         )

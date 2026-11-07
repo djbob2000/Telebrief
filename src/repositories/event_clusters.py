@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 
 import psycopg
 from pgvector import Vector
 from pgvector.psycopg import register_vector_async
 
-from src.domain.event_clusters import ClusterJoinCandidate, StoryClusterState
+from src.domain.event_clusters import ActiveCentroid, ClusterJoinCandidate, StoryClusterState
 from src.repositories.embeddings import _vec_to_list
 
 
@@ -58,6 +58,68 @@ class EventClusterRepository:
                 )
             )
         return candidates
+
+    async def count_active_centroids(
+        self,
+        conn: psycopg.AsyncConnection,
+        edition_id: int,
+        *,
+        model: str,
+        dimensions: int,
+        active_since: dt.datetime,
+    ) -> int:
+        """Count the rows that find_candidate_clusters ranks for one edition."""
+        cursor = await conn.execute(
+            """
+            SELECT count(*)
+            FROM story_cluster_state sc
+            JOIN stories s ON s.id = sc.story_id
+            WHERE s.edition_id = %s
+              AND s.lifecycle_state IN ('candidate', 'active', 'reopened')
+              AND sc.model = %s
+              AND sc.dimensions = %s
+              AND sc.last_seen_at >= %s
+              AND sc.centroid IS NOT NULL
+            """,
+            (edition_id, model, dimensions, active_since),
+        )
+        row = await cursor.fetchone()
+        return int(row[0]) if row is not None else 0
+
+    async def stream_active_centroids(
+        self,
+        conn: psycopg.AsyncConnection,
+        edition_id: int,
+        *,
+        model: str,
+        dimensions: int,
+        active_since: dt.datetime,
+    ) -> AsyncIterator[ActiveCentroid]:
+        """Yield the rows find_candidate_clusters ranks, through a server-side cursor.
+
+        Rows arrive in small chunks, so the batch never holds every centroid
+        as Python objects at once.
+        """
+        await register_vector_async(conn)
+        async with conn.cursor(name=f"active_centroids_{edition_id}") as cursor:
+            cursor.itersize = 256
+            await cursor.execute(
+                """
+                SELECT sc.story_id, sc.centroid, sc.last_seen_at, sc.fragment_count
+                FROM story_cluster_state sc
+                JOIN stories s ON s.id = sc.story_id
+                WHERE s.edition_id = %s
+                AND s.lifecycle_state IN ('candidate', 'active', 'reopened')
+                AND sc.model = %s
+                AND sc.dimensions = %s
+                AND sc.last_seen_at >= %s
+                AND sc.centroid IS NOT NULL
+                """,
+                (edition_id, model, dimensions, active_since),
+                binary=True,  # 6 KB per centroid instead of ~32 KB as text
+            )
+            async for row in cursor:
+                yield ActiveCentroid(int(row[0]), row[1], row[2], int(row[3]))
 
     async def get_cluster_state(
         self, conn: psycopg.AsyncConnection, story_id: int

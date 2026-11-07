@@ -13,6 +13,8 @@ uvicorn>=0.30.0
 
 # Utilities
 python-dateutil>=2.8.0
+# Vector math for the per-batch cluster candidate index
+numpy>=2.0
 
 # Domain persistence & job orchestration (PostgreSQL + Procrastinate)
 psycopg[binary]>=3.3.4

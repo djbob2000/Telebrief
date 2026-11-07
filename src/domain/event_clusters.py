@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 
 @dataclass(frozen=True)
@@ -54,6 +54,25 @@ class ClusterJoinCandidate:
     last_seen_at: dt.datetime
 
 
+class ActiveCentroid(NamedTuple):
+    """One active story centroid as read for a batch's candidate index."""
+
+    story_id: int
+    centroid: Any  # driver vector object; converted to float32 by the index
+    last_seen_at: dt.datetime
+    fragment_count: int
+
+
+@dataclass(frozen=True)
+class ClusterStateChange:
+    """Committed state of one story cluster after an assignment."""
+
+    story_id: int
+    centroid: list[float]
+    fragment_count: int
+    last_seen_at: dt.datetime
+
+
 @dataclass(frozen=True)
 class ClusterAssignmentResult:
     """Result of assigning a fragment to a story cluster."""
@@ -63,3 +82,5 @@ class ClusterAssignmentResult:
     assignment_kind: Literal["new_story", "vector_join", "manual"]
     similarity: float | None
     assignment_id: int
+    # Set only when this call changed a cluster state; None for a replayed assignment.
+    state_change: ClusterStateChange | None = None

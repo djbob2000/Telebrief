@@ -16,8 +16,10 @@ import psycopg
 from procrastinate.types import JSONValue
 
 from src.config_loader import load_config
+from src.domain.event_clusters import ClusterAssignmentResult
 from src.embedding_providers import create_embedding_provider
 from src.jobs.app import procrastinate_app
+from src.processing.cluster_index import ClusterIndex, load_cluster_index
 from src.processing.edition_scope import resolve_edition_scope, scope_config_hash
 from src.processing.embeddings import (
     EmbeddingBatch,
@@ -229,7 +231,7 @@ async def _process_event_revisions(
     emb_provider = create_embedding_provider(config, logger)
 
     stats = {"revisions": len(revision_ids), "fragments": 0, "candidates": 0, "assignments": 0}
-    timings = {"load": 0.0, "embed": 0.0, "embed_provider": 0.0, "cluster": 0.0}
+    timings = {"load": 0.0, "embed": 0.0, "embed_provider": 0.0, "index": 0.0, "cluster": 0.0}
     started = time.monotonic()
 
     # 1. Load revisions and create deterministic fragments in a short transaction.
@@ -345,16 +347,27 @@ async def _process_event_revisions(
         )
 
     timings["embed"] = time.monotonic() - embed_started
+    clusterable = [f for f in prepared.candidates if f.id in embeddings_map]
+    index_started = time.monotonic()
+    cluster_indexes = await _load_cluster_indexes(
+        runtime,
+        cluster_repo,
+        clusterable,
+        frag_meta,
+        model=emb_cfg.model,
+        dimensions=emb_cfg.dimensions,
+        active_window_hours=cfg.active_window_hours,
+    )
+    timings["index"] = time.monotonic() - index_started
     cluster_started = time.monotonic()
     # 4. Each cluster assignment owns only one short transaction. A failure
     # cannot roll back earlier embedding checkpoints or cluster units.
-    for f in prepared.candidates:
-        if f.id not in embeddings_map:
-            continue
+    for f in clusterable:
         sfe_id, vec = embeddings_map[f.id]
         edition_id, collected_at = frag_meta[f.id]
+        index = cluster_indexes.get(edition_id)
 
-        await _process_cluster_unit_with_retry(
+        result = await _process_cluster_unit_with_retry(
             runtime,
             clustering_service,
             f,
@@ -371,13 +384,18 @@ async def _process_event_revisions(
             join_similarity=cfg.join_similarity,
             active_window_hours=cfg.active_window_hours,
             max_cluster_candidates=cfg.max_cluster_candidates,
+            candidate_index=index,
         )
+        # Only a committed assignment reaches the index; a retried or failed
+        # transaction never returns a result here.
+        if index is not None and result.state_change is not None:
+            index.apply(result.state_change)
         stats["assignments"] += 1
 
     timings["cluster"] = time.monotonic() - cluster_started
     logger.info(
         "revision batch timing revisions=%d fragments=%d candidates=%d assignments=%d "
-        "load_s=%.2f embed_s=%.2f embed_provider_s=%.2f cluster_s=%.2f",
+        "load_s=%.2f embed_s=%.2f embed_provider_s=%.2f cluster_s=%.2f index_s=%.2f",
         stats["revisions"],
         stats["fragments"],
         stats["candidates"],
@@ -386,6 +404,7 @@ async def _process_event_revisions(
         timings["embed"],
         timings["embed_provider"],
         timings["cluster"],
+        timings["index"],
     )
     if stats["assignments"] > 0 and getattr(cfg, "background_authority_enabled", False):
         from src.jobs.event_authority import request_background_authority_dispatch
@@ -403,6 +422,50 @@ async def _process_event_revisions(
                 )
 
     return stats
+
+
+async def _load_cluster_indexes(
+    runtime: Any,
+    cluster_repo: EventClusterRepository,
+    fragments: list[Any],
+    frag_meta: dict[int, tuple[int, dt.datetime]],
+    *,
+    model: str,
+    dimensions: int,
+    active_window_hours: int,
+) -> dict[int, ClusterIndex]:
+    """Load one candidate index per edition in one short read transaction.
+
+    The cutoff is the earliest fragment's window start, so every fragment in
+    the batch sees a superset of its own candidates; each lookup applies its
+    own cutoff.
+    """
+    if not fragments:
+        return {}
+    per_edition: dict[int, int] = {}
+    for f in fragments:
+        edition_id = frag_meta[f.id][0]
+        per_edition[edition_id] = per_edition.get(edition_id, 0) + 1
+    earliest = min(frag_meta[f.id][1] for f in fragments)
+    active_since = earliest - dt.timedelta(hours=active_window_hours)
+    indexes: dict[int, ClusterIndex] = {}
+    try:
+        async with runtime.uow.transaction() as conn:
+            for edition_id, fragment_count in sorted(per_edition.items()):
+                indexes[edition_id] = await load_cluster_index(
+                    conn,
+                    cluster_repo,
+                    edition_id,
+                    model=model,
+                    dimensions=dimensions,
+                    active_since=active_since,
+                    extra_capacity=fragment_count,
+                )
+    except Exception as exc:
+        # The batch still clusters correctly through the database candidate query.
+        logger.warning("cluster candidate index unavailable, using database search: %s", exc)
+        return {}
+    return indexes
 
 
 async def _process_cluster_unit_with_retry(
@@ -423,7 +486,8 @@ async def _process_cluster_unit_with_retry(
     join_similarity: float,
     active_window_hours: int,
     max_cluster_candidates: int,
-) -> None:
+    candidate_index: ClusterIndex | None = None,
+) -> ClusterAssignmentResult:
     """Retry only a short cluster transaction after a retryable serialization error."""
     for attempt in range(_CLUSTER_UNIT_MAX_RETRIES):
         try:
@@ -435,7 +499,7 @@ async def _process_cluster_unit_with_retry(
                     claim_token,
                     claim_lost,
                 )
-                await clustering_service.process_fragment(
+                result = await clustering_service.process_fragment(
                     conn,
                     fragment,
                     edition_id=edition_id,
@@ -447,12 +511,14 @@ async def _process_cluster_unit_with_retry(
                     join_similarity=join_similarity,
                     active_window_hours=active_window_hours,
                     max_cluster_candidates=max_cluster_candidates,
+                    candidate_index=candidate_index,
                 )
-            return
+            return result
         except (psycopg.errors.DeadlockDetected, psycopg.errors.SerializationFailure):
             if attempt + 1 >= _CLUSTER_UNIT_MAX_RETRIES:
                 raise
             await asyncio.sleep(0.05 * (attempt + 1))
+    raise RuntimeError("cluster unit retries exhausted")
 
 
 async def run_legacy_coalesce_dirty_stories(
