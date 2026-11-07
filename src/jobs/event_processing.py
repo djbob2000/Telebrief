@@ -8,6 +8,7 @@ import logging
 import os
 import time
 import uuid
+from contextlib import aclosing
 from typing import Any, cast
 
 import procrastinate
@@ -18,7 +19,12 @@ from src.config_loader import load_config
 from src.embedding_providers import create_embedding_provider
 from src.jobs.app import procrastinate_app
 from src.processing.edition_scope import resolve_edition_scope, scope_config_hash
-from src.processing.embeddings import EmbeddingService
+from src.processing.embeddings import (
+    EmbeddingBatch,
+    EmbeddingService,
+    embed_batches_in_order,
+    embedding_concurrency,
+)
 from src.processing.errors import RevisionClaimLostError, classify_processing_failure
 from src.processing.event_analysis import EventAnalysisService
 from src.processing.event_brief import EventBriefService
@@ -287,18 +293,19 @@ async def _process_event_revisions(
             batch_size=cfg.embedding_batch_size,
         )
 
-    # 3. Provider calls are deliberately outside every pooled transaction.
+    # 3. Provider calls are deliberately outside every pooled transaction. Up to
+    # EMBEDDING_CONCURRENCY batches are in flight; each is persisted in batch
+    # order, so checkpoints and claims behave as with one call at a time.
     embed_started = time.monotonic()
-    for batch in prepared.batches:
-        call_started = time.monotonic()
+
+    async def _embed_batch(batch: EmbeddingBatch) -> list[list[float]]:
         try:
-            vectors = await emb_provider.embed_many(
+            return await emb_provider.embed_many(
                 list(batch.texts),
                 purpose="story_document",
                 model=emb_cfg.model,
                 dimensions=emb_cfg.dimensions,
             )
-            timings["embed_provider"] += time.monotonic() - call_started
         except Exception as exc:
             async with runtime.uow.transaction() as conn:
                 await emb_service.record_batch_completion(
@@ -308,18 +315,25 @@ async def _process_event_revisions(
                     error_kind=type(exc).__name__,
                 )
             raise
-        async with runtime.uow.transaction() as conn:
-            await _require_revision_claim(
-                conn, EventRevisionProcessingRepository(), revision_ids, claim_token, claim_lost
-            )
-            await emb_service.persist_embedding_batch(
-                conn,
-                prepared,
-                batch,
-                vectors,
-                model=emb_cfg.model,
-                dimensions=emb_cfg.dimensions,
-            )
+
+    async with aclosing(
+        embed_batches_in_order(prepared.batches, _embed_batch, concurrency=embedding_concurrency())
+    ) as embedded:
+        async for batch, vectors, call_seconds in embedded:
+            # Summed per call: with overlap this can exceed the wall time in "embed".
+            timings["embed_provider"] += call_seconds
+            async with runtime.uow.transaction() as conn:
+                await _require_revision_claim(
+                    conn, EventRevisionProcessingRepository(), revision_ids, claim_token, claim_lost
+                )
+                await emb_service.persist_embedding_batch(
+                    conn,
+                    prepared,
+                    batch,
+                    vectors,
+                    model=emb_cfg.model,
+                    dimensions=emb_cfg.dimensions,
+                )
 
     async with runtime.uow.transaction() as conn:
         await _require_revision_claim(

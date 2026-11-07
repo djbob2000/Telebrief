@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import Sequence
+import os
+import time
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from dataclasses import dataclass
+from typing import TypeVar
 
 import psycopg
 
@@ -13,6 +17,9 @@ from src.embedding_providers import EmbeddingProvider
 from src.repositories.embeddings import FragmentEmbeddingRepository
 
 logger = logging.getLogger(__name__)
+
+_Batch = TypeVar("_Batch")
+_Vectors = TypeVar("_Vectors")
 
 
 @dataclass(frozen=True)
@@ -32,6 +39,47 @@ class PreparedEmbeddingBatches:
     missing_fragments: tuple[SourceFragment, ...]
     cached_vectors: dict[str, tuple[int, list[float]]]
     batches: tuple[EmbeddingBatch, ...]
+
+
+def embedding_concurrency() -> int:
+    """Provider calls in flight at once: EMBEDDING_CONCURRENCY, default 4 as for Gate."""
+    raw = os.environ.get("EMBEDDING_CONCURRENCY", "4")
+    try:
+        return max(1, int(raw))
+    except (ValueError, TypeError):
+        return 4
+
+
+async def embed_batches_in_order(
+    batches: Sequence[_Batch],
+    embed: Callable[[_Batch], Awaitable[_Vectors]],
+    *,
+    concurrency: int,
+) -> AsyncGenerator[tuple[_Batch, _Vectors, float], None]:
+    """Run provider calls concurrently; yield each result in batch order.
+
+    At most ``concurrency`` calls are in flight. A failed call raises at its
+    position in the order, so earlier batches are yielded (and can be
+    persisted) first. Calls still pending when the consumer stops or fails are
+    cancelled and awaited before the generator ends.
+    """
+    gate = asyncio.Semaphore(max(1, concurrency))
+
+    async def run(batch: _Batch) -> tuple[_Vectors, float]:
+        async with gate:
+            started = time.monotonic()
+            vectors = await embed(batch)
+            return vectors, time.monotonic() - started
+
+    calls = [asyncio.create_task(run(batch)) for batch in batches]
+    try:
+        for batch, call in zip(batches, calls, strict=True):
+            vectors, seconds = await call
+            yield batch, vectors, seconds
+    finally:
+        for call in calls:
+            call.cancel()
+        await asyncio.gather(*calls, return_exceptions=True)
 
 
 class FragmentEmbeddingService:
