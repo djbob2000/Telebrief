@@ -46,6 +46,7 @@ from src.editorial_fallback import (
 from src.editorial_input import EditorialInputBuilder
 from src.editorial_models import EditorialAnalysis, PreparedBundle
 from src.editorial_writer import ArticleDraft, EditorialWriter
+from src.publication.article_claims import clear_text_caches
 from src.publication.article_context import ArticleEditorialContext
 from src.publication.article_coverage_diagnostics import (
     ArticleCoverageDiagnostics,
@@ -1321,6 +1322,19 @@ class ArticleGenerator:
 {boundary_block}
 """
 
+    def _article_generation_timeout_seconds(self, article_ctx: ArticleEditorialContext) -> int:
+        """Return the single-run budget: period reviews have their own, wider one."""
+        article_settings = self.config.settings.article
+        if getattr(article_ctx, "period_review_kind", ""):
+            timeout_seconds = article_settings.period_review_generation_timeout_seconds
+            name = "period_review_generation_timeout_seconds"
+        else:
+            timeout_seconds = article_settings.article_generation_timeout_seconds
+            name = "article_generation_timeout_seconds"
+        if isinstance(timeout_seconds, bool) or timeout_seconds <= 0:
+            raise ValueError(f"{name} must be a positive integer")
+        return timeout_seconds
+
     async def generate_from_event_article_context(
         self,
         article_ctx: ArticleEditorialContext,
@@ -1340,25 +1354,28 @@ class ArticleGenerator:
         Already-running read-only to_thread evaluation may finish after task
         cancellation; no subsequent stage or provider request is started.
         """
-        timeout_seconds = self.config.settings.article.article_generation_timeout_seconds
-        if isinstance(timeout_seconds, bool) or timeout_seconds <= 0:
-            raise ValueError("article_generation_timeout_seconds must be a positive integer")
+        timeout_seconds = self._article_generation_timeout_seconds(article_ctx)
         self.last_generation_provider_attempts = {"writer": None, "editor": []}
         deadline = asyncio.get_running_loop().time() + timeout_seconds
-        async with asyncio.timeout_at(deadline):
-            result = await self._generate_from_event_article_context(
-                article_ctx,
-                coverage_plan,
-                attempt_observer,
-                checkpoint_observer=checkpoint_observer,
-                source_identity=source_identity,
-                assessment_input_observer=assessment_input_observer,
-            )
-            # Also cover a final synchronous transform that exhausts the budget
-            # before the event loop can deliver its cancellation callback.
-            if asyncio.get_running_loop().time() >= deadline:
-                raise TimeoutError("Article generation deadline exhausted")
-            return result
+        try:
+            async with asyncio.timeout_at(deadline):
+                result = await self._generate_from_event_article_context(
+                    article_ctx,
+                    coverage_plan,
+                    attempt_observer,
+                    checkpoint_observer=checkpoint_observer,
+                    source_identity=source_identity,
+                    assessment_input_observer=assessment_input_observer,
+                )
+                # Also cover a final synchronous transform that exhausts the budget
+                # before the event loop can deliver its cancellation callback.
+                if asyncio.get_running_loop().time() >= deadline:
+                    raise TimeoutError("Article generation deadline exhausted")
+                return result
+        finally:
+            # The caches only speed up one article's validation passes. Release
+            # them so an idle worker does not hold their memory on a 1 GB host.
+            clear_text_caches()
 
     async def _generate_from_event_article_context(  # noqa: C901
         self,
@@ -1796,8 +1813,8 @@ class ArticleGenerator:
             writer_meta["editor_invocation_limit"] = min(
                 getattr(editorial_config, "article_editor_max_attempts", 3), 2
             )
-            writer_meta["generation_timeout_seconds"] = (
-                self.config.settings.article.article_generation_timeout_seconds
+            writer_meta["generation_timeout_seconds"] = self._article_generation_timeout_seconds(
+                article_ctx
             )
             writer_meta["editor_patched_unit_ids"] = []
 

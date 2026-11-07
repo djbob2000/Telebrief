@@ -84,6 +84,8 @@ class ArticleConfig:
     editorial_repair_max_output_tokens: int = 8_192
     editorial_api_timeout: int = 300
     article_generation_timeout_seconds: int = 1200
+    # Period reviews (AGENTS.md §0.12) read many more Stories than a daily article.
+    period_review_generation_timeout_seconds: int = 10800
     telegraph_access_token: str | None = None
     save_debug_artifacts: bool = False
     debug_artifact_dir: str = "data/debug/editorial"

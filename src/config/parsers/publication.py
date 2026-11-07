@@ -384,6 +384,9 @@ def _parse_article_config(settings_dict: dict) -> ArticleConfig:
     article_generation_timeout_seconds = _positive_budget(
         "article_generation_timeout_seconds", 1200
     )
+    period_review_generation_timeout_seconds = _positive_budget(
+        "period_review_generation_timeout_seconds", 10800
+    )
 
     editorial_api_timeout = raw.get("editorial_api_timeout", 300)
     if (
@@ -434,6 +437,7 @@ def _parse_article_config(settings_dict: dict) -> ArticleConfig:
         editorial_repair_max_output_tokens=editorial_repair_max_output_tokens,
         editorial_api_timeout=editorial_api_timeout,
         article_generation_timeout_seconds=article_generation_timeout_seconds,
+        period_review_generation_timeout_seconds=period_review_generation_timeout_seconds,
         telegraph_access_token=token.strip() if token else None,
         save_debug_artifacts=save_debug_artifacts,
         debug_artifact_dir=debug_artifact_dir.strip(),

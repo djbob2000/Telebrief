@@ -305,6 +305,8 @@ settings:
 
     editorial_api_timeout: 1800
     article_generation_timeout_seconds: 2400
+    # Period reviews (monthly and longer) get a wider single-run budget.
+    period_review_generation_timeout_seconds: 10800
     save_debug_artifacts: true
 
   # Weekly Long-Read Articles (Итоги недели)
@@ -319,26 +321,29 @@ settings:
   monthly_article:
     enabled: true
     schedule_day: 1
-    schedule_time: "20:00"
+    schedule_time: "18:00"
     lookback_hours: 720
     target_word_count: 3500
 
   # Period reviews on the storyline chronicle (AGENTS.md §0.12). The window is
   # the closed calendar period before the slot; lookback_hours is only a
-  # fallback.
+  # fallback. Reviews start at 18:00: after the 16:35 chronicle run and before
+  # the 21:15 daily article.
   quarterly_article:
     enabled: true
     schedule_day: 3
     schedule_months: [1, 4, 7, 10]
-    schedule_time: "20:00"
+    schedule_time: "18:00"
     lookback_hours: 2208
     target_word_count: 4000
 
+  # Off until July 2027: the first one (5 Jan 2027) would cover the same
+  # Sep–Dec span as the quarterly and yearly reviews.
   half_year_article:
-    enabled: true
+    enabled: false
     schedule_day: 5
     schedule_months: [1, 7]
-    schedule_time: "20:00"
+    schedule_time: "18:00"
     lookback_hours: 4416
     target_word_count: 4500
 
@@ -346,7 +351,7 @@ settings:
     enabled: true
     schedule_day: 7
     schedule_months: [1]
-    schedule_time: "20:00"
+    schedule_time: "18:00"
     lookback_hours: 8784
     target_word_count: 5000
 
