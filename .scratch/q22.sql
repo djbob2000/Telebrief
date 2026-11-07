@@ -1,0 +1,5 @@
+\pset pager off
+SELECT 'window_rows', count(*) FROM story_cluster_state sc WHERE sc.last_seen_at >= now() - interval '72 hours';
+SELECT 'window_rows_edition', count(*) FROM story_cluster_state sc JOIN stories s ON s.id = sc.story_id WHERE s.edition_id = 1 AND s.lifecycle_state IN ('candidate','active','reopened') AND sc.last_seen_at >= now() - interval '72 hours';
+SELECT 'model_dims', model, dimensions, count(*) FROM story_cluster_state GROUP BY 2,3;
+EXPLAIN SELECT sc.story_id, 1.0 - (sc.centroid <=> (SELECT centroid FROM story_cluster_state LIMIT 1)) AS similarity, sc.fragment_count, sc.last_seen_at FROM story_cluster_state sc JOIN stories s ON s.id = sc.story_id WHERE s.edition_id = 1 AND s.lifecycle_state IN ('candidate','active','reopened') AND sc.model = (SELECT model FROM story_cluster_state LIMIT 1) AND sc.dimensions = (SELECT dimensions FROM story_cluster_state LIMIT 1) AND sc.last_seen_at >= now() - interval '72 hours' ORDER BY sc.centroid <=> (SELECT centroid FROM story_cluster_state LIMIT 1) LIMIT 20;

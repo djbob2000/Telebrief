@@ -1,0 +1,1 @@
+SELECT state, wait_event_type, wait_event, round(extract(epoch from now()-xact_start)) x, round(extract(epoch from now()-query_start)) q, left(regexp_replace(query,'\s+',' ','g'),70) FROM pg_stat_activity WHERE datname IS NOT NULL AND pid<>pg_backend_pid() AND (xact_start IS NOT NULL OR state<>'idle');

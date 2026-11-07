@@ -1,0 +1,10 @@
+{
+  "run": 350,
+  "scores_before_key_opened": {
+    "A": {"concreteness": 5, "coherence": 4, "repetition": 3, "accuracy": "not_checked", "overall": 4},
+    "B": {"concreteness": 4, "coherence": 4, "repetition": 3, "accuracy": "not_checked", "overall": 3}
+  },
+  "notes_outside_rubric": {
+    "B": "contains directory payload: doctor full name, clinic booking, kitten adoption; not in frozen rubric, recorded as observation only"
+  }
+}

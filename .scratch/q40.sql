@@ -1,0 +1,4 @@
+\pset pager off
+SELECT j.status, count(*) FROM procrastinate.procrastinate_jobs j WHERE j.task_name='process_event_revisions' GROUP BY 1;
+SELECT j.id, j.status, to_char(s.at,'HH24:MI:SS') started, to_char(f.at,'HH24:MI:SS') ended FROM procrastinate.procrastinate_jobs j LEFT JOIN LATERAL (SELECT at FROM procrastinate.procrastinate_events e WHERE e.job_id=j.id AND e.type='started' ORDER BY at LIMIT 1) s ON true LEFT JOIN LATERAL (SELECT at FROM procrastinate.procrastinate_events e WHERE e.job_id=j.id AND e.type IN ('succeeded','failed') ORDER BY at DESC LIMIT 1) f ON true WHERE j.task_name='process_event_revisions' AND j.status='doing' ORDER BY j.id LIMIT 5;
+SELECT state, wait_event_type, wait_event, round(extract(epoch from now()-query_start)) s, left(regexp_replace(query,'\s+',' ','g'),100) q FROM pg_stat_activity WHERE datname IS NOT NULL AND state<>'idle' AND pid<>pg_backend_pid();

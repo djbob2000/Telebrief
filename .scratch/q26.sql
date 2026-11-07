@@ -1,0 +1,3 @@
+\pset pager off
+EXPLAIN SELECT state.source_item_revision_id FROM event_revision_processing_state state JOIN source_item_revisions sir ON sir.id = state.source_item_revision_id WHERE (state.status IN ('pending','failed') AND state.updated_at <= now() - make_interval(secs => 600)) OR (state.status = 'running' AND state.claim_expires_at <= now()) ORDER BY sir.collected_at DESC, state.source_item_revision_id DESC LIMIT 500;
+SELECT state.source_item_revision_id, sir.collected_at FROM event_revision_processing_state state JOIN source_item_revisions sir ON sir.id = state.source_item_revision_id WHERE state.status IN ('pending','failed') AND state.updated_at <= now() - make_interval(secs => 600) ORDER BY sir.collected_at DESC, state.source_item_revision_id DESC LIMIT 3;
