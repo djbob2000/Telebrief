@@ -370,9 +370,9 @@ def test_localized_family_report_or_concrete_measurement_keeps_priority(text):
 
 
 def test_digest_plan_drops_only_unlocalized_private_positive_service_check():
-    from src.publication.digest_presentation import build_digest_presentation_plan
-
     from test_digest_synthesis import _fixture
+
+    from src.publication.digest_presentation import build_digest_presentation_plan
 
     cards, evidence, _, _ = _fixture(
         ("power", "", "Житель сообщил, что у него есть электричество, вода и газ.")
@@ -385,9 +385,9 @@ def test_digest_plan_drops_only_unlocalized_private_positive_service_check():
 
 
 def test_digest_plan_keeps_located_positive_service_observation():
-    from src.publication.digest_presentation import build_digest_presentation_plan
-
     from test_digest_synthesis import _fixture
+
+    from src.publication.digest_presentation import build_digest_presentation_plan
 
     cards, evidence, _, _ = _fixture(("power", "АКЗ", "Житель сообщает, что на АКЗ свет есть."))
     plan = build_digest_presentation_plan(

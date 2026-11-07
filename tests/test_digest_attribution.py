@@ -464,7 +464,9 @@ def test_fact_id_prefix_does_not_target_unrelated_item() -> None:
     )
     checkpoint = (
         draft,
-        SimpleNamespace(violations=("DIGEST_FACT_BINDING_MISMATCH:service_extent:infrastructure_gas_cc: x",)),
+        SimpleNamespace(
+            violations=("DIGEST_FACT_BINDING_MISMATCH:service_extent:infrastructure_gas_cc: x",)
+        ),
         None,
         None,
         SimpleNamespace(checks=(), prose_audit=SimpleNamespace(warnings=())),

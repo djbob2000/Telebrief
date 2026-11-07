@@ -502,7 +502,7 @@ def _historical_relative_day(item: Any, evidence: Mapping[str, PublicationEviden
                 token[:5] for token in re.findall(r"\w{4,}", sentence.casefold())
             )
             if found and len(shared) >= 2:
-                return sorted(found)[0]
+                return str(sorted(found)[0])
     return ""
 
 

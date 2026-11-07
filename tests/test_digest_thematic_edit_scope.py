@@ -136,9 +136,7 @@ def test_writer_may_defer_an_omitted_summary_unit_to_the_editor():
         allow_incomplete_fact_coverage=True,
         allow_incomplete_summary_coverage=True,
     )
-    scope = build_digest_block_edit_scope(
-        incomplete, plan=plan, block_ids=[block.block_id]
-    )
+    scope = build_digest_block_edit_scope(incomplete, plan=plan, block_ids=[block.block_id])
     validate_digest_block_replacement(
         incomplete,
         incomplete,
@@ -148,9 +146,7 @@ def test_writer_may_defer_an_omitted_summary_unit_to_the_editor():
         allow_incomplete_summary_coverage=True,
     )
     with pytest.raises(DigestRecompositionError, match="MEMBERSHIP"):
-        validate_digest_block_replacement(
-            incomplete, incomplete, scope=scope, plan=plan
-        )
+        validate_digest_block_replacement(incomplete, incomplete, scope=scope, plan=plan)
 
 
 def test_stale_fingerprint_and_lost_fact_rollback_entire_batch():
@@ -417,9 +413,7 @@ def test_thematic_editor_receives_and_can_restore_writer_omitted_facts():
     incomplete = _parse_composition_writer_output(
         incomplete_raw, plan=plan, allow_incomplete_fact_coverage=True
     )
-    scope = build_digest_block_edit_scope(
-        incomplete, plan=plan, block_ids=[plan_block.block_id]
-    )
+    scope = build_digest_block_edit_scope(incomplete, plan=plan, block_ids=[plan_block.block_id])
     fact_unit = {
         str(fact_id): str(unit.unit_id)
         for unit in plan_block.composition_units
@@ -459,6 +453,6 @@ def test_thematic_editor_receives_and_can_restore_writer_omitted_facts():
         )
     )
     validate_digest_block_replacement(incomplete, repaired, scope=scope, plan=plan)
-    assert {
-        fact_id for item in repaired.blocks[0].items for fact_id in item.covered_fact_ids
-    } == {str(fact.fact_id) for fact in plan_block.required_facts}
+    assert {fact_id for item in repaired.blocks[0].items for fact_id in item.covered_fact_ids} == {
+        str(fact.fact_id) for fact in plan_block.required_facts
+    }

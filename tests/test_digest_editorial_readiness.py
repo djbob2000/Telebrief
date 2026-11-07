@@ -4,7 +4,6 @@
 from dataclasses import replace
 
 import pytest
-
 from digest_evaluation_helpers import assessment_inputs
 
 

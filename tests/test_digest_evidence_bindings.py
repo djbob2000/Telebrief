@@ -566,7 +566,9 @@ def test_place_list_binds_each_value_to_its_own_place():
         sources,
         locations=locations,
     )
-    assert not any("UNSUPPORTED_CONCRETE_CLAIM" in v for v in correct.violations), correct.violations
+    assert not any("UNSUPPORTED_CONCRETE_CLAIM" in v for v in correct.violations), (
+        correct.violations
+    )
 
     swapped = validate_body(
         "По сообщениям жителей, в районе Химиков света нет пятые сутки, "

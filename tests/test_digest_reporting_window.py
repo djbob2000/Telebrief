@@ -5,7 +5,6 @@ import datetime as dt
 from dataclasses import replace
 
 import pytest
-
 from test_digest_source_material import _evidence
 
 from src.publication import digest_reporting_context
@@ -90,7 +89,9 @@ def _grace_draft(body: str):
         DigestNarrativeDraft,
     )
 
-    item = DigestEditorialItemDraft(item_id="item:grace", body=body, cited_support_ids=("ev:grace",))
+    item = DigestEditorialItemDraft(
+        item_id="item:grace", body=body, cited_support_ids=("ev:grace",)
+    )
     return DigestNarrativeDraft(blocks=(DigestNarrativeBlockDraft(block_id="b", items=(item,)),))
 
 
@@ -99,7 +100,9 @@ def test_relative_day_from_pre_window_report_requests_repair_without_blocking():
     from src.publication.digest_quality_diagnostics import audit_digest_prose_quality
 
     body = "Возле Грации, по более раннему сообщению жителя, свет отключили вчера в 12, а сегодня уже включили."
-    audit = audit_digest_prose_quality(_grace_draft(body), {"ev:grace": _grace_evidence("historical_source")})
+    audit = audit_digest_prose_quality(
+        _grace_draft(body), {"ev:grace": _grace_evidence("historical_source")}
+    )
     assert "HISTORICAL_RELATIVE_DAY" in {w.code for w in audit.warnings}
     assert audit.is_publishable
 

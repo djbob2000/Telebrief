@@ -80,7 +80,8 @@ def test_invented_date_and_unknown_ref_are_dropped():
 
 def test_add_without_grounded_summary_is_rejected():
     situations, _, stats = apply_memory_operations(
-        None, [_add(summary="Света нет 40 дней.", summary_refs=["fragment:1"])],
+        None,
+        [_add(summary="Света нет 40 дней.", summary_refs=["fragment:1"])],
         reports=REPORTS,
         as_of=AS_OF,
     )
@@ -165,7 +166,10 @@ LINE = "Перебои со светом, по словам жителя, про
 
 def test_digest_line_must_be_attributed_durable_and_grounded():
     ok, refs, _ = apply_memory_operations(
-        None, [_add(digest_line=LINE, digest_line_refs=["fragment:1"])], reports=REPORTS, as_of=AS_OF
+        None,
+        [_add(digest_line=LINE, digest_line_refs=["fragment:1"])],
+        reports=REPORTS,
+        as_of=AS_OF,
     )
     assert ok[0]["digest_line"] == LINE
     [row] = digest_background(MemorySnapshot(1, 1, AS_OF, tuple(ok), refs), as_of=AS_OF)
@@ -181,7 +185,10 @@ def test_digest_line_must_be_attributed_durable_and_grounded():
         "Перебои со светом, по словам жителя, продолжаются с 1 июля.",  # not in source
     ):
         rejected, _, _ = apply_memory_operations(
-            None, [_add(digest_line=bad, digest_line_refs=["fragment:1"])], reports=REPORTS, as_of=AS_OF
+            None,
+            [_add(digest_line=bad, digest_line_refs=["fragment:1"])],
+            reports=REPORTS,
+            as_of=AS_OF,
         )
         assert rejected[0]["digest_line"] == "", bad
 
@@ -225,7 +232,12 @@ def test_reasoning_settings_disable_or_enable_with_headroom():
     off = apply_reasoning_settings(
         {"max_tokens": 2800, "temperature": 0.2}, "none", headroom_tokens=12000
     )
-    assert off == {"max_tokens": 2800, "temperature": 0.2, "reasoning_effort": "none", "thinking": False}
+    assert off == {
+        "max_tokens": 2800,
+        "temperature": 0.2,
+        "reasoning_effort": "none",
+        "thinking": False,
+    }
     on = apply_reasoning_settings(
         {"max_tokens": 2800, "temperature": 0.2, "thinking": False}, "medium", headroom_tokens=12000
     )

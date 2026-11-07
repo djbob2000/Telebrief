@@ -84,10 +84,7 @@ def test_replay_allows_editor_to_restore_a_writer_omitted_story():
                         "body": item["body"],
                         "claims": [],
                     }
-                    for item in (
-                        [missing_item]
-                        + source_block["items"]
-                    )
+                    for item in ([missing_item] + source_block["items"])
                 ],
             }
             for source_block in complete["blocks"]
