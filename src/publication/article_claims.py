@@ -273,6 +273,13 @@ def _classify_quoted_span(inner: str) -> ClaimKind:
     return "direct_quote" if len(tokens) >= 2 else "quoted_term"
 
 
+def _numeral_in_text(token: str, text: str) -> bool:
+    """A number must appear as a whole number; other tokens may match as substrings."""
+    if token.isdigit():
+        return re.search(rf"(?<!\d){re.escape(token)}(?!\d)", text) is not None
+    return token in text
+
+
 @lru_cache(maxsize=65536)
 def _stem(word: str) -> str:
     """Conservative Russian/Ukrainian suffix trimmer for entity/relation token matching."""
@@ -1017,7 +1024,7 @@ def find_unsupported_claims(
             tokens = [
                 t
                 for t in norm_clean.split()
-                if len(t) > 1
+                if (len(t) > 1 or t.isdigit())
                 and not t.startswith("(")
                 and t not in ("с", "до", "по", "от", "в", "на")
             ]
@@ -1027,7 +1034,7 @@ def find_unsupported_claims(
             from src.publication.article_semantic_support import _EDITORIAL_GLUE
 
             all_tokens_found = all(
-                tok in comb_sup_clean
+                _numeral_in_text(tok, comb_sup_clean)
                 or _stem(tok) in _stemmed_text(comb_sup_clean)
                 or _token_matches_any_support(_stem(tok), norm_supports)
                 or any(tok in normalize_support_text(st) for st in all_known_draft_supports)
