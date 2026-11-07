@@ -1098,6 +1098,9 @@ def validate_article_draft(
             sentences = _split_sentences_safe(unit_text)
             if len(sentences) >= 2:
                 seen_unit_norms: list[str] = []
+                # Token and number sets of each kept sentence, computed once so
+                # the pairwise comparison below does not re-stem earlier text.
+                seen_profiles: list[tuple[set[str], set[str]]] = []
                 loop_detected = False
                 for sent in sentences:
                     norm = _normalize_for_dedup(sent)
@@ -1109,14 +1112,8 @@ def validate_article_draft(
                     toks = {_stem(w) for w in _TOKEN_RE.findall(norm.lower()) if len(w) >= 3}
                     if len(toks) >= 5:
                         s_nums = set(re.findall(r"\b\d+\b", norm))
-                        for prev_norm in seen_unit_norms:
-                            prev_toks = {
-                                _stem(w)
-                                for w in _TOKEN_RE.findall(prev_norm.lower())
-                                if len(w) >= 3
-                            }
+                        for prev_toks, prev_s_nums in seen_profiles:
                             if len(prev_toks) >= 5:
-                                prev_s_nums = set(re.findall(r"\b\d+\b", prev_norm))
                                 if s_nums and prev_s_nums and s_nums != prev_s_nums:
                                     continue
                                 shared = toks & prev_toks
@@ -1126,6 +1123,7 @@ def validate_article_draft(
                         if loop_detected:
                             break
                     seen_unit_norms.append(norm)
+                    seen_profiles.append((toks, set(re.findall(r"\b\d+\b", norm))))
 
                 if loop_detected:
                     issues.append(

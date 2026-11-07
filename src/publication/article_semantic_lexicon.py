@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 
 _TOKEN_RE = re.compile(r"[A-Za-zА-Яа-яЁёІіЇїЄєҐґ0-9]+")
 
@@ -79,6 +80,7 @@ def _normalize_phrases(text: str) -> str:
     return t
 
 
+@lru_cache(maxsize=65536)
 def canonicalize_semantic_token(token: str) -> str:
     norm = _norm(token)
     # Exclude false-positive water matches like "проводной" (wired)
@@ -96,6 +98,7 @@ def canonicalize_semantic_token(token: str) -> str:
     return norm
 
 
+@lru_cache(maxsize=16384)
 def canonical_semantic_concepts(text: str) -> frozenset[str]:
     lowered = _normalize_phrases(text)
     concepts = {canonicalize_semantic_token(tok) for tok in _TOKEN_RE.findall(lowered)}

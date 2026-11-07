@@ -273,6 +273,7 @@ def _classify_quoted_span(inner: str) -> ClaimKind:
     return "direct_quote" if len(tokens) >= 2 else "quoted_term"
 
 
+@lru_cache(maxsize=65536)
 def _stem(word: str) -> str:
     """Conservative Russian/Ukrainian suffix trimmer for entity/relation token matching."""
     w = (
@@ -728,6 +729,13 @@ def extract_concrete_claims(text: str) -> tuple[ConcreteClaim, ...]:
         )
 
     return tuple(claims)
+
+
+def clear_text_caches() -> None:
+    """Release the memoized text helpers; they refill on the next article."""
+    _stem.cache_clear()
+    canonical_semantic_concepts.cache_clear()
+    canonicalize_semantic_token.cache_clear()
 
 
 def _stemmed_text(text: str) -> str:
