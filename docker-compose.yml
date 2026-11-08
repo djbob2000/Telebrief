@@ -1,4 +1,23 @@
 services:
+  telebrief-migrate:
+    image: ghcr.io/djbob2000/telebrief:${IMAGE_TAG:-dev}
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - ${TELEBRIEF_ENV_FILE:-.env}
+    environment:
+      - PYTHONUNBUFFERED=1
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - TZ=UTC
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-telebrief}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-telebrief}
+      - DATABASE_MAX_POOL_SIZE=10
+      - DATABASE_MIN_POOL_SIZE=1
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+    command: ["python", "scripts/migrate.py"]
+
   telebrief-app:
     image: ghcr.io/djbob2000/telebrief:${IMAGE_TAG:-dev}
     container_name: telebrief-app
@@ -6,8 +25,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      telebrief-migrate:
+        condition: service_completed_successfully
     env_file:
-      - .env
+      - ${TELEBRIEF_ENV_FILE:-.env}
     environment:
       - PYTHONUNBUFFERED=1
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
@@ -42,8 +63,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      telebrief-migrate:
+        condition: service_completed_successfully
     env_file:
-      - .env
+      - ${TELEBRIEF_ENV_FILE:-.env}
     environment:
       - PYTHONUNBUFFERED=1
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
@@ -72,8 +95,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      telebrief-migrate:
+        condition: service_completed_successfully
     env_file:
-      - .env
+      - ${TELEBRIEF_ENV_FILE:-.env}
     environment:
       - PYTHONUNBUFFERED=1
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
@@ -102,8 +127,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      telebrief-migrate:
+        condition: service_completed_successfully
     env_file:
-      - .env
+      - ${TELEBRIEF_ENV_FILE:-.env}
     environment:
       - PYTHONUNBUFFERED=1
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
