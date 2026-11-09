@@ -230,3 +230,53 @@ def test_higher_priority_story_with_course_location_keeps_its_rubric(
     )
 
     assert actual == expected_rubric
+
+
+@pytest.mark.parametrize(
+    ("topic", "summary"),
+    [
+        (
+            "Житель сообщает о шумной ночи и множестве «бахов»",
+            "Житель сообщает, что сегодня шумно и слышно много «бахов».",
+        ),
+        (
+            "Житель сообщает о сильном звуке, от которого «чуть не вынесло двери»",
+            "Житель сообщает о сильном звуке, от которого, по его словам, чуть не вынесло двери.",
+        ),
+        ("Ночью в районе порта сильно бахнуло", "Жители слышали один громкий удар."),
+        ("Слышно «бах бах» со стороны порта", "Житель описывает звуки ночью."),
+        ("В доме на Лермонтова выбило окна", "Жильцы заклеивают проёмы плёнкой."),
+    ],
+    ids=["bakhi-plural", "doors-blown-out", "bakhnulo", "bakh-bakh", "windows-blown-out"],
+)
+def test_blast_described_by_sound_or_effect_joins_the_safety_rubric(
+    topic: str,
+    summary: str,
+) -> None:
+    card = _card(topic=topic, summary=summary, category="")
+
+    actual = _classify(card, _rubrics("focus", "infrastructure", "safety"))
+
+    assert actual == "safety"
+
+
+@pytest.mark.parametrize(
+    ("topic", "summary"),
+    [
+        ("На улице Баха дали свет", "По сообщению жителя, на улице Баха, 42 появился свет."),
+        ("В районе Баха свет есть", "Житель сообщает, что свет есть только в районе Баха."),
+        (
+            "У автовокзала постоянно слышен грохот генераторов",
+            "Житель жалуется на шум генераторов у автовокзала.",
+        ),
+        ("Выбило автомат, в доме нет света", "Жильцы ждут электрика."),
+        ("Рабочие вынесли двери при ремонте подъезда", "В подъезде меняют входную группу."),
+    ],
+    ids=["bach-street", "bach-district", "generator-noise", "tripped-breaker", "renovation-doors"],
+)
+def test_lookalike_words_do_not_reach_the_safety_rubric(topic: str, summary: str) -> None:
+    card = _card(topic=topic, summary=summary, category="")
+
+    actual = _classify(card, _rubrics("focus", "infrastructure", "safety"))
+
+    assert actual != "safety"
