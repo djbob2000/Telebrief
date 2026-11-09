@@ -148,6 +148,18 @@ async def generate_publication(context: Any, run_id: int) -> None:
         retried = await _schedule_digest_retry(run)
         await _mark_publication_intent_failed(run, error_kind=error_kind, notify=not retried)
         return
+    except Exception as exc:
+        # A provider outage or a timeout is just as terminal once generate() has
+        # marked the run failed: the job retry only skips it. Close the intent so
+        # its slot stops looking live and the owner hears about it. A failure
+        # before that mark leaves the run retryable, so the intent stays open.
+        latest = await _load_publication_run(run_id)
+        if latest is not None and getattr(latest, "status", None) == "failed":
+            await _mark_publication_intent_failed(
+                latest,
+                error_kind=getattr(latest, "error_kind", None) or type(exc).__name__,
+            )
+        raise
 
 
 @procrastinate_app.task(
