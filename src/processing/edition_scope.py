@@ -392,6 +392,34 @@ def _settlement_anchors(
     return {anchor for anchor in anchors if anchor}
 
 
+def _city_name_key(name: str) -> str:
+    """Fold a city name so its Russian and Ukrainian spellings compare equal."""
+    return re.sub(r"[ьъ'’]", "", _norm_geo_text(name))
+
+
+def local_detail_anchors(
+    scope: EditionScopeConfig, geo_context: EditionGeographyContext | None
+) -> set[str]:
+    """Anchors that say where inside the edition's area something happened.
+
+    The edition's own city is left out: naming it adds no location detail to a
+    report from that city's chat.
+    """
+    own_city = {_city_name_key(scope.name)}
+    if geo_context is not None:
+        own_city.add(_city_name_key(geo_context.edition_name))
+    return {
+        anchor
+        for anchor in _focus_anchors(scope, geo_context)
+        if _city_name_key(anchor) not in own_city
+    }
+
+
+def names_anchor(text: str, anchor: str) -> bool:
+    """Return True when a text names one geographic anchor."""
+    return _contains_any_anchor(text, {anchor})
+
+
 def _external_locations(
     scope: EditionScopeConfig, geo_context: EditionGeographyContext | None
 ) -> set[str]:

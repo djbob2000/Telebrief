@@ -2958,6 +2958,29 @@ def _extract_distinctive_entities(text: str) -> set[str]:
     return entities
 
 
+def _single_area_episodes(
+    cards: Sequence[Any], geographic_scopes_by_card: Mapping[str, Mapping[str, str]]
+) -> frozenset[str]:
+    """Return the incidents one digest item may carry in this rubric.
+
+    An unlocated remark may join the located reports of its incident. Reports
+    from two named areas stay apart: geography is a composition boundary, and a
+    long chain of links must not collapse a night of incidents into one item.
+    """
+    areas_by_episode: dict[str, list[frozenset[str]]] = {}
+    for card in cards:
+        episode_id = getattr(card, "episode_id", "")
+        if episode_id:
+            areas_by_episode.setdefault(episode_id, []).append(
+                frozenset(geographic_scopes_by_card[card.id])
+            )
+    return frozenset(
+        episode_id
+        for episode_id, areas in areas_by_episode.items()
+        if len(areas) >= 2 and len(set(areas) - {frozenset()}) <= 1
+    )
+
+
 def build_thematic_topic_bundles(
     cards: Sequence[Any],
     *,
@@ -3022,6 +3045,7 @@ def build_thematic_topic_bundles(
         geographic_scopes_by_card = {
             card.id: _card_geographic_scopes(card, geography_resolver) for card in r_cards
         }
+        one_item_episodes = _single_area_episodes(r_cards, geographic_scopes_by_card)
         for c in r_cards:
             t_key, _, _ = _canonical_topic_family(c, rid)
             # Rubric affinity: align cross-rubric card contamination with the rubric's purpose
@@ -3047,6 +3071,11 @@ def build_thematic_topic_bundles(
             c_full_text = f"{getattr(c, 'topic', '')} {getattr(c, 'summary', '')}"
             c_entities = _extract_distinctive_entities(c_full_text)
             p_anchors = [a for a in _PRIORITY_ANCHORS if a in c_entities] if c_entities else []
+
+            episode_id = getattr(c, "episode_id", "")
+            if episode_id in one_item_episodes and not p_anchors:
+                groups_by_key.setdefault(f"episode:{episode_id}", []).append(c)
+                continue
 
             if p_anchors:
                 main_entity = p_anchors[0]

@@ -222,6 +222,7 @@ class StoryCard:
     tags: list[str] = field(default_factory=list)
     rubric_id: str = ""
     category: str = ""  # deprecated compatibility input only
+    episode_id: str = ""
     hard_facts: list[StoryElement] = field(default_factory=list)
     community_observations: list[StoryElement] = field(default_factory=list)
     useful_details: list[StoryElement] = field(default_factory=list)
@@ -286,6 +287,7 @@ class StoryCard:
             tags=tags,
             rubric_id=rubric_id,
             category=category,
+            episode_id=str(data.get("episode_id", "")).strip(),
             hard_facts=hard_facts,
             community_observations=community_observations,
             useful_details=useful_details,

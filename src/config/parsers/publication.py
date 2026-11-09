@@ -595,6 +595,24 @@ def _parse_event_pipeline_config(settings_dict: dict) -> EventPipelineConfig:
         active_window_hours=_val_pos_int("active_window_hours", 72),
         join_similarity=_val_unit_float("join_similarity", 0.84),
         max_cluster_candidates=_val_pos_int("max_cluster_candidates", 20),
+        thin_fragment_routing_enabled=_val_bool("thin_fragment_routing_enabled", True),
+        thin_fragment_max_content_words=_val_pos_int("thin_fragment_max_content_words", 2),
+        thin_fragment_near_identical_similarity=_val_unit_float(
+            "thin_fragment_near_identical_similarity", 0.95
+        ),
+        thin_fragment_conversation_minutes=_val_pos_int("thin_fragment_conversation_minutes", 30),
+        conversation_timeline_enabled=_val_bool("conversation_timeline_enabled", True),
+        conversation_timeline_messages_before=_val_pos_int(
+            "conversation_timeline_messages_before", 10
+        ),
+        conversation_timeline_messages_after=_val_nonneg_int(
+            "conversation_timeline_messages_after", 3
+        ),
+        conversation_timeline_max_gap_minutes=_val_pos_int(
+            "conversation_timeline_max_gap_minutes", 45
+        ),
+        conversation_timeline_max_lines=_val_pos_int("conversation_timeline_max_lines", 60),
+        conversation_timeline_line_chars=_val_pos_int("conversation_timeline_line_chars", 140),
         embedding_batch_size=_val_pos_int("embedding_batch_size", 128),
         direct_analysis_min_fragments=_val_pos_int("direct_analysis_min_fragments", 3),
         direct_analysis_min_unique_sources=_val_pos_int("direct_analysis_min_unique_sources", 2),

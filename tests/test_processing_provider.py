@@ -162,6 +162,7 @@ def test_event_authority_from_runtime_uses_the_shared_processing_resolver() -> N
     config.settings.event_pipeline = SimpleNamespace(
         triage_max_output_tokens=100,
         triage_reasoning_effort="low",
+        conversation_timeline_enabled=False,
     )
     cluster_repository = object()
 

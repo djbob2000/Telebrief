@@ -19,6 +19,11 @@ from src.config_loader import load_config
 from src.embedding_providers import create_embedding_provider
 from src.jobs.app import procrastinate_app
 from src.processing.cluster_index import ClusterIndex, ClusterIndexCache
+from src.processing.conversation import (
+    ThinFragmentRouting,
+    thin_routing_from_config,
+    timeline_settings_from_config,
+)
 from src.processing.edition_scope import resolve_edition_scope, scope_config_hash
 from src.processing.embeddings import (
     EmbeddingBatch,
@@ -372,6 +377,7 @@ async def _process_event_revisions(
             active_window_hours=cfg.active_window_hours,
             max_cluster_candidates=cfg.max_cluster_candidates,
             timings=timings,
+            thin_routing=thin_routing_from_config(cfg),
         )
         stats["assignments"] += len(chunk)
 
@@ -474,6 +480,7 @@ async def _cluster_chunk_with_retry(
     active_window_hours: int,
     max_cluster_candidates: int,
     timings: dict[str, float],
+    thin_routing: ThinFragmentRouting | None = None,
 ) -> None:
     """Cluster one chunk of fragments in one transaction, retrying conflicts.
 
@@ -514,6 +521,7 @@ async def _cluster_chunk_with_retry(
                         active_window_hours=active_window_hours,
                         max_cluster_candidates=max_cluster_candidates,
                         candidate_index=index,
+                        thin_routing=thin_routing,
                     )
                     if index is not None and result.state_change is not None:
                         index.apply(result.state_change)
@@ -556,6 +564,7 @@ async def run_legacy_coalesce_dirty_stories(
         uow=runtime.uow,
         max_output_tokens=cfg.triage_max_output_tokens,
         reasoning_effort=cfg.triage_reasoning_effort,
+        conversation_timeline=timeline_settings_from_config(cfg),
     )
     analysis_service = EventAnalysisService(
         ai_cascade=ai_provider,

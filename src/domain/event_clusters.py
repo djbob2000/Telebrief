@@ -79,7 +79,7 @@ class ClusterAssignmentResult:
 
     fragment_id: int
     story_id: int
-    assignment_kind: Literal["new_story", "vector_join", "manual"]
+    assignment_kind: Literal["new_story", "vector_join", "reply_join", "manual"]
     similarity: float | None
     assignment_id: int
     # Set only when this call changed a cluster state; None for a replayed assignment.

@@ -18,6 +18,11 @@ from src.config_loader import Config
 from src.db.uow import DatabaseUnitOfWork
 from src.embedding_providers import create_embedding_provider
 from src.publication.digest_contracts import DIGEST_PUBLICATION_TYPES
+from src.publication.digest_episodes import (
+    inherit_episode_rubrics,
+    load_incident_roots,
+    mark_digest_episodes,
+)
 from src.publication.editorial_adapter import (
     DatabaseGenerationAttemptObserver,
     KnowledgeEditorialAdapter,
@@ -914,6 +919,18 @@ class PublicationGenerationService:
 
         try:
             if run.publication_type in DIGEST_PUBLICATION_TYPES:
+                async with self.uow.transaction() as conn:
+                    incident_roots = await load_incident_roots(
+                        conn, frozen.analysis.cards, snapshot_at=run.snapshot_at
+                    )
+                frozen = replace(
+                    frozen,
+                    analysis=replace(
+                        frozen.analysis,
+                        cards=mark_digest_episodes(frozen.analysis.cards, incident_roots),
+                    ),
+                )
+
                 # Rubric classification (semantic embedding assignment)
                 if (
                     frozen.analysis.cards
@@ -932,6 +949,11 @@ class PublicationGenerationService:
 
                         classified_cards, assignments = await self.rubric_classifier.classify(
                             frozen.analysis.cards,
+                            rubrics=self.config.settings.digest_rubrics,
+                        )
+                        classified_cards, assignments = inherit_episode_rubrics(
+                            classified_cards,
+                            assignments,
                             rubrics=self.config.settings.digest_rubrics,
                         )
                         frozen = replace(

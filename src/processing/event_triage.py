@@ -27,6 +27,15 @@ from src.domain.event_payload import (
 )
 from src.domain.service_state import ServiceStatePayload
 from src.llm_telemetry import llm_call_context
+from src.processing.conversation import (
+    SAME_INCIDENT_RELATION,
+    ConversationTimeline,
+    ConversationTimelineSettings,
+    TimelineAnchor,
+    context_only_details,
+    load_conversation_timeline,
+    withhold_context_only_evidence,
+)
 from src.processing.edition_scope import (
     SCOPE_VERSION,
     EditionScopeClass,
@@ -51,7 +60,7 @@ from src.repositories.event_clusters import EventClusterRepository
 
 logger = logging.getLogger(__name__)
 
-TRIAGE_VERSION = "v18"
+TRIAGE_VERSION = "v19"
 
 # An explicit claim that the supplied input is absent is a response failure,
 # not a geographic or editorial judgment. Keep this narrow: uncertainty about
@@ -346,8 +355,18 @@ CONTEXT VS EVIDENCE & REPLY INHERITANCE:
 - source_fragment_ids must identify the exact source fragments whose own text directly supports the material claims in that evidence item. Never cite a reply fragment for a separate claim stated only by its parent.
 - Reply-parent text is supplied separately as unnumbered context, not as part of the reply's source text and not as citable support. It may clarify the referent, service, or local place in a clearly dependent reply (for example, "Да, минут десять назад").
 - A direct short answer may support the answer it gives. It does not support separate status, duration, cause, or other details stated only by the parent. If a parent-only fact has its own separately listed source fragment, cite that fragment; otherwise do not turn the parent-only fact into a PUBLISH claim for the reply.
-- Chronologically adjacent messages without an explicit reply link are CONTEXT_ONLY for interpreting tone and flow, and must NEVER serve as factual grounding for a claim.
-- An unanchored conversational remark with no local place mentions and no explicit reply-parent anchor is UNCERTAIN scope (normalizes to DROP).
+- Chronologically adjacent messages without an explicit reply link are CONTEXT_ONLY for interpreting tone and flow, and must NEVER serve as factual grounding for a claim. The only thing they may settle is which service a remark leaves unnamed, under the CHAT TIMELINE rule below.
+- An unanchored conversational remark with no local place mentions and no explicit reply-parent anchor is UNCERTAIN scope (normalizes to DROP), unless the CHAT TIMELINE rule below establishes where it happens.
+
+CHAT TIMELINE:
+- The request may include one CHAT TIMELINE block: the messages around the judged Stories, oldest first, labelled C1, C2 and so on. "↩ C5" marks a reply to line C5. "[Story #N]" marks a line that belongs to that judged Story. A "--- pause ---" line means the chat fell silent there, so lines on its two sides are separate conversations.
+- Residents write short remarks that only make sense in sequence. Read a short remark against the lines right before and after it to learn what it refers to. Many neighbouring lines are unrelated announcements or arguments; ignore those.
+- A timeline line is background, never evidence. Never cite it, and never copy its place, number, time, cause, or event into the evidence_items, headline, or digest_summary of a Story that does not state that detail itself. "Двери чуть не вынесло" next to a line about blasts in a named district stays a report about the doors; it does not become a report about that district or about a blast.
+- Scope: a remark with no place of its own may be LOCAL when the lines right around it show residents discussing a concrete event at a focus place at that moment and the remark plainly continues that discussion. Cite the remark's own fragment as the scope basis. A local place appearing somewhere in the timeline is not enough.
+- Retention: a first-hand observation of an event the timeline shows to be under way (what was seen or heard, how many times, when it stopped) is useful local reporting even when short or emotional. A reaction that adds nothing observable stays CONTEXT or DROP.
+- Unnamed service: when a remark states availability without naming the service ("Колония нету", "на Гайдара нет") and its reply chain or the lines right before it talk about exactly one service, the evidence may name that service, attributed to the resident. If several services are being discussed, keep the remark's own words and name none.
+- Questions and answers: a Story whose own lines only ask stays a question. An answer on another timeline line belongs to that line's Story, so never put it into this Story or quote it here.
+- same_incident_context_ids: the labels of timeline lines that report one concrete event at one time (a blast, a fire, an accident, a burst main) and reports of that event's effects. Lines of other judged Stories count. Use [] for ordinary availability talk: questions and answers about whether there is power or water, complaints, jokes and reactions, even within one conversation about one outage. Lines from a different place or across a "--- pause ---" are a different incident unless a line says they share one failure. Never list a line that belongs to this Story.
 
 EVIDENCE SOURCE OWNERSHIP:
 - Every factual clause in an evidence item's text must be supported by its cited source_fragment_ids. Cite multiple IDs only when their own source texts support the corresponding parts of the item.
@@ -393,6 +412,7 @@ Respond ONLY with a valid JSON object containing a "results" array:
       "exclusion_reason": "commercial_classified | private_classified | directory_payload | obvious_noise | null",
       "confidence": 0.98,
       "reason": "Brief explanation",
+      "same_incident_context_ids": ["C3"],
       "brief_payload": {
         "enrichment_level": "brief",
         "topic": "Concise topic label",
@@ -580,6 +600,7 @@ def build_gate_response_format(story_count: int) -> dict[str, Any]:
             },
             "confidence": {"type": "number", "minimum": 0, "maximum": 1},
             "reason": {"type": "string"},
+            "same_incident_context_ids": {"type": "array", "items": {"type": "string"}},
             "brief_payload": {"anyOf": [brief_payload_schema, {"type": "null"}]},
         },
         "required": [
@@ -593,6 +614,7 @@ def build_gate_response_format(story_count: int) -> dict[str, Any]:
             "exclusion_reason",
             "confidence",
             "reason",
+            "same_incident_context_ids",
             "brief_payload",
         ],
     }
@@ -632,6 +654,7 @@ class StoryGateResult:
     reason: str
     brief_payload: EventPayload | None
     scope_basis_fragment_ids: tuple[int, ...] = ()
+    same_incident_story_ids: tuple[int, ...] = ()
 
     @property
     def decision(self) -> str:
@@ -673,6 +696,7 @@ class StoryTriageService:
         uow: Any | None = None,
         max_output_tokens: int = 12_288,
         reasoning_effort: str | None = "low",
+        conversation_timeline: ConversationTimelineSettings | None = None,
     ) -> None:
         self.ai = ai_cascade
         self.cluster_repo = cluster_repo or EventClusterRepository()
@@ -681,6 +705,7 @@ class StoryTriageService:
         self.uow = uow
         self.max_output_tokens = max_output_tokens
         self.reasoning_effort = reasoning_effort
+        self.conversation_timeline = conversation_timeline
 
     async def triage_stories_batch(
         self,
@@ -798,7 +823,8 @@ class StoryTriageService:
                 SELECT sf.story_id, f.id, f.text_content, s.id, s.name,
                        COALESCE(s.role, s.kind, 'unknown'),
                        COALESCE(si.published_at, si.first_collected_at, f.created_at),
-                       si.parent_item_id
+                       si.parent_item_id,
+                       si.id
                 FROM story_fragments sf
                 JOIN source_fragments f ON f.id = sf.fragment_id
                 JOIN source_item_revisions sir ON sir.id = f.source_item_revision_id
@@ -828,7 +854,8 @@ class StoryTriageService:
                     SELECT sf.story_id, f.id, f.text_content, s.id, s.name,
                            COALESCE(s.role, s.kind, 'unknown'),
                            COALESCE(si.published_at, si.first_collected_at, f.created_at),
-                           si.parent_item_id
+                           si.parent_item_id,
+                           si.id
                     FROM target_assignment ta
                     JOIN story_fragments sf ON sf.story_id = ta.story_id
                     JOIN source_fragments f ON f.id = sf.fragment_id
@@ -866,6 +893,7 @@ class StoryTriageService:
                 # Some unit-test/fake cursors and pre-parent_item_id query
                 # adapters still provide the original seven-column row.
                 parent_item_id = int(row[7]) if len(row) > 7 and row[7] is not None else None
+                item_id = int(row[8]) if len(row) > 8 and row[8] is not None else None
                 if parent_item_id is not None:
                     all_parent_item_ids.add(parent_item_id)
                 story_fragments_map[sid].append(
@@ -878,6 +906,7 @@ class StoryTriageService:
                         "source_role": source_role,
                         "observed_at": obs_time,
                         "parent_item_id": parent_item_id,
+                        "item_id": item_id,
                     }
                 )
                 all_story_frag_ids[sid].add(fid)
@@ -909,6 +938,10 @@ class StoryTriageService:
                 story_fragments_map,
             )
 
+            timeline = await self._load_timeline(
+                read_conn, story_fragments_map, edition_id, source_cutoff_at
+            )
+
             # 3. Load dynamic recent subject hints
             recent_hints = await self._load_recent_subject_hints(read_conn, edition_id)
 
@@ -919,7 +952,10 @@ class StoryTriageService:
             row_slug = await cur_slug.fetchone()
             edition_slug = str(row_slug[0]) if row_slug else "unknown"
 
-        from src.domain.edition_geography import resolve_edition_geography
+        from src.domain.edition_geography import (
+            resolve_edition_geography,
+            standardize_edition_area_slang,
+        )
 
         geo_context = resolve_edition_geography(edition_slug, scope_config.name)
 
@@ -945,6 +981,16 @@ class StoryTriageService:
                         selected_frags.append(frag)
                     if len(selected_frags) >= max_gate_fragments:
                         break
+
+            # Replies joined by their link would otherwise crowd out the
+            # message they answer, which is the first report of the Story.
+            if (
+                self.conversation_timeline is not None
+                and frags
+                and frags[-1] not in selected_frags
+                and selected_frags
+            ):
+                selected_frags[-1] = frags[-1]
 
             # Sort selected by fragment_id for stable reading
             selected_frags.sort(key=lambda x: x["fragment_id"])
@@ -983,8 +1029,11 @@ class StoryTriageService:
             f"Minimum confidence for a hard DROP: {min_ignore_confidence:g}. "
             "Below this threshold, supply a faithful brief; keep background-only evidence CONTEXT.",
             hint_text,
-            "Stories for Gate V2 triage and brief synthesis:",
         ]
+        rendered_timeline = timeline.render(s.story_id for s in uncached_stories)
+        if rendered_timeline:
+            prompt_lines.extend([rendered_timeline, ""])
+        prompt_lines.append("Stories for Gate V2 triage and brief synthesis:")
 
         for s in uncached_stories:
             excerpts = story_sampled_excerpts.get(s.story_id, [])
@@ -1009,7 +1058,12 @@ class StoryTriageService:
         )
         model_name = getattr(self.ai, "model_name", None) or self.model or "default"
 
-        if max_input_chars is not None and len(user_prompt) > max_input_chars:
+        # The timeline has its own ceiling (max_lines), so it must not take room
+        # from the Stories this batch was sized for.
+        if (
+            max_input_chars is not None
+            and len(user_prompt) - len(rendered_timeline) > max_input_chars
+        ):
             try:
                 async with _get_conn() as err_conn:
                     await err_conn.execute(
@@ -1307,6 +1361,7 @@ class StoryTriageService:
             # Hard exclusion audit on story fragments
             story_frag_texts: dict[int, str] = {}
             story_reply_parent_contexts: dict[int, str] = {}
+            conversation_service_families: dict[int, str] = {}
             for sf in story_frags:
                 fid = int(sf.get("fragment_id") or sf.get("id", 0))
                 txt = str(sf.get("text") or sf.get("text_content", ""))
@@ -1317,7 +1372,31 @@ class StoryTriageService:
                 if p_id is not None and p_id in parent_texts:
                     story_reply_parent_contexts[fid] = parent_texts[p_id]
                 story_frag_texts[fid] = txt
+                omitted_service = timeline.omitted_service_family(
+                    sf.get("item_id"), parent_text=story_reply_parent_contexts.get(fid, "")
+                )
+                if omitted_service is not None:
+                    conversation_service_families[fid] = omitted_service
             hard_audit = evaluate_story_hard_exclusion(story_frags)
+            timeline_texts = timeline.context_texts_for(s.story_id)
+            message_contexts = [
+                _fragment_message_context(sf, same_message_context) for sf in story_frags
+            ]
+            # Gate sees each message's date, so the day it was posted counts as
+            # stated. Official area names replace slang by contract (§3).
+            story_own_texts = [
+                *(standardize_edition_area_slang(c.text, edition_slug) for c in message_contexts),
+                *(
+                    standardize_edition_area_slang(text, edition_slug)
+                    for text in story_reply_parent_contexts.values()
+                ),
+                *(
+                    text
+                    for context in message_contexts
+                    for text in (*context.earlier_message_texts, *context.later_message_texts)
+                ),
+                *(str(sf["observed_at"].day) for sf in story_frags),
+            ]
 
             # Parse brief_payload if present
             raw_brief = item.get("brief_payload")
@@ -1336,11 +1415,22 @@ class StoryTriageService:
                         story_frag_texts,
                         reply_parent_context_by_fragment_id=story_reply_parent_contexts,
                         edition_name=scope_config.name,
+                        conversation_service_family_by_fragment_id=conversation_service_families,
                     )
                     rejected_publish_extraction = any(
                         pre_service_normalization.evidence_items[index].publication_use == "PUBLISH"
                         and brief_payload.evidence_items[index].publication_use != "PUBLISH"
                         for index in service_audit.rejected_evidence_indexes
+                    )
+                    brief_payload, withheld_context_detail = withhold_context_only_evidence(
+                        brief_payload,
+                        own_texts=story_own_texts,
+                        context_texts=timeline_texts,
+                        scope=scope_config,
+                        geo_context=geo_context,
+                    )
+                    rejected_publish_extraction = (
+                        rejected_publish_extraction or withheld_context_detail
                     )
                     if service_audit.rejected_count > 0:
                         self.logger.debug(
@@ -1397,6 +1487,7 @@ class StoryTriageService:
                             story_frag_texts,
                             reply_parent_context_by_fragment_id=story_reply_parent_contexts,
                             edition_name=scope_config.name,
+                            conversation_service_family_by_fragment_id=conversation_service_families,
                         )
                     else:
                         # Unsafe drop without a valid brief must defer
@@ -1418,6 +1509,7 @@ class StoryTriageService:
                         story_frag_texts,
                         reply_parent_context_by_fragment_id=story_reply_parent_contexts,
                         edition_name=scope_config.name,
+                        conversation_service_family_by_fragment_id=conversation_service_families,
                     )
                 else:
                     mark_invalid(s.story_id, "invalid_retention_or_enrichment")
@@ -1480,14 +1572,30 @@ class StoryTriageService:
                 mark_invalid(s.story_id, "invalid_scope_classification")
                 continue
 
+            # A summary that names a detail only the timeline states would carry
+            # another message's place or number into the digest.
+            if (
+                retention == "KEEP"
+                and brief_payload is not None
+                and any(
+                    context_only_details(
+                        text,
+                        own_texts=story_own_texts,
+                        context_texts=timeline_texts,
+                        scope=scope_config,
+                        geo_context=geo_context,
+                    )
+                    for text in (brief_payload.headline, brief_payload.digest_summary)
+                )
+            ):
+                mark_invalid(s.story_id, "context_detail_in_summary")
+                continue
+
             # "Девятиэтажки все горят" reports lit windows. A fire reading whose
             # sources only say "горит", with no fire, strike, or burning object in
             # any source, parent, or same-message text, is a misread extraction:
             # route it to bounded recovery, never publish it.
             if retention == "KEEP" and brief_payload is not None:
-                message_contexts = [
-                    _fragment_message_context(sf, same_message_context) for sf in story_frags
-                ]
                 if unsupported_fire_reading(
                     brief_payload,
                     source_texts=[context.text for context in message_contexts],
@@ -1518,6 +1626,13 @@ class StoryTriageService:
                 reason=reason,
                 brief_payload=brief_payload,
                 scope_basis_fragment_ids=scope_basis_ids,
+                same_incident_story_ids=timeline.same_incident_story_ids(
+                    item.get("same_incident_context_ids"),
+                    story_id=s.story_id,
+                    own_texts=story_own_texts,
+                    scope=scope_config,
+                    geo_context=geo_context,
+                ),
             )
             new_valid_results.append(gate_res)
 
@@ -1666,6 +1781,8 @@ class StoryTriageService:
                             brief_json,
                         ),
                     )
+                    if res.retention == "KEEP":
+                        await self._record_incident_links(write_conn, res)
         except Exception as exc:
             try:
                 async with _get_conn() as err_conn:
@@ -1725,6 +1842,53 @@ class StoryTriageService:
                 sid: invalid_reasons[sid] for sid in invalid_story_ids if sid in invalid_reasons
             },
         )
+
+    async def _load_timeline(
+        self,
+        conn: psycopg.AsyncConnection,
+        story_fragments_map: Mapping[int, list[dict[str, Any]]],
+        edition_id: int,
+        source_cutoff_at: dt.datetime | None,
+    ) -> ConversationTimeline:
+        """Load the chat around the newest fragments of the judged Stories."""
+        settings = self.conversation_timeline
+        if settings is None:
+            return ConversationTimeline()
+        anchors = [
+            TimelineAnchor(source_id=int(sf["source_id"]), observed_at=sf["observed_at"])
+            for frags in story_fragments_map.values()
+            for sf in frags[: settings.anchors_per_story]
+        ]
+        return await load_conversation_timeline(
+            conn,
+            anchors,
+            edition_id=edition_id,
+            settings=settings,
+            source_cutoff_at=source_cutoff_at,
+        )
+
+    async def _record_incident_links(
+        self, conn: psycopg.AsyncConnection, result: StoryGateResult
+    ) -> None:
+        """Remember which other Stories Gate read as the same incident."""
+        for linked_story_id in result.same_incident_story_ids:
+            await conn.execute(
+                """
+                INSERT INTO story_relations (from_story_id, to_story_id, relation_type)
+                SELECT %(story)s, %(linked)s, %(relation)s
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM story_relations
+                    WHERE from_story_id = %(story)s
+                      AND to_story_id = %(linked)s
+                      AND relation_type = %(relation)s
+                )
+                """,
+                {
+                    "story": result.story_id,
+                    "linked": linked_story_id,
+                    "relation": SAME_INCIDENT_RELATION,
+                },
+            )
 
     async def _load_same_message_context(
         self,

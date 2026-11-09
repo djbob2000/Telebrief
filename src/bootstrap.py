@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 # storyline chronicle lands version 42, and the live refresh slot barrier
 # lands version 43.
 SCHEMA_VERSION_MINIMUM = 7
-SCHEMA_VERSION_MAXIMUM = 43
+SCHEMA_VERSION_MAXIMUM = 44
 
 
 __all__ = ["ApplicationInfrastructure", "build_infrastructure"]

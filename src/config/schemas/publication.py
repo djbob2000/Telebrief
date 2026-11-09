@@ -116,6 +116,18 @@ class EventPipelineConfig:
     active_window_hours: int = 72
     join_similarity: float = 0.84
     max_cluster_candidates: int = 20
+    # A chat remark this short joins a Story through its reply link or its
+    # conversation; its vector alone would match any text sharing one word.
+    thin_fragment_routing_enabled: bool = True
+    thin_fragment_max_content_words: int = 2
+    thin_fragment_near_identical_similarity: float = 0.95
+    thin_fragment_conversation_minutes: int = 30
+    conversation_timeline_enabled: bool = True
+    conversation_timeline_messages_before: int = 10
+    conversation_timeline_messages_after: int = 3
+    conversation_timeline_max_gap_minutes: int = 45
+    conversation_timeline_max_lines: int = 60
+    conversation_timeline_line_chars: int = 140
     embedding_batch_size: int = 128
     direct_analysis_min_fragments: int = 3
     direct_analysis_min_unique_sources: int = 2

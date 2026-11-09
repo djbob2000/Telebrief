@@ -23,6 +23,7 @@ from src.processing.authority_batching import (
     estimate_story_input_chars,
     select_bounded_authority_items,
 )
+from src.processing.conversation import timeline_settings_from_config
 from src.processing.edition_scope import resolve_edition_scope
 from src.processing.event_brief import EventBriefService
 from src.processing.event_triage import StoryGateBatchResult, StoryTriageService
@@ -135,6 +136,7 @@ class EventAuthorityService:
                 uow=runtime.uow,
                 max_output_tokens=cfg.triage_max_output_tokens,
                 reasoning_effort=cfg.triage_reasoning_effort,
+                conversation_timeline=timeline_settings_from_config(cfg),
             ),
             brief_service=EventBriefService(cluster_repo=cluster_repo),
         )

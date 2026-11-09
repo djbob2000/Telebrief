@@ -412,6 +412,45 @@ def reports_lit_buildings(text: str) -> bool:
     )
 
 
+# Residents often describe a blast by its sound or its effect and never say
+# "взрыв". Only plural and verb forms of "бах" count, because "Бах" and "Баха"
+# are also place names. A door or window must be blown out by an impersonal
+# force: "вынесли двери" is usually a renovation or a burglary.
+_BLAST_OPENING = r"(?:двер\w*|окн\w*|окон|стекл\w*|ст[её]кол)"
+_BLAST_FORCE = r"(?:вынесло|выбило|вылетел[иао]?)"
+_BLAST_REACTION_PATTERN = (
+    r"бах(?:ов|и|ам|ами|ах|нул\w*|нет|нут|ает|ают|ал[оаи]?)|"
+    r"бах[\s-]+бах|ба-?бах\w*|"
+    rf"{_BLAST_FORCE}\W+(?:\w+\W+){{0,3}}?{_BLAST_OPENING}|"
+    rf"{_BLAST_OPENING}\W+(?:\w+\W+){{0,3}}?{_BLAST_FORCE}"
+)
+# Alternation body for matching a safety incident inside \b(?:...)\b.
+SAFETY_INCIDENT_PATTERN = (
+    r"взрыв\w*|обстрел\w*|пво\b|бпла\b|дрон\w*|прил[её]т\w*|атак\w*|"
+    r"бомб\w*|авиабомб\w*|фаб\b|каб\b|ракети?\w*|мин[аы]\b|"
+    r"пожар\w*|возгоран\w*|пострадавш\w*|ранен\w*|погиб\w*|контузи\w*|"
+    r"разрушен\w*|разрух\w*|детонаци\w*|попадани\w*|"
+    rf"{_BLAST_REACTION_PATTERN}"
+)
+
+# Services a resident can report as being on or off. Other detected families
+# (economy, social, health and so on) are topics, so they do not compete with
+# these when a chat remark leaves its service unnamed.
+SUPPLY_FAMILIES: frozenset[str] = frozenset(
+    {
+        "power",
+        "water",
+        "gas",
+        "heating",
+        "telecom",
+        "lift",
+        "transport",
+        "urban_transport",
+        "banking",
+    }
+)
+
+
 def detect_service_families(text: str) -> frozenset[str]:
     """Detect core service families mentioned in text."""
     tokens = semantic_tokens(text)

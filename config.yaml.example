@@ -112,6 +112,20 @@ settings:
   #   active_window_hours: 72
   #   join_similarity: 0.84
   #   max_cluster_candidates: 20
+  #   # A chat remark of at most this many content words carries too little text
+  #   # for its vector to mean anything. It joins a Story by its reply link, a
+  #   # near-identical text, or a nearby message of the same chat.
+  #   thin_fragment_routing_enabled: true
+  #   thin_fragment_max_content_words: 2
+  #   thin_fragment_near_identical_similarity: 0.95
+  #   thin_fragment_conversation_minutes: 30
+  #   # Gate reads the chat around each batch as non-citable context.
+  #   conversation_timeline_enabled: true
+  #   conversation_timeline_messages_before: 10
+  #   conversation_timeline_messages_after: 3
+  #   conversation_timeline_max_gap_minutes: 45
+  #   conversation_timeline_max_lines: 60
+  #   conversation_timeline_line_chars: 140
   #   embedding_batch_size: 128
   #   direct_analysis_min_fragments: 3
   #   direct_analysis_min_unique_sources: 2

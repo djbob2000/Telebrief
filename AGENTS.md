@@ -533,6 +533,8 @@ Do not modify `join_similarity` casually to solve publication presentation probl
 
 Publication composition and knowledge clustering are different layers.
 
+A thin chat remark, with at most `thin_fragment_max_content_words` content words, has a vector that mostly reflects chat register, so a vector match alone must not attach it to a Story. Such a remark joins by its reply link (`reply_join`, which leaves the centroid unchanged), by a near-identical text, or by a Story that has a nearby message in the same chat. Otherwise it starts its own Story. `join_similarity` stays the threshold for ordinary fragments.
+
 ## 2.3 Gate V2
 
 `src/processing/event_triage.py`
@@ -555,6 +557,14 @@ Retention/enrichment must preserve useful local reports and only hard-drop high-
 ### Broad-region scope guard
 
 Gate v7 outputs `scope_basis_fragment_ids` identifying which fragments support the scope classification. A narrow deterministic guard (`broad_region_without_focus_impact`) normalizes broad regional news (e.g. general oblast-wide reports, frontline summaries, or non-focus settlements) to `OUT_OF_SCOPE / DROP` unless the cited scope-basis fragments specifically mention the edition's focus places.
+
+### Chat timeline
+
+Residents write in remarks that only make sense in sequence, so each Gate batch reads the chat around its Stories as one chronological `CHAT TIMELINE` block. The timeline is non-citable context, like a reply parent: it explains what a remark refers to and may establish scope for a remark that plainly continues a local discussion. It is never evidence. Evidence that takes a place, number or quotation only from a timeline line is withheld from publication, and a headline or digest summary doing so is sent to bounded recovery (`context_detail_in_summary`). An answer on another line belongs to that line's Story.
+
+The timeline may settle one thing only: which service a remark leaves unnamed. A short status remark that is not a question and names no service of its own («Колония нету») keeps the service its reply chain names or, for a remark with no reply link, the service named right before it, when exactly one service is being discussed. The result stays a community report without `service_state`, so it never becomes an operational state.
+
+For a KEEP Story, Gate also returns the timeline lines that report the same concrete incident: one event at one time and reports of its effects, not ordinary availability talk. The code keeps a proposed line only when it or the Story names a concrete event, both sit in one stretch of the chat, and the line names no different known place. These are stored as `same_incident` rows in `story_relations`: editorial navigation, under the same limits as `SAME_SITUATION` in §0.2. They do not merge Story, fact or source identities.
 
 ### Canonical service state representation
 
@@ -736,6 +746,7 @@ Rules:
 - Every selected substantive digest Story must be represented in the final digest (100% final Story coverage).
 - Narrow deterministic relation safety checks (`find_unsupported_digest_relations`) reject unsupported causal claims (e.g. invented causal mechanisms like "Авария на подстанции оставила Гору без света" from pure outage reports) with code `UNSUPPORTED_DIGEST_RELATION`.
 - The LLM may synthesize closely related Stories within a deterministic rubric/block when the current contract permits it, but it may not invent Story membership or move Stories across rubrics.
+- Stories that Gate linked as one incident form a digest episode (`src/publication/digest_episodes.py`). A card in the fallback rubric inherits the rubric of its episode, while a card in a concrete rubric never moves. Within a rubric the episode becomes one topic bundle when its located cards name at most one area; unlocated cards may join it, and their facts stay in `unresolved_geography_facts`.
 
 ## 5.3 Digest failure behavior
 

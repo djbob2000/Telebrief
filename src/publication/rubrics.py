@@ -11,25 +11,16 @@ from dataclasses import dataclass, replace
 from typing import Any, Sequence
 
 from src.config_loader import DigestRubricConfig, DigestRubricsConfig
-from src.domain.service_taxonomy import detect_service_families, map_family_to_rubric
+from src.domain.service_taxonomy import (
+    SAFETY_INCIDENT_PATTERN,
+    detect_service_families,
+    map_family_to_rubric,
+)
 from src.editorial_models import StoryCard
 
 logger = logging.getLogger(__name__)
 
 RUBRIC_CLASSIFIER_VERSION = "digest-rubric-embedding-v5"
-
-# Residents often describe a blast by its sound or its effect and never say
-# "взрыв". Only plural and verb forms of "бах" count, because "Бах" and "Баха"
-# are also place names. A door or window must be blown out by an impersonal
-# force: "вынесли двери" is usually a renovation or a burglary.
-_BLAST_OPENING = r"(?:двер\w*|окн\w*|окон|стекл\w*|ст[её]кол)"
-_BLAST_FORCE = r"(?:вынесло|выбило|вылетел[иао]?)"
-_BLAST_REACTION_PATTERN = (
-    r"бах(?:ов|и|ам|ами|ах|нул\w*|нет|нут|ает|ают|ал[оаи]?)|"
-    r"бах[\s-]+бах|ба-?бах\w*|"
-    rf"{_BLAST_FORCE}\W+(?:\w+\W+){{0,3}}?{_BLAST_OPENING}|"
-    rf"{_BLAST_OPENING}\W+(?:\w+\W+){{0,3}}?{_BLAST_FORCE}"
-)
 
 _TAXI_BOOKING_TOPIC_RE = re.compile(
     r"\b(?:заказ\w*|вызов\w*)\s+такси\b|\bтакси\b[^.!?]{0,50}\bзаказ\w*\b",
@@ -119,7 +110,7 @@ class RubricAssignment:
     story_id: str
     rubric_id: str
     score: float | None
-    # "semantic" | "legacy_hint" | "education_priority" | "transport_priority" | "family_fallback" | "fallback"
+    # "semantic" | "legacy_hint" | "education_priority" | "transport_priority" | "family_fallback" | "fallback" | "episode_inherit"
     method: str
 
 
@@ -222,16 +213,7 @@ class DigestRubricClassifier:
             "banking": ("civic_services", "economy"),
         }
 
-        _SAFETY_PRIORITY_RE = re.compile(
-            r"\b(?:"
-            r"взрыв\w*|обстрел\w*|пво\b|бпла\b|дрон\w*|прил[её]т\w*|атак\w*|"
-            r"бомб\w*|авиабомб\w*|фаб\b|каб\b|ракети?\w*|мин[аы]\b|"
-            r"пожар\w*|возгоран\w*|пострадавш\w*|ранен\w*|погиб\w*|контузи\w*|"
-            r"разрушен\w*|разрух\w*|детонаци\w*|попадани\w*|"
-            rf"{_BLAST_REACTION_PATTERN}"
-            r")\b",
-            re.IGNORECASE,
-        )
+        _SAFETY_PRIORITY_RE = re.compile(rf"\b(?:{SAFETY_INCIDENT_PATTERN})\b", re.IGNORECASE)
 
         # 1. Compatibility hint check: matching legacy category without embedding
         for card in cards:

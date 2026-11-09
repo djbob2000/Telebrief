@@ -261,6 +261,83 @@ class EventClusterRepository:
             raise RuntimeError("assign_fragment_to_story produced no row")
         return int(row[0])
 
+    async def find_reply_parent_story(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        source_item_revision_id: int,
+        edition_id: int,
+        active_since: dt.datetime,
+        max_hops: int,
+    ) -> int | None:
+        """Return the active Story of the nearest message up this revision's reply chain.
+
+        A parent that was dropped as noise has no Story, so the walk continues
+        to its own parent, up to max_hops messages.
+        """
+        cursor = await conn.execute(
+            """
+            WITH RECURSIVE chain(item_id, depth) AS (
+                SELECT si.parent_item_id, 1
+                FROM source_item_revisions sir
+                JOIN source_items si ON si.id = sir.source_item_id
+                WHERE sir.id = %s AND si.parent_item_id IS NOT NULL
+                UNION ALL
+                SELECT si.parent_item_id, chain.depth + 1
+                FROM chain
+                JOIN source_items si ON si.id = chain.item_id
+                WHERE si.parent_item_id IS NOT NULL AND chain.depth < %s
+            )
+            SELECT sf.story_id
+            FROM chain
+            JOIN source_item_revisions sir ON sir.source_item_id = chain.item_id
+            JOIN source_fragments f ON f.source_item_revision_id = sir.id
+            JOIN story_fragments sf ON sf.fragment_id = f.id
+            JOIN stories st ON st.id = sf.story_id
+            JOIN story_cluster_state sc ON sc.story_id = sf.story_id
+            WHERE st.edition_id = %s AND sc.last_seen_at >= %s
+            ORDER BY chain.depth ASC, f.ordinal ASC, sf.id ASC
+            LIMIT 1
+            """,
+            (source_item_revision_id, max_hops, edition_id, active_since),
+        )
+        row = await cursor.fetchone()
+        return int(row[0]) if row is not None else None
+
+    async def has_fragment_near_in_same_source(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        story_id: int,
+        source_item_revision_id: int,
+        window: dt.timedelta,
+    ) -> bool:
+        """Return True when a Story has a message of this revision's chat close in time."""
+        cursor = await conn.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM source_item_revisions target_rev
+                JOIN source_items target ON target.id = target_rev.source_item_id
+                JOIN story_fragments sf ON sf.story_id = %s
+                JOIN source_fragments f ON f.id = sf.fragment_id
+                JOIN source_item_revisions sir ON sir.id = f.source_item_revision_id
+                JOIN source_items si ON si.id = sir.source_item_id
+                WHERE target_rev.id = %s
+                  AND si.source_id = target.source_id
+                  AND abs(
+                      extract(
+                          epoch FROM COALESCE(si.published_at, si.first_collected_at)
+                          - COALESCE(target.published_at, target.first_collected_at)
+                      )
+                  ) <= %s
+            )
+            """,
+            (story_id, source_item_revision_id, window.total_seconds()),
+        )
+        row = await cursor.fetchone()
+        return bool(row and row[0])
+
     async def get_fragment_assignment(
         self, conn: psycopg.AsyncConnection, fragment_id: int
     ) -> tuple[int, int, str, float | None] | None:

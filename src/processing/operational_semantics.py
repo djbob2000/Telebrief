@@ -13,6 +13,7 @@ from src.domain.event_payload import (
 )
 from src.domain.service_taxonomy import (
     SERVICE_FAMILY_STEMS,
+    SUPPLY_FAMILIES,
     detect_service_families,
     matches_any_stem,
     semantic_tokens,
@@ -290,8 +291,15 @@ def normalize_service_state_evidence(
     *,
     reply_parent_context_by_fragment_id: Mapping[int, str] | None = None,
     edition_name: str | None = None,
+    conversation_service_family_by_fragment_id: Mapping[int, str] | None = None,
 ) -> tuple[EventPayload, ServiceStateAudit]:
-    """Validate service states against primary text while keeping reply context separate."""
+    """Validate service states against primary text while keeping reply context separate.
+
+    ``conversation_service_family_by_fragment_id`` names the one service a chat
+    conversation was about around a fragment. It lets a remark that leaves its
+    service unnamed keep that service as a community report. It never creates
+    an operational state.
+    """
     accepted = 0
     rejected_indexes: list[int] = []
     rejection_reasons: list[str] = []
@@ -308,6 +316,9 @@ def normalize_service_state_evidence(
                 fragment_texts=fragment_texts,
                 reply_parent_context_by_fragment_id=reply_parent_context_by_fragment_id,
                 edition_name=edition_name,
+                conversation_service_family_by_fragment_id=(
+                    conversation_service_family_by_fragment_id
+                ),
             )
             if ungrounded_reason is not None:
                 normalized_items.append(item)
@@ -420,6 +431,23 @@ def normalize_service_state_evidence(
                     rejected_indexes.append(index)
                     rejection_reasons.append("reply_context_only_subject")
                     continue
+                if _conversation_confirms_every_fragment(
+                    item.source_fragment_ids,
+                    fragment_texts or {},
+                    subject_families,
+                    conversation_service_family_by_fragment_id,
+                ):
+                    normalized_items.append(
+                        replace(
+                            item,
+                            kind="community_report",
+                            publication_use="PUBLISH",
+                            service_state=None,
+                        )
+                    )
+                    rejected_indexes.append(index)
+                    rejection_reasons.append("conversation_only_subject")
+                    continue
                 normalized_items.append(
                     replace(
                         item,
@@ -499,8 +527,9 @@ def _normalize_unstructured_service_claim(
     fragment_texts: Mapping[int, str],
     reply_parent_context_by_fragment_id: Mapping[int, str] | None,
     edition_name: str | None,
+    conversation_service_family_by_fragment_id: Mapping[int, str] | None = None,
 ) -> tuple[EvidenceItemPayload, str | None]:
-    """Require each cited support to name its claimed service or answer its parent."""
+    """Require each cited support to name its claimed service or take it from the talk."""
     if item.publication_use != "PUBLISH" or item.kind not in {"community_report", "service_access"}:
         return item, None
 
@@ -528,6 +557,12 @@ def _normalize_unstructured_service_claim(
         unsupported_families = claimed_families - _detect_service_families(source_text)
         if not unsupported_families:
             continue
+        if _conversation_names_omitted_service(
+            source_text,
+            unsupported_families,
+            (conversation_service_family_by_fragment_id or {}).get(fragment_id),
+        ):
+            continue
 
         parent_text = (reply_parent_context_by_fragment_id or {}).get(fragment_id, "")
         parent_families = _detect_service_families(parent_text)
@@ -552,6 +587,55 @@ def _normalize_unstructured_service_claim(
             )
 
     return item, None
+
+
+_ELLIPTICAL_AVAILABILITY_RE = re.compile(
+    r"\b(?:нет|нету|нема|немає|есть|є|дал|дала|дали|дают|дадут|дать|давали|"
+    r"включ\w*|выключ\w*|отключ\w*|вырубил\w*|врубил\w*|"
+    r"подал\w*|подают|вернул\w*|появил\w*|пропал\w*)\b",
+    re.IGNORECASE,
+)
+_ELLIPTICAL_REMARK_MAX_WORDS = 24
+
+
+def _conversation_names_omitted_service(
+    source_text: str,
+    unsupported_families: set[str] | frozenset[str],
+    conversation_family: str | None,
+) -> bool:
+    """Return True for a short status remark whose service only the conversation names.
+
+    "Колония нету" says what is missing only because everyone around it talks
+    about electricity. The remark must state availability itself, must not be a
+    question, and must not name any service of its own.
+    """
+    return (
+        conversation_family is not None
+        and unsupported_families == {conversation_family}
+        and "?" not in source_text
+        and len(source_text.split()) <= _ELLIPTICAL_REMARK_MAX_WORDS
+        and not (_detect_service_families(source_text) & SUPPLY_FAMILIES)
+        and _ELLIPTICAL_AVAILABILITY_RE.search(source_text) is not None
+    )
+
+
+def _conversation_confirms_every_fragment(
+    fragment_ids: tuple[int, ...],
+    fragment_texts: Mapping[int, str],
+    subject_families: frozenset[str],
+    conversation_service_family_by_fragment_id: Mapping[int, str] | None,
+) -> bool:
+    """Return True when the conversation supplies the service for each cited fragment."""
+    family_by_fragment = conversation_service_family_by_fragment_id or {}
+    return bool(fragment_ids) and all(
+        fragment_id in fragment_texts
+        and _conversation_names_omitted_service(
+            fragment_texts[fragment_id],
+            subject_families - _detect_service_families(fragment_texts[fragment_id]),
+            family_by_fragment.get(fragment_id),
+        )
+        for fragment_id in fragment_ids
+    )
 
 
 _POSITIVE_CONTINUITY_RE = re.compile(
