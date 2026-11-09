@@ -160,18 +160,20 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
     volumes:
       - postgres_data:/var/lib/postgresql
+    # This VM also runs Coolify and builds other sites, so keep PostgreSQL's
+    # resident and per-query memory conservative until host metrics justify more.
     command:
       - "postgres"
       - "-c"
-      - "shared_buffers=192MB"
+      - "shared_buffers=1GB"
       - "-c"
-      - "effective_cache_size=512MB"
+      - "effective_cache_size=3GB"
       - "-c"
-      - "work_mem=2MB"
+      - "work_mem=4MB"
       - "-c"
-      - "maintenance_work_mem=32MB"
+      - "maintenance_work_mem=128MB"
       - "-c"
-      - "autovacuum_work_mem=16MB"
+      - "autovacuum_work_mem=64MB"
       - "-c"
       - "temp_buffers=4MB"
       - "-c"
@@ -183,7 +185,7 @@ services:
       - "-c"
       - "jit=off"
       - "-c"
-      - "autovacuum_max_workers=1"
+      - "autovacuum_max_workers=2"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-telebrief} -d ${POSTGRES_DB:-telebrief}"]
       interval: 10s
