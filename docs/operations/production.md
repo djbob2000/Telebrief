@@ -27,7 +27,7 @@ The Coolify instance URL and webhook endpoint are `https://githubify.duckdns.org
 
 `.github/workflows/deploy-dev.yml` is intentionally not used: Coolify builds the `dev` branch directly. `.github/workflows/docker-publish.yml` remains a separate release-image workflow for `v*` tags; it does not deploy production.
 
-The Docker Compose file defines `build: .` for the migration, app, and worker services and tags that local build as `telebrief:${IMAGE_TAG:-dev}`. Keep these build definitions and the migration dependency intact. Coolify runs the build on the production VM, so stagger future Next.js builds and monitor memory and disk before changing PostgreSQL settings.
+The Docker Compose file defines one `build: .` on `telebrief-app` and tags that local build as `telebrief:${IMAGE_TAG:-dev}`. Migration and worker services use the same image tag. Keep this shared-image configuration and the migration dependency intact. Coolify runs the build on the production VM, so stagger future Next.js builds and monitor memory and disk before changing PostgreSQL settings.
 
 Keep the existing Telegram destination: bot `@berdiansk_news_digest_bot` publishes to channel `@berdiansk_news`. Do not create or substitute another channel or bot.
 

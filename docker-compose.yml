@@ -1,7 +1,6 @@
 services:
   telebrief-migrate:
     image: telebrief:${IMAGE_TAG:-dev}
-    build: .
     restart: "no"
     depends_on:
       postgres:
@@ -21,6 +20,7 @@ services:
 
   telebrief-app:
     image: telebrief:${IMAGE_TAG:-dev}
+    # Coolify builds this shared image once; migration and workers use the same tag.
     build: .
     container_name: telebrief-app
     restart: unless-stopped
@@ -58,7 +58,6 @@ services:
 
   telebrief-worker:
     image: telebrief:${IMAGE_TAG:-dev}
-    build: .
     container_name: telebrief-worker
     restart: unless-stopped
     stop_grace_period: 120s
@@ -91,7 +90,6 @@ services:
 
   telebrief-processing-worker:
     image: telebrief:${IMAGE_TAG:-dev}
-    build: .
     container_name: telebrief-processing-worker
     restart: unless-stopped
     stop_grace_period: 120s
@@ -124,7 +122,6 @@ services:
 
   telebrief-authority-worker:
     image: telebrief:${IMAGE_TAG:-dev}
-    build: .
     container_name: telebrief-authority-worker
     restart: unless-stopped
     stop_grace_period: 120s
