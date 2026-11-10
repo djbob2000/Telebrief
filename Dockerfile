@@ -7,8 +7,12 @@ WORKDIR /app
 # Copy requirements first for better caching
 COPY requirements.txt .
 
-# Install Python dependencies and Playwright Chromium with OS dependencies
-RUN pip install --no-cache-dir -r requirements.txt \
+# Playwright's bundled Node.js driver needs libatomic.so.1 on Debian slim,
+# before `playwright install --with-deps` can install the browser dependencies.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libatomic1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir -r requirements.txt \
     && python -m playwright install --with-deps chromium
 
 # Copy application code
