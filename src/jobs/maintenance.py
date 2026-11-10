@@ -138,8 +138,8 @@ async def advance_storyline_chronicle(timestamp: int) -> None:
     import datetime as dt
     import logging
 
-    from src.article_generator import ArticleGenerator
     from src.config_loader import load_config
+    from src.processing.providers import resolve_processing_provider
     from src.publication.chronicle import advance_chronicle
     from src.runtime import get_runtime
 
@@ -149,10 +149,10 @@ async def advance_storyline_chronicle(timestamp: int) -> None:
     if not getattr(editorial, "chronicle_enabled", False):
         return
     runtime = get_runtime()
-    generator = ArticleGenerator(config=config, logger=log)
-    model = getattr(config.settings, "openai_model", None) or getattr(
-        config.settings, "ai_model", None
-    )
+    # The chronicle is background processing: it uses the same model as Gate. The editorial
+    # default (settings.openai_model = gpt-5-nano) is not in the .env allowlist.
+    provider = resolve_processing_provider(runtime, config, log)
+    model = getattr(config, "openrouter_processing_model", None) or None
     now = dt.datetime.fromtimestamp(timestamp, dt.timezone.utc)
     async with runtime.uow.transaction() as conn:
         cursor = await conn.execute("SELECT id FROM editions WHERE enabled ORDER BY id")
@@ -160,7 +160,7 @@ async def advance_storyline_chronicle(timestamp: int) -> None:
     for edition_id in edition_ids:
         summary = await advance_chronicle(
             uow=runtime.uow,
-            provider=generator.provider,
+            provider=provider,
             model=model,
             edition_id=edition_id,
             now=now,

@@ -117,18 +117,17 @@ async def run_estimate(config_path: str, slug: str | None) -> str:
 
 
 async def run_apply(config_path: str, slug: str | None, max_weeks: int, max_rollups: int) -> str:
-    from src.article_generator import ArticleGenerator
     from src.config_loader import load_config
     from src.db.pool import close_pool, open_pool
     from src.db.uow import DatabaseUnitOfWork
+    from src.processing.providers import resolve_processing_provider
 
     log = logging.getLogger("chronicle")
     config = load_config(config_path)
     editorial = config.settings.publication_editorial
-    generator = ArticleGenerator(config=config, logger=log)
-    model = getattr(config.settings, "openai_model", None) or getattr(
-        config.settings, "ai_model", None
-    )
+    # Same model as the scheduled chronicle job (background processing, not the editorial default).
+    provider = resolve_processing_provider(None, config, log)
+    model = getattr(config, "openrouter_processing_model", None) or None
     db = load_database_config(config_path, require_enabled=True)
     pool = await open_pool(db)
     results: list[str] = []
@@ -139,7 +138,7 @@ async def run_apply(config_path: str, slug: str | None, max_weeks: int, max_roll
         for edition_id in edition_ids:
             summary = await chronicle.advance_chronicle(
                 uow=uow,
-                provider=generator.provider,
+                provider=provider,
                 model=model,
                 edition_id=edition_id,
                 now=dt.datetime.now(dt.timezone.utc),
