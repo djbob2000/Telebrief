@@ -54,6 +54,8 @@ PERIOD_REVIEW_WORDS: dict[str, int] = {
 }
 DEVELOP_STORYLINES: dict[str, int] = {"month": 5, "quarter": 6, "half_year": 7, "year": 8}
 WEAVE_STORYLINES: dict[str, int] = {"month": 15, "quarter": 18, "half_year": 20, "year": 24}
+# Depth is per Story: a DEVELOP storyline leads with this many Stories, the rest of it is WEAVE.
+REVIEW_DEVELOP_STORIES_PER_STORYLINE = 3
 FACTS_BY_DEPTH: dict[str, int] = {"DEVELOP": 12, "WEAVE": 6, "BRIEF": 3}
 # Facts a storyline keeps before the budget may cut it further.
 FACT_FLOORS: dict[str, int] = {"DEVELOP": 6, "WEAVE": 2, "BRIEF": 1}
@@ -197,6 +199,41 @@ def review_label(period: ChroniclePeriod, coverage_start: dt.date) -> str:
     return label
 
 
+PERIOD_REVIEW_COMPOSITION_DIRECTIVE = (
+    "PERIOD REVIEW COMPOSITION DIRECTIVE:\n"
+    "- Write what the period added up to, not a diary of it. Organize the article into coherent "
+    "thematic movements, and open each long-running storyline with its overall shape: how long "
+    "the situation lasted, what regime residents lived under, where it was better or worse, and "
+    "what had changed by the end of the period.\n"
+    "- Give a specific date only to a turning point, a record, or an event that stands on its "
+    "own. Merge reports of the same state on neighbouring days into one supported span, such as "
+    "«в первые недели» or «ближе к концу». Never walk through a storyline day by day, and do not "
+    "open consecutive sentences with dates. observed_at is report chronology, not an event "
+    "start.\n"
+    "- Keep the concrete details that prove the pattern: an interval, a street, a measured "
+    "value, a practical workaround, one exact quote. Remove only repeats of the same state on "
+    "other days; a generalization never replaces the detail that shows it.\n"
+    "- A span or a pattern must be carried by the cited reports. Do not stretch one report to a "
+    "whole district, the whole period or the whole city, and keep differing places as a "
+    "localized contrast.\n"
+    "- Words such as «вчера», «сегодня», «завтра», «позавчера» and «накануне» in a source count "
+    "from the day of that message. Do not carry them into your prose: give the date or leave "
+    "the word out.\n"
+    "- Attribute community reports to residents or to their place, not to where they wrote: "
+    "never «в обсуждениях», «в чатах», «в комментариях» or «к этим сообщениям».\n"
+    "- Name a resident only by a gender the source states; otherwise write «жители» or «по "
+    "сообщениям жителей», never «житель» or «жительница» by guess.\n"
+    "- Report a joke, sarcasm or an emoji-marked remark as that remark, never as a measurement: "
+    "«0 вольт с 10 августа» said in jest is not a voltage reading.\n"
+    "- Give each duration once as the reported state. Do not add up day counts from several "
+    "reports into one clock, and do not carry chat shorthand («минус свет») or nicknames into "
+    "the prose.\n"
+    "- No more than two dates in one paragraph.\n"
+    "- Finish on a supported development, consequence, or unresolved question when the material "
+    "provides one; do not use a fixed closing heading or repeat the lead's premise."
+)
+
+
 def review_writer_note(plan: Mapping[str, Any]) -> str:
     """System-prompt note naming the period and, for a partial period, its real span."""
     kind = str(plan.get("kind") or "")
@@ -206,17 +243,48 @@ def review_writer_note(plan: Mapping[str, Any]) -> str:
         "not a daily or weekly report. Name the period in the title and lead, for example "
         f"«Итоги {label}». The storylines that ran longest and reached the most residents lead "
         "the article; smaller storylines stay compact. Show how situations changed across the "
-        "period where the evidence dates support it, and do not frame the lead as a snapshot "
-        "of the last day."
+        "period at their turning points, where the evidence dates support them, and do not frame "
+        "the lead as a snapshot of the last day. For this review, the period review composition "
+        "directive takes priority over general guidance on chronology."
     )
     if plan.get("partial"):
         start = dt.date.fromisoformat(str(plan["coverage_start"]))
         note += (
             f" Material was collected only from {start.strftime('%d.%m.%Y')}, so this review "
-            f"covers part of the {_PERIOD_NOUNS.get(kind, 'period')}: say so plainly in the lead "
-            "and never imply that the whole period is covered."
+            f"covers part of the {_PERIOD_NOUNS.get(kind, 'period')}: say so plainly in both the "
+            "title and the lead, with the real span as in the example above, and never imply "
+            "that the whole period is covered. The start of the material is not the start of "
+            "events: do not write that a situation, a discussion or the period itself began "
+            "around that date unless a source says so."
         )
     return note
+
+
+def review_writer_reminder(plan: Mapping[str, Any]) -> str:
+    """Closing instruction read right after the dossier, in the language of the writer request."""
+    lines = [
+        "ДЛЯ ЭТОГО ОБЗОРА:",
+        "- Лид подводит итог всего периода: каким он был для города и что изменилось к его концу.",
+        "- Каждый длинный сюжет начинается с общей картины, а отдельную дату получают только "
+        "поворот, рекорд или самостоятельное событие. Несколько дат подряд об одном и том же "
+        "состоянии замените одним подтверждённым отрезком.",
+        "- Оценки длительности из разных сообщений — разные свидетельства, а не счётчик: не "
+        "выстраивайте их в одну линию. Замеры из разных мест давайте одной фразой с контрастом, "
+        "а не перечнем коротких предложений.",
+        "- Слова «вчера», «сегодня», «завтра», «позавчера» и «накануне» считаются от дня "
+        "сообщения: укажите дату или уберите слово.",
+    ]
+    if plan.get("partial"):
+        span = str(plan.get("label") or "").partition(": ")[2]
+        lines.append(
+            f"- Обзор охватывает только {span}. Скажите это один раз простой фразой и в заголовке, "
+            f"и в лиде, например: «Обзор охватывает {span}». Дальше пишите о городе, а не о "
+            "сообщениях: без «в этих сообщениях», «материал собран» и «отрезок». Начало материала "
+            "— не начало событий: не называйте первые его дни началом периода и не пишите, что "
+            "период, ситуация или обсуждение начались в эти дни, что сообщение было одним из "
+            "первых или что так шло с начала периода, если этого не говорит сам источник."
+        )
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -618,8 +686,18 @@ def build_review_coverage_plan(plan: Mapping[str, Any], context: Any) -> Any:
     for line in plan.get("storylines") or ():
         theme = str(line.get("theme") or "other")
         before = rank
-        for sid in line.get("story_ids") or ():
-            add(f"story:{sid}", theme, line.get("depth") or "BRIEF", str(line.get("title") or ""))
+        story_keys = [f"story:{sid}" for sid in line.get("story_ids") or ()]
+        # A DEVELOP storyline keeps DEVELOP only for its best-sourced Stories; the rest are WEAVE.
+        develop_keys = set(
+            sorted(story_keys, key=lambda key: -len(supports_by_story.get(key, ())))[
+                :REVIEW_DEVELOP_STORIES_PER_STORYLINE
+            ]
+        )
+        for key in story_keys:
+            depth = str(line.get("depth") or "BRIEF")
+            if depth == "DEVELOP" and key not in develop_keys:
+                depth = "WEAVE"
+            add(key, theme, depth, str(line.get("title") or ""))
         if rank > before and line.get("kind") == "storyline":
             titles[theme].append(f"«{line.get('title')}» ({line.get('depth')})")
     # A sealed Story always has a chronicle storyline; keep any stray card visible.
@@ -649,11 +727,19 @@ def build_review_coverage_plan(plan: Mapping[str, Any], context: Any) -> Any:
 def render_review_outline(plan: Mapping[str, Any], coverage_plan: Any) -> str:
     """Non-citable storyline navigation for the writer."""
     visible = set(coverage_plan.story_ids)
+    prominence = {
+        story.story_id: story.prominence for story in getattr(coverage_plan, "stories", ())
+    }
     lines = [
         "PERIOD REVIEW STORYLINES (navigation only, not evidence; cite facts only from the "
         "evidence inventory).",
         f"Period: {plan.get('period_start')} .. {plan.get('period_end')} (end exclusive); "
-        f"collected material starts {plan.get('coverage_start')}.",
+        f"collected material starts {plan.get('coverage_start')}."
+        + (
+            " That date is where the archive begins, not where any situation began."
+            if plan.get("partial")
+            else ""
+        ),
         "Each storyline is one continuing situation of the period, ranked by how many days it "
         "ran and how many sources reported it. DEVELOP storylines lead their chapters, WEAVE "
         "storylines get a compact passage, BRIEF items get one mention or join the chapter's "
@@ -687,5 +773,6 @@ def render_review_outline(plan: Mapping[str, Any], coverage_plan: Any) -> str:
             trajectory = str(line.get("trajectory") or "").strip()
             if trajectory:
                 lines.append(f"  trajectory (non-citable): {trajectory}")
-            lines.append(f"  stories: {', '.join(story_keys)}")
+            labels = ", ".join(f"{key} {prominence.get(key, 'BRIEF')}" for key in story_keys)
+            lines.append(f"  stories (depth): {labels}")
     return "\n".join(lines)

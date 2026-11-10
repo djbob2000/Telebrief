@@ -30,6 +30,7 @@ from src.publication.period_review import (
     render_review_outline,
     review_window_hours,
     review_writer_note,
+    review_writer_reminder,
     review_zone,
     run_review_plan,
 )
@@ -669,6 +670,7 @@ class EventEditorialAdapter:
                     coverage_plan=review_coverage,
                     period_review_kind=str(review_plan.get("kind") or ""),
                     period_review_note=review_writer_note(review_plan),
+                    period_review_reminder=review_writer_reminder(review_plan),
                     period_outline=render_review_outline(review_plan, review_coverage),
                 )
             elif run.publication_type == "weekly_article" and story_cards:

@@ -2514,6 +2514,20 @@ def non_place_names_as_places(text: str, resolver: Any) -> tuple[str, ...]:
     return tuple(dict.fromkeys(found))
 
 
+_REVIEW_RELATIVE_TIME_RE = re.compile(
+    r"\b(?:позавчера|вчера|сегодня|накануне|завтра|час назад|минут назад|годину тому|"
+    r"\d+\s+(?:минут[ауы]?|час[аов]*|дней|дня|день|дни)\s+назад)\b",
+    re.IGNORECASE,
+)
+_QUOTED_TEXT_RE = re.compile(r"«[^»]*»")
+
+
+def _review_relative_time_words(text: str) -> tuple[str, ...]:
+    """Relative day or interval words outside quotations; a review must date or drop them."""
+    unquoted = _QUOTED_TEXT_RE.sub(" ", text)
+    return tuple(match.group(0).lower() for match in _REVIEW_RELATIVE_TIME_RE.finditer(unquoted))
+
+
 def diagnose_article_quality(
     draft: StructuredArticleDraft,
     coverage_plan: ArticleCoveragePlan,
@@ -2812,6 +2826,24 @@ def diagnose_article_quality(
                         message=(
                             "В одном абзаце больше двух цитируемых фрагментов; проверьте, "
                             "не превратился ли текст в перечень прямой речи."
+                        ),
+                        support_ids=_support_ids_for_unit(paragraph),
+                        severity="repair",
+                    )
+                )
+            relative_time_words = (
+                _review_relative_time_words(paragraph.text)
+                if getattr(context, "period_review_kind", "")
+                else ()
+            )
+            if relative_time_words:
+                findings.append(
+                    ArticleReaderQualityFinding(
+                        code="REVIEW_RELATIVE_TIME_WORD",
+                        unit_id=f"P{p_idx:03d}",
+                        message=(
+                            f"В обзоре относительное время («{relative_time_words[0]}») "
+                            "считается от дня сообщения; укажите дату или уберите слово."
                         ),
                         support_ids=_support_ids_for_unit(paragraph),
                         severity="repair",

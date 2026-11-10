@@ -752,4 +752,7 @@ def _parse_publication_editorial_config(settings_dict: dict) -> PublicationEdito
         article_writer_reasoning_effort=_val_reasoning_effort(
             "article_writer_reasoning_effort", None
         ),
+        period_review_writer_reasoning_effort=_val_reasoning_effort(
+            "period_review_writer_reasoning_effort", None
+        ),
     )

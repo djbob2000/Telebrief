@@ -235,6 +235,8 @@ class PublicationEditorialConfig:
     chronicle_reasoning_effort: str | None = "none"
     # None keeps the global settings.reasoning_effort for the article writer.
     article_writer_reasoning_effort: str | None = None
+    # Period reviews (AGENTS.md §0.12) read a whole month or more; None keeps the daily writer level.
+    period_review_writer_reasoning_effort: str | None = None
     reasoning_headroom_tokens: int = 12000
 
     def __post_init__(self) -> None:
@@ -280,6 +282,7 @@ class PublicationEditorialConfig:
             "situation_memory_reasoning_effort",
             "chronicle_reasoning_effort",
             "article_writer_reasoning_effort",
+            "period_review_writer_reasoning_effort",
         ):
             effort = getattr(self, field_name)
             if effort is not None and effort not in ALLOWED_REASONING_EFFORTS:

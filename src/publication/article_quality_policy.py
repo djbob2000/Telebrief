@@ -85,6 +85,13 @@ _POLICIES: dict[str, ArticleQualityFindingPolicy] = {
         "repair_recommended",
         "A run of one-sentence paragraphs from separate Stories prompts review but does not prove an inventory.",
     ),
+    "REVIEW_RELATIVE_TIME_WORD": ArticleQualityFindingPolicy(
+        "temporal_reference",
+        "repair",
+        "unit",
+        "repair_recommended",
+        "In a period review a relative day or interval is not dated to its source.",
+    ),
     "QUOTE_ROLL_PARAGRAPH": ArticleQualityFindingPolicy(
         "quote_count_heuristic",
         "repair",

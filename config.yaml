@@ -182,6 +182,7 @@ settings:
     # Storyline chronicle for period reviews (AGENTS.md §0.12).
     chronicle_enabled: true
     chronicle_reasoning_effort: "low"
+    # Period reviews only: the writer reads a whole month of material and must synthesize it.
     # Reasoning tokens count against max_tokens; medium used ~13k on one window.
     reasoning_headroom_tokens: 32000
 

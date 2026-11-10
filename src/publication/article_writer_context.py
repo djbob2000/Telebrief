@@ -16,6 +16,7 @@ from src.publication.article_context import (
     article_support_topic_context_lines,
 )
 from src.publication.article_coverage import ArticleCoveragePlan
+from src.publication.period_review import PERIOD_REVIEW_COMPOSITION_DIRECTIVE
 from src.timezones import get_timezone, normalize_timezone_name
 
 if TYPE_CHECKING:
@@ -36,7 +37,7 @@ _SUPPORT_STORY_ID_RE = re.compile(r"story:(?:[^:]+|\d+)")
 # the existing completion ceiling and fail explicitly if the complete dossier
 # exceeds this character budget.
 ARTICLE_WRITER_CONTEXT_MAX_CHARS = 999_999
-ARTICLE_WRITER_CONTEXT_VERSION = "event-article-context-v5-geography-city-parts"
+ARTICLE_WRITER_CONTEXT_VERSION = "event-article-context-v6-period-review-synthesis"
 _SUPPORT_FACT_MAX_CHARS = 900
 _SUPPORT_SOURCE_MAX_CHARS = 1_800
 _SUPPORT_COMPACT_FACT_MAX_CHARS = 360
@@ -917,7 +918,9 @@ def render_article_writer_context_with_stats(
             ).total_seconds()
             // 3600
         )
-        if lookback_hours >= 120:
+        if context.period_review_kind:
+            blocks.append(PERIOD_REVIEW_COMPOSITION_DIRECTIVE)
+        elif lookback_hours >= 120:
             blocks.append(
                 "LONGITUDINAL PUBLICATION DIRECTIVE:\n"
                 "- Organize the article into coherent thematic movements supported by the material.\n"

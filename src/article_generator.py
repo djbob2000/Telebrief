@@ -174,6 +174,39 @@ _RU_MONTHS_GENITIVE = (
 )
 
 
+def _article_lead_instruction(period_review_reminder: str) -> str:
+    """The lead rule of the writer request: a day's panorama, or a period's outcome."""
+    if period_review_reminder:
+        return (
+            "   - Лид и первый абзац: Лид подводит итог всего периода. Первый абзац первой главы "
+            "сразу переходит к общей картине главного сюжета: сколько это длилось, как при этом "
+            "жили, где было лучше или хуже. Не повторяйте текст лида дословно и опирайтесь на "
+            "факты из досье.\n"
+        )
+    return (
+        "   - Лид и первый абзац:Лид даёт панораму суток. Первый абзац первой главы сразу "
+        "переходит к фактам и хронологии главного события, не повторяя текст лида дословно, "
+        "но обязательно опираясь на факты из досье.\n"
+    )
+
+
+def _article_writer_reasoning_effort(
+    publication_editorial: Any, settings: Any, period_review_kind: str
+) -> str:
+    """Writer effort: a period review uses its own level when one is configured."""
+    if period_review_kind:
+        review_effort = getattr(
+            publication_editorial, "period_review_writer_reasoning_effort", None
+        )
+        if review_effort:
+            return str(review_effort)
+    return (
+        getattr(publication_editorial, "article_writer_reasoning_effort", None)
+        or getattr(settings, "reasoning_effort", "low")
+        or "low"
+    )
+
+
 def _article_period_label(window: Any, timezone_name: str | None) -> str:
     """Russian label of a multi-day reporting window, e.g. «неделя с 5 по 11 октября»."""
     if window is None:
@@ -557,6 +590,21 @@ def _is_catastrophic_writer_response(
 ) -> bool:
     """Identify only an explicitly unusable response, never a repairable blank field."""
     return response_disposition == "unusable"
+
+
+def _answering_model(provider_obj: Any, configured_chain: str) -> str:
+    """Return the model that actually answered, falling back to the configured chain.
+
+    A ProviderCascade stores the successful slot in ``last_metadata`` as
+    ``actual_model``. The configured string can hold several comma-separated
+    slots, so recording it as the writer model misstates which model wrote the text.
+    """
+    metadata = getattr(provider_obj, "last_metadata", None)
+    if isinstance(metadata, dict):
+        actual = metadata.get("actual_model")
+        if isinstance(actual, str) and actual.strip():
+            return actual.strip()
+    return configured_chain
 
 
 def _build_writer_attempt_metadata(
@@ -1520,6 +1568,7 @@ class ArticleGenerator:
             else "",
             period_review_note=getattr(article_ctx, "period_review_note", ""),
         )
+        period_review_reminder = getattr(article_ctx, "period_review_reminder", "")
         user_prompt = (
             "Напишите подробный городской лонгрид (статью о жизни города) на русском языке на основе приведённого ниже полного фактического досье.\n\n"
             "ИНСТРУКЦИЯ ПО РАБОТЕ С МАТЕРИАЛОМ:\n"
@@ -1539,12 +1588,13 @@ class ArticleGenerator:
             "   - Заголовки с двоеточием: не перечисляйте подтемы после двоеточия, если каждая из них не раскрыта в абзацах этого раздела; короткая тема без перечня предпочтительнее.\n"
             "   - Одно предложение — один источник: если разные сообщения описывают разные места или состояния, пишите о каждом отдельным предложением с его собственной опорой, а не сводите их в одну фразу-обобщение.\n"
             "   - Без повторного перечня: не заканчивайте раздел или статью абзацем, который заново перечисляет места и факты из прежних разделов.\n"
-            "   - Лид и первый абзац:Лид даёт панораму суток. Первый абзац первой главы сразу переходит к фактам и хронологии главного события, не повторяя текст лида дословно, но обязательно опираясь на факты из досье.\n"
+            f"{_article_lead_instruction(period_review_reminder)}"
             "8. СВЯЗИ МЕЖДУ СОБЫТИЯМИ И ЛОКАЛИЗОВАННЫЕ КОНТРАСТЫ: Показывайте причинную или практическую связь между услугами только когда досье прямо подтверждает именно эту связь; одна подходящая публикационная опора достаточна, официальное подтверждение или второй независимый источник не требуются. Сопоставляйте нижнюю и нагорную части города или другие районы, только если материалы дают наблюдения по обеим сторонам; при разных состояниях передайте локальный контраст, а не обобщайте их как состояние всего города.\n\n"
             "ФАКТИЧЕСКИЕ МАТЕРИАЛЫ И ДОСЬЕ:\n\n"
             f"{_ARTICLE_MATERIAL_BEGIN}\n\n"
             f"{context_str}\n\n"
             f"{_ARTICLE_MATERIAL_END}\n\n"
+            f"{period_review_reminder + chr(10) * 2 if period_review_reminder else ''}"
             "Напоминание: Напишите связный журналистский лонгрид по материалам выше. "
             "Верните ТОЛЬКО Markdown статьи: # Заголовок, лид и разделы (## Заголовок раздела) с абзацами текста. "
             "Без JSON, мета-комментариев и пояснений."
@@ -1613,14 +1663,10 @@ class ArticleGenerator:
             writer_max_tokens = min(
                 self.config.settings.article.editorial_writer_max_output_tokens, 65536
             )
-            writer_reasoning_effort = (
-                getattr(
-                    getattr(self.config.settings, "publication_editorial", None),
-                    "article_writer_reasoning_effort",
-                    None,
-                )
-                or getattr(self.config.settings, "reasoning_effort", "low")
-                or "low"
+            writer_reasoning_effort = _article_writer_reasoning_effort(
+                getattr(self.config.settings, "publication_editorial", None),
+                self.config.settings,
+                getattr(article_ctx, "period_review_kind", ""),
             )
             messages = [
                 {"role": "system", "content": system_prompt},
@@ -1735,7 +1781,7 @@ class ArticleGenerator:
             attempt_1_meta = _build_writer_attempt_metadata(
                 attempt_number=1,
                 provider_name=getattr(self.config.settings, "ai_provider", "unknown"),
-                model_name=self.model,
+                model_name=_answering_model(self.provider, self.model),
                 response_text=response,
                 val=candidate_val,
                 diag=candidate_diag,
