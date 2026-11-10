@@ -67,27 +67,20 @@ Before you begin, you'll need:
 
 Telebrief can be run in Docker for easy deployment. **No Python installation required on host!**
 
-The image is published to GitHub Container Registry on every release:
-
-```bash
-# Pull the latest image
-docker pull ghcr.io/belaytzev/telebrief:latest
-```
-
-Available tags: `latest`, `X.Y` (minor), `X.Y.Z` (patch).
+The `docker-compose.yml` builds the application image from the repository's `Dockerfile`. Version-tagged release images are also published to GitHub Container Registry.
 
 ```bash
 # 1. Create Telegram session (REQUIRED - one-time setup)
 ./create_session.sh
 
-# 2. Start the service
-docker compose up -d
+# 2. Build and start the service
+docker compose up -d --build
 
 # 3. View logs
-docker compose logs -f telebrief
+docker compose logs -f telebrief-app
 ```
 
-The `docker-compose.yml` uses the pre-built GHCR image by default, so no local build step is needed. If you want to build from source instead, replace the `image:` line with `build: .`.
+Coolify uses the same Compose definition to build from the configured Git branch. Version-tagged release images are published separately and are not used by the `dev` deployment.
 
 **Important**: You must create the Telegram session file BEFORE running Docker. The script uses Docker itself, so no additional dependencies needed.
 

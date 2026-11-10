@@ -4,6 +4,8 @@
 >
 > **Read this file before changing ingestion, Event-First processing, publication selection, digest generation, article generation, validation, prompts, or editorial tests.**
 
+For the production deployment path, Oracle/Coolify access, persistent state, database backup, and rollback procedures, see [Production operations runbook](docs/operations/production.md). For VM provisioning and migration, see [Server migration runbook](docs/operations/server-migration.md); for the OCI budget and Free Tier guardrail, see [Oracle Cloud budget guide](docs/operations/oracle-cloud-budget.md). Verify live OCI and Coolify settings before operating on a server; this repository does not store host secrets or the new VM's connection details.
+
 ---
 
 # 0. Product Editorial Contract — READ THIS FIRST

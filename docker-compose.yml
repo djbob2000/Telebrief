@@ -1,6 +1,7 @@
 services:
   telebrief-migrate:
-    image: ghcr.io/djbob2000/telebrief:${IMAGE_TAG:-dev}
+    image: telebrief:${IMAGE_TAG:-dev}
+    build: .
     restart: "no"
     depends_on:
       postgres:
@@ -19,7 +20,8 @@ services:
     command: ["python", "scripts/migrate.py"]
 
   telebrief-app:
-    image: ghcr.io/djbob2000/telebrief:${IMAGE_TAG:-dev}
+    image: telebrief:${IMAGE_TAG:-dev}
+    build: .
     container_name: telebrief-app
     restart: unless-stopped
     depends_on:
@@ -55,7 +57,8 @@ services:
       start_period: 40s
 
   telebrief-worker:
-    image: ghcr.io/djbob2000/telebrief:${IMAGE_TAG:-dev}
+    image: telebrief:${IMAGE_TAG:-dev}
+    build: .
     container_name: telebrief-worker
     restart: unless-stopped
     stop_grace_period: 120s
@@ -87,7 +90,8 @@ services:
         max-file: "3"
 
   telebrief-processing-worker:
-    image: ghcr.io/djbob2000/telebrief:${IMAGE_TAG:-dev}
+    image: telebrief:${IMAGE_TAG:-dev}
+    build: .
     container_name: telebrief-processing-worker
     restart: unless-stopped
     stop_grace_period: 120s
@@ -119,7 +123,8 @@ services:
         max-file: "3"
 
   telebrief-authority-worker:
-    image: ghcr.io/djbob2000/telebrief:${IMAGE_TAG:-dev}
+    image: telebrief:${IMAGE_TAG:-dev}
+    build: .
     container_name: telebrief-authority-worker
     restart: unless-stopped
     stop_grace_period: 120s
