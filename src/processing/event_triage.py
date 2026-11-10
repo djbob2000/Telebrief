@@ -662,6 +662,24 @@ class StoryGateResult:
         return "ANALYZE" if self.retention == "KEEP" else "IGNORE"
 
 
+_TRIAGE_ERROR_MESSAGE_LIMIT = 300
+_SECRET_TOKEN = re.compile(r"sk-[A-Za-z0-9_-]{8,}|Bearer\s+\S+", re.IGNORECASE)
+
+
+def _triage_error_detail(exc: BaseException) -> tuple[int | None, str, str]:
+    """HTTP status, exception class and a short message for a failed Gate batch.
+
+    The message is for diagnosis only: it is bounded and stripped of anything shaped like a key.
+    """
+    status = getattr(exc, "status_code", None)
+    if not isinstance(status, int):
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+    if not isinstance(status, int):
+        status = None
+    text = " ".join(_SECRET_TOKEN.sub("[redacted]", str(exc)).split())
+    return status, type(exc).__name__, text[:_TRIAGE_ERROR_MESSAGE_LIMIT]
+
+
 @dataclass(frozen=True)
 class StoryGateBatchResult:
     results: tuple[StoryGateResult, ...]
@@ -1135,8 +1153,8 @@ class StoryTriageService:
                     await err_conn.execute(
                         """
                         INSERT INTO story_event_triage_runs (
-                            triage_version, provider, model, prompt_hash, story_count, input_chars, status, error_kind, completed_at
-                        ) VALUES (%s, %s, %s, %s, %s, %s, 'failed', %s, now())
+                            triage_version, provider, model, prompt_hash, story_count, input_chars, status, error_kind, error_status, error_type, error_message, completed_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, 'failed', %s, %s, %s, %s, now())
                         """,
                         (
                             TRIAGE_VERSION,
@@ -1146,6 +1164,7 @@ class StoryTriageService:
                             len(uncached_stories),
                             len(user_prompt),
                             provider_kind,
+                            *_triage_error_detail(exc),
                         ),
                     )
             except Exception as log_exc:
@@ -1180,8 +1199,8 @@ class StoryTriageService:
                     await err_conn.execute(
                         """
                         INSERT INTO story_event_triage_runs (
-                            triage_version, provider, model, prompt_hash, story_count, input_chars, output_chars, status, error_kind, completed_at
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'failed', 'invalid_response', now())
+                            triage_version, provider, model, prompt_hash, story_count, input_chars, output_chars, status, error_kind, error_status, error_type, error_message, completed_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'failed', 'invalid_response', %s, %s, %s, now())
                         """,
                         (
                             TRIAGE_VERSION,
@@ -1191,6 +1210,7 @@ class StoryTriageService:
                             len(uncached_stories),
                             len(user_prompt),
                             len(raw_response),
+                            *_triage_error_detail(exc),
                         ),
                     )
             except Exception as log_exc:
@@ -1789,8 +1809,8 @@ class StoryTriageService:
                     await err_conn.execute(
                         """
                         INSERT INTO story_event_triage_runs (
-                            triage_version, provider, model, prompt_hash, story_count, input_chars, status, error_kind, completed_at
-                        ) VALUES (%s, %s, %s, %s, %s, %s, 'failed', %s, now())
+                            triage_version, provider, model, prompt_hash, story_count, input_chars, status, error_kind, error_status, error_type, error_message, completed_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, 'failed', %s, %s, %s, %s, now())
                         """,
                         (
                             TRIAGE_VERSION,
@@ -1800,6 +1820,7 @@ class StoryTriageService:
                             len(uncached_stories),
                             len(user_prompt),
                             type(exc).__name__,
+                            *_triage_error_detail(exc),
                         ),
                     )
             except Exception as log_exc:
