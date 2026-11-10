@@ -23,7 +23,26 @@ push to dev
   → telebrief-migrate runs, then the application and workers start
 ```
 
-The Coolify instance URL and webhook endpoint are `https://githubify.duckdns.org`. The Telebrief resource uses the GitHub App source for only `djbob2000/Telebrief`, branch `dev`, Docker Compose build strategy, base directory `/`, and `/docker-compose.yml`. In **Advanced → Deployment**, **Auto deploy** must be **Deploy on push (webhooks)**. GitHub App installation is limited to this repository; pull request updates, GitHub Actions runners, and GitHub deployment statuses are disabled.
+### Configure Coolify auto-deploy
+
+Use the existing Coolify resource for Telebrief. Do not create a second application or a separate GitHub Actions deployment.
+
+1. Open [Coolify](https://githubify.duckdns.org), then open the Telebrief resource in the `production` environment.
+2. Open **Git Source**. Select the connected Coolify GitHub App source for `djbob2000/Telebrief` and set the branch to `dev`. Do not select `main`.
+3. Confirm the build settings: Docker Compose, Base Directory `/`, and Docker Compose Location `/docker-compose.yml`.
+4. Open **Advanced → Build & deploy → Deployment**. Set **Auto deploy** to **Deploy on push (webhooks)**.
+5. Confirm the GitHub App is installed only for `djbob2000/Telebrief` and has the `Push` webhook event enabled. It needs repository read access; pull request and GitHub Actions permissions are not part of this deploy path. Coolify manages the webhook; do not add a second webhook by hand.
+6. If changing the Git source causes Coolify to show **Deploy again to apply** or **Rebuild required**, run one redeploy and wait for it to finish. This applies the selected source to the running resource.
+
+### What happens after a push
+
+1. Push a commit to `dev`. GitHub sends a push event to Coolify automatically.
+2. Coolify creates a deployment for that commit and builds the Compose image on the production VM. The build is asynchronous; the push starts the deployment, but the new version is not live immediately.
+3. Coolify runs the database migration service, then starts the app and workers. The new release is ready when the deployment reports **Success**, the resource reports **Running**, and PostgreSQL, the app, and all three workers are healthy.
+
+In Coolify, use **Deployment Logs** to follow the build and **Deployment history** to check that the entry is marked `Webhook` and references the commit you pushed. A failed or still-running deployment does not confirm that the new commit is live. If it fails, inspect that deployment's logs before retrying.
+
+**Last verified:** on 2026-11-10, pushing commit `3451ebd` to `dev` triggered a `Webhook` deployment. Coolify reported `Success`; PostgreSQL, the app, and all three workers reported healthy, and the app logs showed the bot polling and scheduler active.
 
 `.github/workflows/deploy-dev.yml` is intentionally not used: Coolify builds the `dev` branch directly. `.github/workflows/docker-publish.yml` remains a separate release-image workflow for `v*` tags; it does not deploy production.
 
@@ -57,13 +76,12 @@ Use [Database Backup and Disaster Recovery](../database_backup.md) for backup an
 
 Before restoring, verify the transfer checksum and that `pg_restore --list` can read the archive. Confirm the restore exit status and schema/table checks. Keep the old database volume intact until the new deployment is accepted. Never run a destructive `pg_restore --clean` against the only production copy.
 
-## Deploy and verify
+## Routine deployment checklist
 
-1. Push the intended change to `dev`; verify that Coolify receives the GitHub webhook and starts a deployment for that commit.
-2. In Coolify Deployment Logs, confirm it cloned the intended `dev` commit, built the Compose application image on the VM, and that `telebrief-migrate` succeeded.
-3. Confirm PostgreSQL is healthy and the app plus all three workers are running. Review logs without exposing secrets.
-4. Use the bot's `/status` command for a production smoke check. Do not trigger a real digest or channel publication just to test a deployment.
-5. Keep the old VM stopped and its volume intact until the new deployment is accepted and rollback is no longer needed.
+1. Follow **What happens after a push** above and confirm the deployed commit matches the commit you pushed to `dev`.
+2. In **Deployment Logs**, confirm `telebrief-migrate` completed successfully. In **Runtime Logs** or service status, confirm PostgreSQL, the app, and all three workers are healthy. Review logs without exposing secrets.
+3. For a production smoke check, use the bot's `/status` command. Do not trigger a real digest or channel publication just to test a deployment.
+4. Keep the rollback VM stopped and its volume intact until the new deployment is accepted and rollback is no longer needed.
 
 If a deployment fails before external production work occurs, stop the new app/workers and restore service from the old host. If the new system already processed jobs or published to Telegram, preserve its latest database state and reconcile it before restarting old workers to avoid duplicate side effects.
 

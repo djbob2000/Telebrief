@@ -58,11 +58,7 @@ ssh -i "$OCI_SSH_KEY" -N \
 
 ### Архитектура деплоя
 
-Coolify использует GitHub App с доступом только к `djbob2000/Telebrief` и webhook endpoint `https://githubify.duckdns.org`. В GitHub App оставлены только права и события, необходимые для чтения репозитория и доставки push-webhook; доступ к pull request updates, GitHub Actions runners и GitHub deployment statuses отключён.
-
-У ресурса Telebrief настройте ветку `dev`, Docker Compose build strategy, Base Directory `/`, Docker Compose Location `/docker-compose.yml` и **Advanced → Deployment → Auto deploy → Deploy on push (webhooks)**. Coolify клонирует commit из `dev` и собирает контейнеры на VM. Не добавляйте ручной webhook или второй workflow, запускающий параллельный deploy.
-
-Прежний workflow публикации dev-образов в GHCR удалён. Version-tagged workflow [`docker-publish.yml`](../../.github/workflows/docker-publish.yml) остаётся отдельным релизным артефактом и не участвует в production deploy.
+Новый сервер разворачивает production из `dev` через GitHub App webhook в Coolify. Полные актуальные настройки, действия после push и проверка успешного запуска описаны в [Production operations runbook: Configure Coolify auto-deploy](production.md#configure-coolify-auto-deploy) и [What happens after a push](production.md#what-happens-after-a-push). Следуйте этому runbook как единственной пошаговой инструкции по обычным релизам; здесь оставлена схема переноса и cutover.
 
 ### Compose и PostgreSQL
 
@@ -112,10 +108,7 @@ Coolify использует GitHub App с доступом только к `djb
 
 ## 6. Обычный релиз после переезда
 
-1. Изменения идут в `dev`; не используйте старую `main` как источник.
-2. GitHub App webhook запускает deployment в Coolify для нового push. Следите за статусом и логами в Coolify.
-3. Убедитесь, что Coolify собрал образ из ожидаемого commit, migration service завершился успешно, PostgreSQL healthy, а app и три worker-контейнера запущены.
-4. Выполните безопасную проверку бота командой `/status`. Не запускайте реальную публикацию только ради проверки deployment.
+Для обычного релиза используйте пошаговый раздел [What happens after a push](production.md#what-happens-after-a-push) и checklist из [Production operations runbook](production.md#routine-deployment-checklist). Деплой автоматически запускается после push в `dev`; `main` для этого сервиса не используется.
 
 Coolify builds выполняются на общей VM вместе с PostgreSQL и Telebrief. Если добавятся Next.js сайты, избегайте одновременных тяжёлых builds и следите за RAM/disk/CPU до изменения PostgreSQL лимитов.
 
