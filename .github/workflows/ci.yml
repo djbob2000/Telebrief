@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, custom]
+    branches: [dev]
   pull_request:
-    branches: [ main, custom ]
+    branches: [dev]
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -41,7 +41,7 @@ jobs:
       run: pre-commit run --all-files --show-diff-on-failure
 
   verify:
-    name: Verify Python and Database
+    name: Verify Python, Database, and Tests
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -99,6 +99,9 @@ jobs:
         ruff format --check src/
         mypy src/
 
+    - name: Run test suite
+      run: python -m pytest tests/ -q
+
   security:
     name: Security Scan
     runs-on: ubuntu-latest
@@ -123,7 +126,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install safety==3.7.0
+        pip install ruff==0.17.4 safety==3.7.0
 
     - name: Run security checks (Ruff security rules)
       run: ruff check --select S src/
