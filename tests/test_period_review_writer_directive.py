@@ -70,6 +70,15 @@ def test_directive_asks_for_synthesis_without_losing_detail_or_stretching_scope(
     assert "Do not stretch one report" in directive
 
 
+def test_directive_stops_day_counts_from_becoming_a_sequence() -> None:
+    directive = PERIOD_REVIEW_COMPOSITION_DIRECTIVE
+
+    # October listed «65-й», «69-й», «76-й день» for one outage: one count per place is enough.
+    assert "at most once per storyline and place" in directive
+    assert "keep one count with its report date" in directive
+    assert "Never list ordinal counts as a sequence" in directive
+
+
 def test_directive_stays_generic_about_the_edition() -> None:
     lowered = PERIOD_REVIEW_COMPOSITION_DIRECTIVE.lower()
 
