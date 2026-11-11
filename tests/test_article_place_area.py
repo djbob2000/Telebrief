@@ -127,3 +127,64 @@ def test_melitopolskoe_shosse_leads_up_to_gora(resolver):
 def test_50_let_sssr_is_nagornaya_on_gora(resolver):
     """50 лет СССР is the same street as Нагорная (Gora)."""
     assert _mismatches("На Горе на улице 50 лет СССР света нет.", resolver) == []
+
+
+def _mismatch_pairs(text: str, resolver) -> list[tuple[str, str]]:
+    entities = aq._resolved_entities(text, resolver)
+    spans = [
+        (start, end, entity)
+        for entity in entities
+        if entity.kind == "area" and entity.confidence == "high"
+        for start, end in aq._entity_text_spans(text, entity)
+        if resolver.geographic_area_group_keys(entity)
+    ]
+    pairs: list[tuple[object, object]] = []
+    aq._place_area_mismatch_entities(text, entities, spans, resolver, pairs)
+    return [
+        (aq._entity_display_name(place), aq._entity_display_name(area)) for place, area in pairs
+    ]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Run 388 (2026-11-11): roster paragraphs list areas and streets side by side.
+        "Свет появился на Горе, в Лисках и на улице Пушкина.",
+        "По сообщениям жителей, свет был на Горе, а также на улице Пушкина.",
+        "Жители сообщали о свете на Горе, в Колонии, на улице Пушкина и на АКЗ.",
+        "На Горе света нет, а на улице Пушкина свет дали утром.",
+        "На улице Пушкина свет дали утром, тогда как на Горе его нет.",
+        "На АКЗ и возле 7 Листопада света нет.",
+    ],
+)
+def test_listed_or_contrasted_locations_are_not_assigned_to_one_area(resolver, text):
+    assert _mismatches(text, resolver) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Apposition: the street is presented as part of the area.
+        "На Горе, на улице Пушкина, света нет.",
+        "На Горе, а именно на улице Пушкина, света нет.",
+        # The area frames both clauses: another street stands between them.
+        "На Горе света нет на Димитрова, а на улице Пушкина свет дали утром.",
+        # A colon introduces the area's own streets.
+        "На Горе света нет: на Димитрова с утра, а на улице Пушкина с обеда.",
+        # A semicolon may separate items of one area's list.
+        "Свет дали в Колонии; на улице Пушкина его не было до вечера.",
+        # Two names of the same upland area in different views restate it.
+        "На Горе, в Нагорной части, на улице Пушкина света нет.",
+    ],
+)
+def test_street_presented_inside_another_area_is_still_flagged(resolver, text):
+    assert _mismatches(text, resolver)
+
+
+def test_mismatch_names_the_place_and_the_area_for_the_editor(resolver):
+    assert _mismatch_pairs("На АКЗ возле 7 Листопада света нет.", resolver) == [
+        ("7 листопада", "АКЗ")
+    ]
+    assert _mismatch_pairs("На Горе на улице Пушкина света нет.", resolver) == [
+        ("улице пушкина", "горе")
+    ]

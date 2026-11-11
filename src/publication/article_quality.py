@@ -2204,13 +2204,107 @@ def _span_names_an_area(
     )
 
 
+# Reader prose that names an area and a place as separate locations does not
+# assign the place to that area. Each relation below is closed and adjacent:
+# nothing but the conjunction, the second mention's own preposition and a
+# street-type noun stands between the two mentions. A resolved area span may
+# already include its preposition («на Горе»), so the preposition is optional.
+_LOCATIVE_PREPOSITION = r"(?:(?:в|во|на|у|возле|около|под|за|рядом\s+с)\s+)?"
+_LOCATION_TYPE_NOUN = (
+    r"(?:(?:улиц|переул|проспект|бульвар|площад|микрорайон|район|пос[её]лк|квартал)\w*\s+)?"
+)
+# «в Лисках и на улице Пушкина», «на Горе, а также на улице Пушкина»
+_COORDINATED_LOCATIVE_GAP_RE = re.compile(
+    r"\s*,?\s*(?:и|или|либо|а\s+также|а\s+ещ[её])\s+" + _LOCATIVE_PREPOSITION + _LOCATION_TYPE_NOUN,
+    re.IGNORECASE,
+)
+# «на Горе, в Колонии, на улице Пушкина»: one element of a comma list.
+_LISTED_LOCATIVE_GAP_RE = re.compile(
+    r"\s*,\s*" + _LOCATIVE_PREPOSITION + _LOCATION_TYPE_NOUN,
+    re.IGNORECASE,
+)
+# «На Горе света нет, а на улице Пушкина дали»: the contrast opens the
+# place's own clause. «а именно» and «а точнее» introduce an apposition.
+_CONTRASTED_LOCATIVE_GAP_RE = re.compile(
+    r",\s*(?:а(?!\s+(?:именно|точнее|конкретно)\b)|но|однако|зато|тогда\s+как|"
+    r"в\s+то\s+же\s+время|между\s+тем|при\s+этом)\s+"
+    + _LOCATIVE_PREPOSITION
+    + _LOCATION_TYPE_NOUN
+    + r"$",
+    re.IGNORECASE,
+)
+
+
+def _locations_reported_separately(
+    text: str,
+    *,
+    place_span: tuple[int, int],
+    area_mention: tuple[int, int, Any],
+    sentence_start: int,
+    area_mention_spans: Sequence[tuple[int, int, Any]],
+    location_spans: Sequence[tuple[int, int]],
+    place_resolver: Any,
+) -> bool:
+    """Whether the prose names the area and the place as separate locations."""
+    area_start, area_end, area = area_mention
+    place_start, place_end = place_span
+    area_precedes = area_end <= place_start
+    gap_start, gap_end = (area_end, place_start) if area_precedes else (place_end, area_start)
+    if gap_start > gap_end:
+        return False
+    gap = text[gap_start:gap_end]
+    if _COORDINATED_LOCATIVE_GAP_RE.fullmatch(gap):
+        return True
+    gap_names_location = any(start < gap_end and gap_start < end for start, end in location_spans)
+    if not gap_names_location and ":" not in gap and _CONTRASTED_LOCATIVE_GAP_RE.search(gap):
+        return True
+    if not area_precedes or not _LISTED_LOCATIVE_GAP_RE.fullmatch(gap):
+        return False
+    # A comma alone may introduce an apposition («На Горе, на улице ...»), so a
+    # comma list counts only after two different areas have opened it.
+    earlier_areas = [
+        mention
+        for mention in area_mention_spans
+        if sentence_start <= mention[0] and mention[1] <= area_start
+    ]
+    if not earlier_areas:
+        return False
+    _previous_start, previous_end, previous_area = max(earlier_areas, key=lambda m: m[0])
+    previous_gap = text[previous_end:area_start]
+    if not (
+        _LISTED_LOCATIVE_GAP_RE.fullmatch(previous_gap)
+        or _COORDINATED_LOCATIVE_GAP_RE.fullmatch(previous_gap)
+    ):
+        return False
+    # Two names in different views (municipal vs colloquial) may be one area
+    # restated, i.e. an apposition; only a shared view proves two areas.
+    previous_keys = place_resolver.geographic_area_group_keys(previous_area)
+    area_keys = place_resolver.geographic_area_group_keys(area)
+    shared_views = {key.split(":", 1)[0] for key in previous_keys} & {
+        key.split(":", 1)[0] for key in area_keys
+    }
+    return bool(shared_views) and not (previous_keys & area_keys)
+
+
+def _entity_display_name(entity: Any) -> str:
+    """The profile alias the prose used («улице пушкина»), else the canonical name."""
+    for value in (getattr(entity, "matched_text", ""), getattr(entity, "canonical_name", "")):
+        if isinstance(value, str) and value.strip():
+            return re.sub(r"^(?:в|во|на|у)\s+", "", value.strip(), flags=re.IGNORECASE)
+    return ""
+
+
 def _place_area_mismatch_entities(
     text: str,
     paragraph_entities: Sequence[Any],
     area_mention_spans: Sequence[tuple[int, int, Any]],
     place_resolver: Any,
+    mismatched_pairs: list[tuple[Any, Any]] | None = None,
 ) -> list[Any]:
     """Return places/areas a paragraph assigns to a different area of the city.
+
+    When ``mismatched_pairs`` is given, each finding's (place, area) pair is
+    appended to it so the editor can be told which mention to fix.
 
     An area mention inside the place's own name («улице Морозова» vs the
     colloquial area «Морозова») is not a second location, and identifiers from
@@ -2220,6 +2314,12 @@ def _place_area_mismatch_entities(
     mismatched_place_entities: list[Any] = []
     if area_mention_spans:
         sentence_spans = _safe_sentence_spans(text)
+        location_spans = tuple(
+            span
+            for entity in paragraph_entities
+            if getattr(entity, "kind", "") in {"place", "area"}
+            for span in _entity_text_spans(text, entity)
+        )
         for entity in paragraph_entities:
             if (
                 entity.kind != "place"
@@ -2269,6 +2369,16 @@ def _place_area_mismatch_entities(
                 separation_end = max(area_end, place_end)
                 if _EXPLICIT_SEPARATE_REPORT_RE.search(text[separation_start:separation_end]):
                     continue
+                if _locations_reported_separately(
+                    text,
+                    place_span=(place_start, place_end),
+                    area_mention=(nearest_area_start, area_end, nearest_area),
+                    sentence_start=sentence_start,
+                    area_mention_spans=sentence_areas,
+                    location_spans=location_spans,
+                    place_resolver=place_resolver,
+                ):
+                    continue
                 nearest_area_keys = place_resolver.geographic_area_group_keys(nearest_area)
                 # Municipal and colloquial identifiers are different views of
                 # the city; disjoint keys across views prove no wrong area.
@@ -2277,6 +2387,8 @@ def _place_area_mismatch_entities(
                 }
                 if shared_views and not (place_area_keys & nearest_area_keys):
                     mismatched_place_entities.append(entity)
+                    if mismatched_pairs is not None:
+                        mismatched_pairs.append((entity, nearest_area))
                     break
         # A broad area label such as a profile-resolved "part of
         # the city" can become an unsupported umbrella for more
@@ -2326,6 +2438,8 @@ def _place_area_mismatch_entities(
                 if _AREA_EXPLICIT_CONTRAST_RE.search(umbrella_relation):
                     continue
                 mismatched_place_entities.append(specific_area)
+                if mismatched_pairs is not None:
+                    mismatched_pairs.append((specific_area, umbrella_area))
                 break
             if mismatched_place_entities:
                 break
@@ -2897,18 +3011,35 @@ def diagnose_article_quality(
                     if place_resolver.geographic_area_group_keys(entity)
                 ]
                 area_mentions = [(start, entity) for start, _end, entity in area_mention_spans]
+                mismatched_pairs: list[tuple[Any, Any]] = []
                 mismatched_place_entities = _place_area_mismatch_entities(
-                    paragraph.text, paragraph_entities, area_mention_spans, place_resolver
+                    paragraph.text,
+                    paragraph_entities,
+                    area_mention_spans,
+                    place_resolver,
+                    mismatched_pairs,
                 )
                 if mismatched_place_entities:
+                    # Only the resolved place and area names: they tell the editor
+                    # which mention to fix without copying the paragraph's prose.
+                    named_pairs = "; ".join(
+                        dict.fromkeys(
+                            f"«{_entity_display_name(place)}» стоит при районе "
+                            f"«{_entity_display_name(area)}»"
+                            for place, area in mismatched_pairs
+                            if _entity_display_name(place) and _entity_display_name(area)
+                        )
+                    )
                     findings.append(
                         ArticleReaderQualityFinding(
                             code="ARTICLE_PLACE_AREA_MISMATCH",
                             unit_id=f"P{p_idx:03d}",
                             message=(
                                 "В абзаце район напрямую связан с ориентиром или улицей, которые "
-                                "по профилю относятся к другой части города. Назовите районы у "
-                                "каждого наблюдения отдельно и не переносите географию между ними."
+                                "по профилю относятся к другой части города"
+                                + (f" ({named_pairs})" if named_pairs else "")
+                                + ". Назовите районы у каждого наблюдения отдельно и не "
+                                "переносите географию между ними."
                             ),
                             support_ids=paragraph_support_ids,
                             severity="blocking",
