@@ -140,7 +140,7 @@ async def advance_storyline_chronicle(timestamp: int) -> None:
 
     from src.config_loader import load_config
     from src.processing.providers import resolve_processing_provider
-    from src.publication.chronicle import advance_chronicle
+    from src.publication.chronicle import CHRONICLE_REQUEST_TIMEOUT_SECONDS, advance_chronicle
     from src.runtime import get_runtime
 
     log = logging.getLogger(__name__)
@@ -151,7 +151,9 @@ async def advance_storyline_chronicle(timestamp: int) -> None:
     runtime = get_runtime()
     # The chronicle is background processing: it uses the same model as Gate. The editorial
     # default (settings.openai_model = gpt-5-nano) is not in the .env allowlist.
-    provider = resolve_processing_provider(runtime, config, log)
+    provider = resolve_processing_provider(
+        runtime, config, log, request_timeout=CHRONICLE_REQUEST_TIMEOUT_SECONDS
+    )
     model = getattr(config, "openrouter_processing_model", None) or None
     now = dt.datetime.fromtimestamp(timestamp, dt.timezone.utc)
     async with runtime.uow.transaction() as conn:

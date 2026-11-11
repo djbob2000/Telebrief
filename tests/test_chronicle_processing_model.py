@@ -45,6 +45,20 @@ def test_processing_provider_is_a_cascade_pinned_to_the_processing_model() -> No
     assert [slot[2] for slot in provider.providers] == [_PROCESSING_MODEL]
 
 
+def test_processing_provider_keeps_the_default_request_timeout() -> None:
+    provider = resolve_processing_provider(None, _config(), logging.getLogger("test"))
+
+    assert provider.providers[0][1].request_timeout == 300.0
+
+
+def test_chronicle_request_timeout_is_applied_to_the_processing_slot() -> None:
+    provider = resolve_processing_provider(
+        None, _config(), logging.getLogger("test"), request_timeout=900
+    )
+
+    assert provider.providers[0][1].request_timeout == 900.0
+
+
 def test_editorial_default_model_is_overridden_by_the_processing_slot() -> None:
     recorder = _RecordingProvider()
     cascade = ProviderCascade([("processing", recorder, _PROCESSING_MODEL)], logging.getLogger("t"))

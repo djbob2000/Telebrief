@@ -64,6 +64,10 @@ LATE_LINK_DAYS = 60
 # Visible answer cap; only generated tokens are billed. A truncated answer is
 # a failed model call: it is retried, never replaced by text written in code.
 MODEL_MAX_TOKENS = 32_000
+# Background work with no reader waiting: a longer request timeout than the 300 s default.
+# The "other" call of week 2026-10-12 ran past 300 s twice in a row; a timed-out call
+# bills its tokens and leaves the week unwritten.
+CHRONICLE_REQUEST_TIMEOUT_SECONDS = 900
 
 
 class ChronicleModelError(RuntimeError):

@@ -126,7 +126,9 @@ async def run_apply(config_path: str, slug: str | None, max_weeks: int, max_roll
     config = load_config(config_path)
     editorial = config.settings.publication_editorial
     # Same model as the scheduled chronicle job (background processing, not the editorial default).
-    provider = resolve_processing_provider(None, config, log)
+    provider = resolve_processing_provider(
+        None, config, log, request_timeout=chronicle.CHRONICLE_REQUEST_TIMEOUT_SECONDS
+    )
     model = getattr(config, "openrouter_processing_model", None) or None
     db = load_database_config(config_path, require_enabled=True)
     pool = await open_pool(db)

@@ -8,7 +8,13 @@ from typing import Any
 from src.ai_providers import ProviderCascade, create_provider
 
 
-def resolve_processing_provider(runtime: Any, config: Any, logger: logging.Logger) -> Any:
+def resolve_processing_provider(
+    runtime: Any,
+    config: Any,
+    logger: logging.Logger,
+    *,
+    request_timeout: int | None = None,
+) -> Any:
     """Resolve a provider without letting the editorial cascade replace processing routing.
 
     OpenRouter processing uses its dedicated model as a one-slot cascade override when
@@ -29,6 +35,7 @@ def resolve_processing_provider(runtime: Any, config: Any, logger: logging.Logge
                 openrouter_model=processing_model,
                 openrouter_model_2="",
                 openrouter_models=[processing_model],
+                api_timeout=request_timeout or 300,
             )
             # A single OpenAIProvider accepts the caller's model parameter directly. Keep
             # the configured processing model in a cascade slot so it overrides that input.
