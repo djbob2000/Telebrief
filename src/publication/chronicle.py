@@ -50,7 +50,6 @@ MAX_RUNNING_STORYLINES = 60
 MAX_INPUT_CHARS = 100_000
 # A week chunk is smaller: the answer restates its reports as storyline facts.
 WEEK_INPUT_CHARS = 45_000
-MIN_MODEL_STORIES = 3
 MAX_REPORTS_PER_STORY = 6
 PAIR_SIMILARITY = 0.82
 WEEK_FACTS = 8
@@ -59,10 +58,17 @@ REF_TEXT_CHARS = 400
 ROLLUP_FACTS = {"month": 12, "quarter": 12, "half_year": 12, "year": 14}
 ROLLUP_STORYLINES_PER_THEME = {"month": 20, "quarter": 20, "half_year": 20, "year": 24}
 ROLLUP_OTHER_FACTS = {"month": 12, "quarter": 12, "half_year": 12, "year": 14}
+# The other-news rollup reads at most this many of its folded facts, to keep one prompt bounded.
+ROLLUP_OTHER_INPUT_FACTS = 60
 LATE_LINK_DAYS = 60
-# Visible answer cap; only generated tokens are billed, and a truncated JSON
-# answer falls back to a deterministic entry, so the cap stays generous.
+# Visible answer cap; only generated tokens are billed. A truncated answer is
+# a failed model call: it is retried, never replaced by text written in code.
 MODEL_MAX_TOKENS = 32_000
+
+
+class ChronicleModelError(RuntimeError):
+    """A model call failed twice; the period is left unwritten and retried later."""
+
 
 THEME_LABELS: dict[str, str] = {
     "safety": "Безопасность",
@@ -603,27 +609,6 @@ def _fact_date(raw: Any, allowed: Sequence[str]) -> str:
     return text if text in allowed else min(allowed)
 
 
-def deterministic_facts(
-    stories: Sequence[ChronicleStory], tz: dt.tzinfo, *, limit: int | None = None
-) -> list[dict[str, Any]]:
-    """One fact per Story: its earliest PUBLISH evidence, heaviest Stories first."""
-    ranked = sorted(stories, key=lambda s: (-len(s.source_ids), s.first_seen_at, s.story_id))
-    if limit is not None:
-        ranked = ranked[:limit]
-    facts: list[dict[str, Any]] = [
-        {
-            "date": _local_date(story.reports[0].observed_at, tz),
-            "text": story.reports[0].evidence_text,
-            "refs": [story.reports[0].ref],
-            "story_ids": [story.story_id],
-            "sources": max(1, len(story.source_ids)),
-        }
-        for story in ranked
-    ]
-    facts.sort(key=lambda f: (f["date"], f["refs"][0]))
-    return facts
-
-
 def validate_week_storylines(
     parsed: Any,
     *,
@@ -698,10 +683,11 @@ def validate_week_storylines(
             if summary:
                 stats["summaries_dropped"] = stats.get("summaries_dropped", 0) + 1
             summary, summary_refs = "", []
-        method = "model"
         if not facts:
-            facts = deterministic_facts([by_id[sid] for sid in story_ids], tz, limit=WEEK_FACTS)
-            method = "deterministic"
+            # No grounded fact from the model: the entry is not written in code.
+            # Its Stories stay unlinked and join the theme's other-news entry.
+            stats["storylines_without_facts"] = stats.get("storylines_without_facts", 0) + 1
+            continue
         facts.sort(key=lambda f: (f["date"], f["refs"][0]))
         key = str(item.get("storyline") or "").strip()
         drafts.append(
@@ -715,7 +701,7 @@ def validate_week_storylines(
                 trajectory_refs=summary_refs,
                 facts=facts,
                 details=details,
-                method=method,
+                method="model",
             )
         )
     return drafts
@@ -737,7 +723,7 @@ def merge_drafts(first: EntryDraft, second: EntryDraft) -> EntryDraft:
         trajectory_refs=list(dict.fromkeys(first.trajectory_refs + second.trajectory_refs)),
         facts=facts,
         details=(first.details + second.details)[:MAX_DETAILS],
-        method="model" if "model" in (first.method, second.method) else "deterministic",
+        method="model",
     )
 
 
@@ -816,10 +802,12 @@ async def _call_model(
 
 
 async def _call_with_retry(log: logging.Logger, label: str, *args: Any, **kwargs: Any) -> Any:
+    failures: list[str] = []
     for attempt in (1, 2):
         try:
             return await _call_model(*args, **kwargs)
-        except Exception as exc:  # noqa: BLE001 - the chronicle falls back to deterministic entries
+        except Exception as exc:  # noqa: BLE001 - recorded, then the period fails closed
+            failures.append(type(exc).__name__)
             log.warning(
                 "chronicle %s model call %s failed (%s: %s)",
                 label,
@@ -827,7 +815,7 @@ async def _call_with_retry(log: logging.Logger, label: str, *args: Any, **kwargs
                 type(exc).__name__,
                 exc,
             )
-    return None
+    raise ChronicleModelError(f"chronicle {label} failed twice: {', '.join(failures)}")
 
 
 # ---------------------------------------------------------------------------
@@ -1053,8 +1041,6 @@ async def plan_week(
         by_theme[story.theme].append(story)
     chunks: dict[str, list[list[ChronicleStory]]] = {}
     for theme, theme_stories in sorted(by_theme.items()):
-        if len(theme_stories) < MIN_MODEL_STORIES:
-            continue
         pairs = await similar_story_pairs(conn, [s.story_id for s in theme_stories])
         chunks[theme] = chunk_stories(order_by_similarity(theme_stories, pairs), tz)
     return WeekPlan(period=period, stories=stories, chunks=chunks)
@@ -1085,7 +1071,7 @@ async def build_week(
             )
             for theme in plan.chunks
         }
-    stats: dict[str, int] = {"model_calls": 0, "fallback_chunks": 0}
+    stats: dict[str, int] = {"model_calls": 0}
     drafts: dict[str, EntryDraft] = {}
     claimed: set[int] = set()
     counter = iter(range(1, 1_000_000))
@@ -1116,9 +1102,6 @@ async def build_week(
                 reasoning_effort=reasoning_effort,
                 headroom_tokens=headroom_tokens,
             )
-            if parsed is None:
-                stats["fallback_chunks"] += 1
-                continue
             for draft in validate_week_storylines(
                 parsed,
                 theme=theme,
@@ -1142,6 +1125,48 @@ async def build_week(
                             "last_summary": draft.trajectory[:500],
                         },
                     )
+    # Stories the model did not place in a storyline form the theme's other-news entry,
+    # which is written by the model as well.
+    placed = {sid for draft in drafts.values() for sid in draft.story_ids}
+    leftovers: dict[str, list[ChronicleStory]] = defaultdict(list)
+    for story in plan.stories:
+        if story.story_id not in placed:
+            leftovers[story.theme].append(story)
+    other_drafts: dict[str, EntryDraft | None] = {}
+    for theme, theme_stories in sorted(leftovers.items()):
+        other: EntryDraft | None = None
+        for chunk in chunk_stories(theme_stories, tz):
+            prompt = build_week_prompt(
+                edition_name=edition_name,
+                theme=theme,
+                period=period,
+                running=[],
+                stories=chunk,
+                tz=tz,
+            )
+            stats["model_calls"] += 1
+            parsed = await _call_with_retry(
+                log,
+                f"week {period.start} {theme} other",
+                provider,
+                model,
+                WEEK_SYSTEM_PROMPT,
+                prompt,
+                reasoning_effort=reasoning_effort,
+                headroom_tokens=headroom_tokens,
+            )
+            for draft in validate_week_storylines(
+                parsed,
+                theme=theme,
+                stories=chunk,
+                known_keys=set(),
+                claimed=set(),
+                tz=tz,
+                new_key=new_key,
+                stats=stats,
+            ):
+                other = draft if other is None else merge_drafts(other, draft)
+        other_drafts[theme] = other
     async with uow.transaction() as conn:
         result = await save_week(
             conn,
@@ -1149,6 +1174,7 @@ async def build_week(
             period=period,
             stories=plan.stories,
             drafts=list(drafts.values()),
+            other_drafts=other_drafts,
             tz=tz,
             model=model,
             stats=stats,
@@ -1164,6 +1190,7 @@ async def save_week(
     period: ChroniclePeriod,
     stories: Sequence[ChronicleStory],
     drafts: Sequence[EntryDraft],
+    other_drafts: Mapping[str, EntryDraft | None],
     tz: dt.tzinfo,
     model: str | None,
     stats: Mapping[str, int],
@@ -1243,6 +1270,8 @@ async def save_week(
             stories=theme_stories,
             tz=tz,
             new_story_count=len(theme_stories),
+            model_draft=other_drafts.get(theme),
+            model=model,
         )
     coverage = min((s.first_seen_at for s in stories), default=None)
     await _mark_period(
@@ -1280,8 +1309,13 @@ async def _save_other_week_entry(
     stories: Sequence[ChronicleStory],
     tz: dt.tzinfo,
     new_story_count: int,
+    model_draft: EntryDraft | None,
+    model: str | None,
 ) -> int:
-    """Link Stories to the theme's catch-all storyline and (re)write its week entry."""
+    """Link Stories to the theme's catch-all storyline and write its model-made week entry.
+
+    Without a grounded model draft the Stories are linked but no entry text is written.
+    """
     if not stories:
         return 0
     first = min(s.first_seen_at for s in stories)
@@ -1290,14 +1324,18 @@ async def _save_other_week_entry(
         conn, edition_id=edition_id, theme=theme, first=first, last=last, count=new_story_count
     )
     await _link(conn, [s.story_id for s in stories], storyline_id, "theme_other", period)
-    facts = deterministic_facts(stories, tz)
+    if model_draft is None or not model_draft.facts:
+        return 0
     draft = EntryDraft(
         storyline_key=f"sl:{storyline_id}",
         theme=theme,
         title=f"{THEME_LABELS.get(theme, theme)}: другие сообщения",
         story_ids=[s.story_id for s in stories],
-        facts=facts,
-        method="deterministic",
+        trajectory=model_draft.trajectory,
+        trajectory_refs=model_draft.trajectory_refs,
+        facts=model_draft.facts,
+        details=model_draft.details,
+        method="model",
     )
     reports = {r.ref: r for story in stories for r in story.reports}
     await _save_entry(
@@ -1308,7 +1346,7 @@ async def _save_other_week_entry(
         draft=draft,
         weight=entry_weight(stories, tz),
         ref_texts=_ref_texts(_cited_refs(draft), reports, tz),
-        model=None,
+        model=model,
     )
     return 1
 
@@ -1358,6 +1396,8 @@ async def link_late_stories(
                     if existing_ids
                     else []
                 )
+                # Late Stories are only linked: rewriting the entry needs a model call,
+                # and the week's other-news text is never extended in code.
                 await _save_other_week_entry(
                     conn,
                     edition_id=edition_id,
@@ -1366,6 +1406,8 @@ async def link_late_stories(
                     stories=[*existing, *theme_late],
                     tz=tz,
                     new_story_count=len(theme_late),
+                    model_draft=None,
+                    model=None,
                 )
             await conn.execute(
                 """
@@ -1521,26 +1563,6 @@ def select_facts(facts: Sequence[Mapping[str, Any]], cap: int) -> list[dict[str,
     return sorted((dict(f) for f in ranked), key=lambda f: str(f.get("date")))
 
 
-def deterministic_rollup(merged: MergedStoryline, cap: int) -> EntryDraft:
-    trajectories = [c.trajectory for c in sorted(merged.children, key=lambda c: c.period.start)]
-    return EntryDraft(
-        storyline_key=f"sl:{merged.storyline_id}",
-        theme=merged.theme,
-        title=merged.title,
-        story_ids=sorted({s for f in merged.facts for s in f.get("story_ids") or ()}),
-        trajectory=clip_sentences(" ".join(t for t in trajectories if t), 2000),
-        trajectory_refs=list(
-            dict.fromkeys(
-                r for c in merged.children for r in c.metadata.get("trajectory_refs") or ()
-            )
-        ),
-        facts=select_facts(merged.facts, cap),
-        details=merged.details[:MAX_DETAILS],
-        method="deterministic",
-        child_count=len(merged.children),
-    )
-
-
 def _rollup_row(merged: MergedStoryline, period: ChroniclePeriod) -> dict[str, Any]:
     start, end = period.start.isoformat(), period.end.isoformat()
     return {
@@ -1649,8 +1671,10 @@ def validate_rollup(
             if summary:
                 stats["summaries_dropped"] = stats.get("summaries_dropped", 0) + 1
             summary, summary_refs = "", []
-        if not summary:
-            summary = deterministic_rollup(merged, cap).trajectory
+        if not summary and not facts:
+            # Nothing grounded from the model: no entry is written in code instead.
+            stats["rollups_without_text"] = stats.get("rollups_without_text", 0) + 1
+            continue
         facts.sort(key=lambda f: (f["date"], f["refs"][0]))
         out[key] = EntryDraft(
             storyline_key=key,
@@ -1732,109 +1756,100 @@ async def build_rollup(
         folded[theme].extend(group[keep_per_theme:])
         del group[keep_per_theme:]
 
-    stats: dict[str, int] = {"model_calls": 0, "fallback_batches": 0}
-    drafts: list[tuple[MergedStoryline, EntryDraft]] = []
-    for theme, group in sorted(named.items()):
-        needs_model = [m for m in group if len(m.children) > 1 or len(m.facts) > cap]
-        for merged in group:
-            if merged not in needs_model:
-                drafts.append((merged, deterministic_rollup(merged, cap)))
-        rows = [(m, _rollup_row(m, period)) for m in needs_model]
-        for batch in _rollup_batches(rows):
-            prompt = json.dumps(
-                {
-                    "edition": edition_name,
-                    "theme": THEME_LABELS.get(theme, theme),
-                    "period": {
-                        "first_day": period.start.isoformat(),
-                        "last_day": period.last_day.isoformat(),
-                    },
-                    "storylines": [row for _m, row in batch],
-                },
-                ensure_ascii=False,
-                indent=1,
-            )
-            stats["model_calls"] += 1
-            parsed = await _call_with_retry(
-                log,
-                f"{period.kind} {period.start} {theme}",
-                provider,
-                model,
-                ROLLUP_SYSTEM_PROMPT.replace("FACT_CAP", str(cap)),
-                prompt,
-                reasoning_effort=reasoning_effort,
-                headroom_tokens=headroom_tokens,
-            )
-            keyed = {f"sl:{m.storyline_id}": m for m, _row in batch}
-            valid = (
-                validate_rollup(parsed, batch=keyed, period=period, cap=cap, stats=stats)
-                if parsed is not None
-                else {}
-            )
-            if parsed is None:
-                stats["fallback_batches"] += 1
-            for key, merged in keyed.items():
-                drafts.append((merged, valid.get(key) or deterministic_rollup(merged, cap)))
-
+    # Every rollup text is written by the model. A batch whose call fails twice raises
+    # ChronicleModelError before anything is saved, so the period is retried later.
     other_cap = ROLLUP_OTHER_FACTS[period.kind]
+    jobs: list[tuple[str, int, list[tuple[MergedStoryline, dict[str, Any]]]]] = []
+    for theme, group in sorted(named.items()):
+        for batch in _rollup_batches([(m, _rollup_row(m, period)) for m in group]):
+            jobs.append((theme, cap, batch))
+    for theme, group in sorted(folded.items()):
+        facts = select_facts([f for m in group for f in m.facts], ROLLUP_OTHER_INPUT_FACTS)
+        if not facts:
+            continue
+        source_ids = sorted({s for m in group for s in m.weight.get("source_ids") or ()})
+        ref_texts: dict[str, dict[str, Any]] = {}
+        for m in group:
+            ref_texts.update(m.ref_texts)
+        other = MergedStoryline(
+            storyline_id=0,
+            theme=theme,
+            kind="theme_other",
+            title=f"{THEME_LABELS.get(theme, theme)}: другие сообщения",
+            children=[child for m in group for child in m.children],
+            facts=facts,
+            details=[],
+            weight={
+                "stories": sum(int(m.weight.get("stories") or 0) for m in group),
+                "sources": len(source_ids),
+                "reports": sum(int(m.weight.get("reports") or 0) for m in group),
+                "days": sorted({d for m in group for d in m.weight.get("days") or ()}),
+                "source_ids": source_ids,
+                "folded_storylines": len(group),
+            },
+            ref_texts=ref_texts,
+        )
+        jobs.append((theme, other_cap, [(other, _rollup_row(other, period))]))
+
+    stats: dict[str, int] = {"model_calls": 0}
+    drafts: list[tuple[MergedStoryline, EntryDraft]] = []
+    for theme, job_cap, batch in jobs:
+        prompt = json.dumps(
+            {
+                "edition": edition_name,
+                "theme": THEME_LABELS.get(theme, theme),
+                "period": {
+                    "first_day": period.start.isoformat(),
+                    "last_day": period.last_day.isoformat(),
+                },
+                "storylines": [row for _m, row in batch],
+            },
+            ensure_ascii=False,
+            indent=1,
+        )
+        stats["model_calls"] += 1
+        parsed = await _call_with_retry(
+            log,
+            f"{period.kind} {period.start} {theme}",
+            provider,
+            model,
+            ROLLUP_SYSTEM_PROMPT.replace("FACT_CAP", str(job_cap)),
+            prompt,
+            reasoning_effort=reasoning_effort,
+            headroom_tokens=headroom_tokens,
+        )
+        keyed = {f"sl:{m.storyline_id}": m for m, _row in batch}
+        valid = validate_rollup(parsed, batch=keyed, period=period, cap=job_cap, stats=stats)
+        for key, merged in keyed.items():
+            if key in valid:
+                drafts.append((merged, valid[key]))
+
     async with uow.transaction() as conn:
         entry_count = 0
         for merged, draft in drafts:
+            if merged.kind == "theme_other":
+                first_fact = min(str(f["date"]) for f in merged.facts)
+                last_fact = max(str(f["date"]) for f in merged.facts)
+                storyline_id = await _theme_other_storyline(
+                    conn,
+                    edition_id=edition_id,
+                    theme=merged.theme,
+                    first=dt.datetime.fromisoformat(first_fact).replace(tzinfo=dt.timezone.utc),
+                    last=dt.datetime.fromisoformat(last_fact).replace(tzinfo=dt.timezone.utc),
+                    count=0,
+                )
+            else:
+                storyline_id = merged.storyline_id
             refs = _cited_refs(draft)
-            await _save_entry(
-                conn,
-                edition_id=edition_id,
-                storyline_id=merged.storyline_id,
-                period=period,
-                draft=draft,
-                weight=merged.weight,
-                ref_texts={ref: merged.ref_texts[ref] for ref in refs if ref in merged.ref_texts},
-                model=model,
-            )
-            entry_count += 1
-        for theme, group in sorted(folded.items()):
-            facts = select_facts([f for m in group for f in m.facts], other_cap)
-            if not facts:
-                continue
-            first_fact = min(str(f["date"]) for m in group for f in m.facts)
-            last_fact = max(str(f["date"]) for m in group for f in m.facts)
-            storyline_id = await _theme_other_storyline(
-                conn,
-                edition_id=edition_id,
-                theme=theme,
-                first=dt.datetime.fromisoformat(first_fact).replace(tzinfo=dt.timezone.utc),
-                last=dt.datetime.fromisoformat(last_fact).replace(tzinfo=dt.timezone.utc),
-                count=0,
-            )
-            ref_texts: dict[str, dict[str, Any]] = {}
-            for m in group:
-                ref_texts.update(m.ref_texts)
-            source_ids = sorted({s for m in group for s in m.weight.get("source_ids") or ()})
-            draft = EntryDraft(
-                storyline_key=f"sl:{storyline_id}",
-                theme=theme,
-                title=f"{THEME_LABELS.get(theme, theme)}: другие сообщения",
-                story_ids=sorted({s for f in facts for s in f.get("story_ids") or ()}),
-                facts=facts,
-                method="deterministic",
-                child_count=len(group),
-            )
             await _save_entry(
                 conn,
                 edition_id=edition_id,
                 storyline_id=storyline_id,
                 period=period,
                 draft=draft,
-                weight={
-                    "stories": sum(int(m.weight.get("stories") or 0) for m in group),
-                    "sources": len(source_ids),
-                    "reports": sum(int(m.weight.get("reports") or 0) for m in group),
-                    "days": sorted({d for m in group for d in m.weight.get("days") or ()}),
-                    "source_ids": source_ids,
-                    "folded_storylines": len(group),
-                },
-                ref_texts={ref: ref_texts[ref] for ref in _cited_refs(draft) if ref in ref_texts},
-                model=None,
+                weight=merged.weight,
+                ref_texts={ref: merged.ref_texts[ref] for ref in refs if ref in merged.ref_texts},
+                model=model,
             )
             entry_count += 1
         await _mark_period(

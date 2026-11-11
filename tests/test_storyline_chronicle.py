@@ -3,14 +3,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
+import logging
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from src.publication.chronicle import (
+    ChronicleModelError,
     ChronicleReport,
     ChronicleStory,
     MergedStoryline,
     StoredEntry,
+    _call_with_retry,
     _rollup_batches,
     child_periods,
     clip_sentences,
@@ -249,7 +255,14 @@ def test_week_entry_ignores_stories_outside_input_and_double_claims() -> None:
     stories = _week_stories()
     parsed = {
         "storylines": [
-            {"storyline": "a", "story_ids": [1, 404], "facts": [], "title": "A"},
+            {
+                "storyline": "a",
+                "story_ids": [1, 404],
+                "facts": [
+                    {"date": "2026-10-05", "text": "На Горе нет света", "refs": ["fragment:11"]}
+                ],
+                "title": "A",
+            },
             {"storyline": "b", "story_ids": [1], "facts": [], "title": "B"},
         ]
     }
@@ -270,9 +283,10 @@ def test_week_entry_ignores_stories_outside_input_and_double_claims() -> None:
     assert claimed == {1}
 
 
-def test_week_entry_falls_back_to_deterministic_facts_without_model_facts() -> None:
+def test_week_storyline_without_grounded_facts_is_dropped_not_written_in_code() -> None:
     stories = _week_stories()
     parsed = {"storylines": [{"storyline": "x", "story_ids": [2], "facts": [], "title": ""}]}
+    stats: dict[str, int] = {}
     drafts = validate_week_storylines(
         parsed,
         theme="water",
@@ -281,10 +295,30 @@ def test_week_entry_falls_back_to_deterministic_facts_without_model_facts() -> N
         claimed=set(),
         tz=UTC,
         new_key=lambda: "sl:new",
-        stats={},
+        stats=stats,
     )
-    assert drafts[0].method == "deterministic"
-    assert drafts[0].facts[0]["refs"] == ["fragment:21"]
+    assert drafts == []
+    assert stats["storylines_without_facts"] == 1
+
+
+def test_failed_model_call_raises_instead_of_returning_a_fallback() -> None:
+    class _Failing:
+        async def chat_completion(self, **_kwargs: object) -> str:
+            raise RuntimeError("upstream unavailable")
+
+    with pytest.raises(ChronicleModelError):
+        asyncio.run(
+            _call_with_retry(
+                logging.getLogger("test"),
+                "week test",
+                _Failing(),
+                None,
+                "system",
+                "user",
+                reasoning_effort="none",
+                headroom_tokens=0,
+            )
+        )
 
 
 def test_malformed_week_answer_yields_no_entries() -> None:
