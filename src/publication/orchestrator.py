@@ -234,7 +234,9 @@ class PublicationOrchestrator:
                 edition_slug_result = edition.slug
 
         await self._enqueue_sources(source_ids_to_enqueue)
-        logger.info(
+        # A terminal intent re-requested by a catch-up tick is a no-op; keep it out of INFO.
+        logger.log(
+            logging.INFO if decision is not None else logging.DEBUG,
             "publication_intent_requested",
             extra={
                 "intent_id": intent.id,

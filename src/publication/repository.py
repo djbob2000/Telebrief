@@ -1815,6 +1815,26 @@ class PublicationRepository:
             ),
         )
 
+    async def fail_orphaned_generation_attempts(
+        self,
+        conn: psycopg.AsyncConnection,
+        run_id: int,
+        *,
+        error_kind: str = "worker_interrupted",
+    ) -> int:
+        """Close attempts left `running` by a worker that stopped mid-generation."""
+        cursor = await conn.execute(
+            """
+            UPDATE publication_generation_attempts
+            SET status = 'failed',
+                error_kind = %s,
+                completed_at = now()
+            WHERE publication_run_id = %s AND status = 'running'
+            """,
+            (error_kind, run_id),
+        )
+        return cursor.rowcount
+
     async def create_publication(
         self,
         conn: psycopg.AsyncConnection,

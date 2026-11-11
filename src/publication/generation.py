@@ -889,6 +889,16 @@ class PublicationGenerationService:
                             f"Unsupported frozen article_recovery_version: {rec_ver} (supported: {SUPPORTED_ARTICLE_RECOVERY_VERSIONS})"
                         )
 
+            if run.status == "generating":
+                # generate_publication holds an exclusive per-run queue lock, so no
+                # other worker is generating this run. Attempts still `running` belong
+                # to a worker that stopped mid-generation (for example during a deploy).
+                closed = await self.repo.fail_orphaned_generation_attempts(conn, run_id)
+                if closed:
+                    logger.warning(
+                        "publication_orphaned_attempts_closed",
+                        extra={"publication_run_id": run_id, "attempts": closed},
+                    )
             await self.repo.transition_run(conn, run_id, "generating")
 
         # Build deterministic frozen input from sealed knowledge
