@@ -1204,7 +1204,7 @@ Use deterministic validation and traceable evidence instead.
 Model declarations are configured exclusively via `.env`, NEVER in `config.yaml`.
 `config.yaml` must not declare `ai_model`.
 
-- **Primary Model**: `OPENROUTER_MODEL=openai/gpt-6-luna,anthropic/claude-haiku-5.5` (comma-separated slots: primary, then fallback)
+- **Primary Model**: `OPENROUTER_MODEL=deepseek/deepseek-v4.1-flash-1017:floor,openai/gpt-6-luna,anthropic/claude-haiku-5.5` (comma-separated slots: primary, then fallbacks). `deepseek/deepseek-v4.1-flash-1017:floor` is always the primary slot; `openai/gpt-6-luna` is the backup. `OPENROUTER_PROCESSING_MODEL` pins background processing (chronicle, Gate, enrichment) to the same deepseek model.
 
 **STRICT MODEL ALLOWLIST**:
 - Telebrief strictly enforces a runtime allowlist in `src/ai_providers.py` (`validate_model_allowed`).
