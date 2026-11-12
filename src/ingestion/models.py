@@ -54,6 +54,9 @@ class ObservedItem:
     observed_at: datetime
     parent_external_id: str | None = None
     root_external_id: str | None = None
+    # Stable platform identity of the author (for Telegram, the sender user id).
+    # Display names are not identities; None means the platform gave no id.
+    author_external_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.external_id:

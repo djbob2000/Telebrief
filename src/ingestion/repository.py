@@ -65,9 +65,9 @@ class IngestionRepository:
             """
             INSERT INTO source_items (
                 source_id, kind, external_id, author_name, canonical_url,
-                published_at, first_collected_at, metadata
+                published_at, first_collected_at, metadata, author_external_id
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (source_id, external_id) DO NOTHING
             RETURNING id, source_id, kind, external_id, parent_item_id,
                 root_item_id, author_name, author_external_id, canonical_url,
@@ -82,6 +82,7 @@ class IngestionRepository:
                 observation.published_at,
                 observation.observed_at,
                 Jsonb(observation.metadata),
+                observation.author_external_id,
             ),
         )
         row = await cursor.fetchone()
