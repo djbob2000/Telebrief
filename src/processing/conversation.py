@@ -604,3 +604,45 @@ def withhold_context_only_evidence(
     if not withheld:
         return payload, False
     return replace(payload, evidence_items=tuple(items)), True
+
+
+def clear_context_only_service_locations(
+    payload: EventPayload,
+    *,
+    own_texts: Sequence[str],
+    context_texts: Sequence[str],
+    scope: EditionScopeConfig,
+    geo_context: EditionGeographyContext | None,
+) -> tuple[EventPayload, bool]:
+    """Clear a structured service location that only non-citable context names.
+
+    The item and its PUBLISH status stay: the service state is still reported,
+    only the place borrowed from a timeline line or a reply parent is dropped.
+    Callers pass the story's own message texts as ``own_texts`` and the timeline
+    plus reply-parent texts as ``context_texts``.
+
+    Returns the payload and whether a location was cleared.
+    """
+    cleared = False
+    items = []
+    for item in payload.evidence_items:
+        state = item.service_state
+        if (
+            item.publication_use == "PUBLISH"
+            and state is not None
+            and state.location.strip()
+            and context_only_details(
+                state.location,
+                own_texts=own_texts,
+                context_texts=context_texts,
+                scope=scope,
+                geo_context=geo_context,
+            )
+        ):
+            cleared = True
+            items.append(replace(item, service_state=replace(state, location="")))
+        else:
+            items.append(item)
+    if not cleared:
+        return payload, False
+    return replace(payload, evidence_items=tuple(items)), True

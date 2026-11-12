@@ -122,10 +122,33 @@ class ArticleSupport:
     # True when every fragment of this support was already cited by the previous
     # issue of the same type (AGENTS.md §0.7). Kept for provenance, not citable.
     previously_published: bool = False
+    # Advisory service family derived from the reply parent or the Story when the
+    # support has no own theme (article-fidelity W5.1). Navigation only, never evidence.
+    context_theme_hint: str = ""
+    context_theme_origin: str = ""
+
+
+# Service families that carry an advisory theme into the article composition checks.
+_CONTEXT_THEME_FAMILIES = frozenset(
+    {
+        "power",
+        "water",
+        "gas",
+        "heating",
+        "lift",
+        "municipal",
+        "telecom",
+        "transport",
+        "urban_transport",
+    }
+)
 
 
 def article_support_theme_hints(support: ArticleSupport) -> tuple[str, ...]:
-    """Return advisory service themes from exact structured and lexical evidence."""
+    """Return advisory service themes from exact structured and lexical evidence.
+
+    A context hint is used only when the support has no own theme.
+    """
     themes = set(detect_service_families(support.text))
     if support.service_subject_hint is not None:
         structured_family = SERVICE_SUBJECT_FAMILY_BY_KEY.get(
@@ -133,6 +156,8 @@ def article_support_theme_hints(support: ArticleSupport) -> tuple[str, ...]:
         )
         if structured_family is not None:
             themes.add(structured_family)
+    if not themes and support.context_theme_hint:
+        return (support.context_theme_hint,)
     return tuple(sorted(themes))
 
 
@@ -154,6 +179,11 @@ def article_support_topic_context_lines(support: ArticleSupport) -> tuple[str, .
     if themes:
         context_lines.append(
             "topic_hints (advisory navigation only; not facts): " + ", ".join(themes)
+        )
+    if support.context_theme_hint and themes == (support.context_theme_hint,):
+        context_lines.append(
+            "topic_hint_origin (advisory; not a fact): "
+            + ("reply parent" if support.context_theme_origin == "reply_parent" else "Story")
         )
     return tuple(context_lines)
 
@@ -295,6 +325,56 @@ class ArticleEditorialContext:
                 )
             blocks.append("\n".join(lines))
         return "\n\n".join(blocks).strip()
+
+
+def _context_service_families(text: str) -> frozenset[str]:
+    return frozenset(detect_service_families(text)) & _CONTEXT_THEME_FAMILIES
+
+
+def _with_context_theme_hints(
+    supports: Sequence[ArticleSupport],
+    headline_by_story_id: Mapping[str, str],
+) -> list[ArticleSupport]:
+    """Give a support without an own theme one advisory family from its context.
+
+    Order: the reply parent when it names exactly one service family; otherwise the
+    Story, when its other supports' structured subjects and its headline together name
+    exactly one service family. Ambiguous context yields no hint.
+    """
+    supports_by_story: dict[str, list[ArticleSupport]] = {}
+    for support in supports:
+        if support.story_id:
+            supports_by_story.setdefault(support.story_id, []).append(support)
+
+    result: list[ArticleSupport] = []
+    for support in supports:
+        if article_support_theme_hints(support):
+            result.append(support)
+            continue
+        family = ""
+        origin = ""
+        parent_families = _context_service_families(support.reply_parent_context_text)
+        if len(parent_families) == 1:
+            family, origin = next(iter(parent_families)), "reply_parent"
+        elif support.story_id:
+            story_families = set(
+                _context_service_families(headline_by_story_id.get(support.story_id, ""))
+            )
+            for other in supports_by_story.get(support.story_id, ()):
+                if other.support_id == support.support_id or other.service_subject_hint is None:
+                    continue
+                other_family = SERVICE_SUBJECT_FAMILY_BY_KEY.get(
+                    other.service_subject_hint.subject_key
+                )
+                if other_family in _CONTEXT_THEME_FAMILIES:
+                    story_families.add(other_family)
+            if len(story_families) == 1:
+                family, origin = next(iter(story_families)), "story"
+        if family:
+            result.append(replace(support, context_theme_hint=family, context_theme_origin=origin))
+        else:
+            result.append(support)
+    return result
 
 
 def _support_semantic_key(support: ArticleSupport) -> tuple[str, ...]:
@@ -639,6 +719,8 @@ def build_article_editorial_context(
             recurring_topics.add(tag)
 
     sorted_timeline = tuple(sorted(operational_observations, key=lambda x: x.observed_at))
+    headline_by_story_id = {card.id: (card.topic or card.summary or "").strip() for card in cards}
+    support_list = _with_context_theme_hints(support_list, headline_by_story_id)
     support_by_id = {s.support_id: s for s in support_list}
 
     return ArticleEditorialContext(

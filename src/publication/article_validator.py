@@ -10,6 +10,7 @@ from typing import Any, Literal
 
 from src.config_loader import PublicationEditorialConfig
 from src.domain.edition_geography import standardize_edition_area_slang
+from src.domain.edition_terminology import standardize_edition_terminology
 from src.publication.article_claim_support import (
     QUESTION_FRAMING_MARKERS,
     assess_claim_against_supports,
@@ -820,14 +821,21 @@ class ArticleValidationResult:
 
 
 def _official_area_source_texts(supports: Sequence[ArticleSupport], edition_slug: str) -> list[str]:
-    """Sources restated with the official area name that prepared prose uses for their slang."""
-    return [
-        official
-        for support in supports
-        if support.source_text
-        and (official := standardize_edition_area_slang(support.source_text, edition_slug))
-        != support.source_text
-    ]
+    """Sources restated with the official names that prepared prose uses for their slang.
+
+    Profile terminology (article-fidelity W6.4) is restated the same way, so a canonical
+    spelling in the prose matches a source that used the declared variant.
+    """
+    restated: list[str] = []
+    for support in supports:
+        if not support.source_text:
+            continue
+        official = standardize_edition_terminology(
+            standardize_edition_area_slang(support.source_text, edition_slug), edition_slug
+        )
+        if official != support.source_text:
+            restated.append(official)
+    return restated
 
 
 def _first_sentence_with_concepts(text: str, concepts: Sequence[str]) -> str | None:

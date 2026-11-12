@@ -16,6 +16,7 @@ from time import perf_counter
 from typing import Any, Literal, Sequence
 
 from src.publication.article_claims import stem_word
+from src.publication.article_composition_checks import find_unframed_conflicting_accounts
 from src.publication.article_context import (
     ArticleEditorialContext,
     ArticleSupport,
@@ -111,8 +112,14 @@ _QUOTED_LOCATION_PREPOSITION_RE = re.compile(
     r"\b(?:в|во|на|у|около|возле|за|перед|из|с|о|об)\s*$", re.IGNORECASE
 )
 _PRIVATE_SECTOR_RE = re.compile(r"\b(?:частн\w*|приватн\w*)\s+сектор\w*\b", re.IGNORECASE)
+# The article-level note that clarifies an unspecified district. It is placed once,
+# at the first visible private-sector mention in reading order (article-fidelity W6.3).
+UNSPECIFIED_DISTRICT_NOTE_RE = re.compile(
+    r"\bрайон\s+(?:в\s+сообщении\s+не\s+указан|не\s+уточняется)\b", re.IGNORECASE
+)
 _PRIVATE_SECTOR_LOCATION_UNCLEAR_RE = re.compile(
     r"(?:район|часть\s+города|место|участок).{0,35}\bне\s+(?:указан\w*|уточн[её]н\w*|назван\w*|известен|яс(?:н\w*|ен|на|но|ны)|определ[её]н\w*|обозначен\w*)\b|"
+    r"(?:район|часть\s+города|место|участок).{0,35}\bне\s+уточня\w*\b|"
     r"(?:район|часть\s+города|место|участок).{0,35}\bне(?:извест\w*|яс(?:н\w*|ен|на|но|ны)|указан\w*|уточн[её]н\w*|назван\w*|определ[её]н\w*|обозначен\w*)\b|"
     r"\bне\s+(?:указан\w*|уточн[её]н\w*|назван\w*|известен|яс(?:н\w*|ен|на|но|ны)|определ[её]н\w*|обозначен\w*)\s+(?:район|часть\s+города|место|участок)\b|"
     r"\bне(?:извест\w*|яс(?:н\w*|ен|на|но|ны)|указан\w*|уточн[её]н\w*|назван\w*|определ[её]н\w*|обозначен\w*)\s+(?:район|часть\s+города|место|участок)\b|"
@@ -206,8 +213,14 @@ _ARTICLE_SECTION_THEME_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
     (
         "utilities",
+        re.compile(r"(?:коммунальн\w*|электр\w*|энерг\w*|свет\w*|вод\w*|газ\w*)", re.IGNORECASE),
+    ),
+    # Heating is its own theme so that a power report does not satisfy a heating section
+    # (article-fidelity W5.1). A heating family also carries the utilities theme.
+    (
+        "heating",
         re.compile(
-            r"(?:коммунальн\w*|электр\w*|энерг\w*|свет\w*|вод\w*|газ\w*|отоплен\w*)", re.IGNORECASE
+            r"(?:котельн\w*|теплосет\w*|теплоснабж\w*|теплоцентрал\w*|отоплен\w*)", re.IGNORECASE
         ),
     ),
     (
@@ -245,8 +258,14 @@ _ARTICLE_STORY_THEME_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "utilities",
         re.compile(
-            r"(?:коммунальн\w*|электр\w*|энерг\w*|свет\w*|вод\w*|газ\w*|отоплен\w*|насос\w*)",
+            r"(?:коммунальн\w*|электр\w*|энерг\w*|свет\w*|вод\w*|газ\w*|насос\w*)",
             re.IGNORECASE,
+        ),
+    ),
+    (
+        "heating",
+        re.compile(
+            r"(?:котельн\w*|теплосет\w*|теплоснабж\w*|теплоцентрал\w*|отоплен\w*)", re.IGNORECASE
         ),
     ),
     (
@@ -323,6 +342,13 @@ def _article_themes(
     return {theme for theme, pattern in patterns if pattern.search(text)}
 
 
+def _article_themes_for_service_family(family: str) -> tuple[str, ...]:
+    if family == "heating":
+        return ("heating", "utilities")
+    theme = _ARTICLE_THEME_BY_SERVICE_FAMILY.get(family)
+    return (theme,) if theme else ()
+
+
 def _projected_support_themes(
     support_id: str,
     context: ArticleEditorialContext,
@@ -342,9 +368,9 @@ def _projected_support_themes(
     projected_support = replace(support, text=projected_text, source_text="")
     themes = _article_themes(projected_text, _ARTICLE_STORY_THEME_PATTERNS)
     themes.update(
-        _ARTICLE_THEME_BY_SERVICE_FAMILY[family]
+        theme
         for family in article_support_theme_hints(projected_support)
-        if family in _ARTICLE_THEME_BY_SERVICE_FAMILY
+        for theme in _article_themes_for_service_family(family)
     )
     if support.evidence_kind == "commercial_offer":
         themes.add("commerce")
@@ -1377,6 +1403,23 @@ def _has_unresolved_private_sector_location(text: str) -> bool:
     )
 
 
+def _private_sector_note_precedes(draft: StructuredArticleDraft, paragraph: object) -> bool:
+    """Return whether the article already clarified the district before this paragraph.
+
+    The lead counts as the first unit in reading order. Only one note is placed per
+    article (article-fidelity W6.3), so later unspecified mentions are not flagged again.
+    """
+    if UNSPECIFIED_DISTRICT_NOTE_RE.search(draft.lead):
+        return True
+    for section in draft.sections:
+        for candidate in section.paragraphs:
+            if candidate is paragraph:
+                return False
+            if UNSPECIFIED_DISTRICT_NOTE_RE.search(candidate.text):
+                return True
+    return False
+
+
 def _effective_intervals_are_disjoint(first: ArticleSupport, second: ArticleSupport) -> bool:
     if not (
         first.effective_from
@@ -2098,6 +2141,62 @@ def _diagnose_contradictions(
     return findings
 
 
+def _diagnose_unframed_conflicting_accounts(
+    draft: StructuredArticleDraft,
+    context: ArticleEditorialContext,
+    material_projection: ArticleMaterialProjection | None,
+    place_resolver: Any | None,
+) -> tuple[ArticleReaderQualityFinding, ...]:
+    """Repair-level: two opposite structured accounts stated together without a framing."""
+    if place_resolver is None:
+        return ()
+    paragraphs: list[tuple[str, str, tuple[str, ...]]] = []
+    paragraph_index = 1
+    for section in draft.sections:
+        for paragraph in section.paragraphs:
+            support_ids = _citable_support_ids(
+                (
+                    *_support_ids_for_unit(paragraph),
+                    *(sid for claim in paragraph.claims for sid in claim.cited_support_ids),
+                ),
+                context,
+                material_projection,
+            )
+            paragraphs.append((f"P{paragraph_index:03d}", paragraph.text, support_ids))
+            paragraph_index += 1
+
+    def hint_for(support_id: str) -> Any:
+        support = context.support_by_id.get(support_id)
+        return support.service_subject_hint if support is not None else None
+
+    def source_items_for(support_id: str) -> frozenset[int]:
+        support = context.support_by_id.get(support_id)
+        return frozenset(support.source_item_ids) if support is not None else frozenset()
+
+    def location_ids(text: str) -> frozenset[str]:
+        return frozenset(
+            entity.entity_id
+            for entity in _resolved_entities(text, place_resolver)
+            if entity.kind in ("area", "place") and entity.confidence == "high"
+        )
+
+    return tuple(
+        ArticleReaderQualityFinding(
+            code=finding.code,
+            unit_id=finding.unit_id,
+            message=finding.message,
+            support_ids=finding.support_ids,
+            severity="repair",
+        )
+        for finding in find_unframed_conflicting_accounts(
+            paragraphs,
+            hint_for=hint_for,
+            source_items_for=source_items_for,
+            location_ids=location_ids,
+        )
+    )
+
+
 def _diagnose_theme_mismatched_sections(
     draft: StructuredArticleDraft,
     coverage_plan: ArticleCoveragePlan,
@@ -2540,9 +2639,17 @@ def _heading_area_mismatch_places(
         sentence_spans = _safe_sentence_spans(text)
         paragraph_flagged = False
         for entity in entities:
-            if entity.kind != "place":
+            # Article-fidelity W5.2: an area named in the paragraph ("на Косе", "в Центре")
+            # is checked like a place; the profile assigns it to its own city part.
+            if entity.kind not in ("place", "area"):
                 continue
-            if entity.confidence != "high" and not resolver.city_part_ids(entity):
+            if entity.kind == "area" and entity.confidence != "high":
+                continue
+            if (
+                entity.kind == "place"
+                and entity.confidence != "high"
+                and not resolver.city_part_ids(entity)
+            ):
                 continue
             if not all(_place_outside_area(entity, area, resolver) for area in heading_areas):
                 continue
@@ -2550,7 +2657,10 @@ def _heading_area_mismatch_places(
             if not spans:
                 continue
             labelled = False
-            for start, end in spans:
+            # A street or other place may be framed by an area named in its own sentence.
+            # A named area is a claim about where the events are, so a sibling area in the
+            # same sentence never frames it (article-fidelity W5.2).
+            for start, end in spans if entity.kind == "place" else ():
                 sentence = next(
                     (
                         (sentence_start, sentence_end)
@@ -2563,7 +2673,7 @@ def _heading_area_mismatch_places(
                     labelled = True
                     break
                 for area in paragraph_areas:
-                    if _place_outside_area(entity, area, resolver):
+                    if area is entity or _place_outside_area(entity, area, resolver):
                         continue
                     if any(
                         sentence[0] <= area_start and area_end <= sentence[1]
@@ -3114,6 +3224,7 @@ def diagnose_article_quality(
                     _has_unresolved_private_sector_location(paragraph.text)
                     and private_sector_supports
                     and not _has_specific_source_area(private_sector_source_texts, place_resolver)
+                    and not _private_sector_note_precedes(draft, paragraph)
                 ):
                     findings.append(
                         ArticleReaderQualityFinding(
@@ -3224,7 +3335,7 @@ def diagnose_article_quality(
                         support_ids=_citable_support_ids(
                             tuple(section_support_ids), context, material_projection
                         ),
-                        severity="blocking",
+                        severity="repair",
                     )
                 )
             paragraph_offset += len(section.paragraphs)
@@ -3480,6 +3591,14 @@ def diagnose_article_quality(
         material_projection,
     )
     findings.extend(theme_section_findings)
+    findings.extend(
+        _diagnose_unframed_conflicting_accounts(
+            draft,
+            context,
+            material_projection,
+            place_resolver,
+        )
+    )
     finish_phase("address_directory_and_theme")
 
     # Compare supported claims across the lead and distinct chapters.  Shared

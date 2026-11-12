@@ -16,6 +16,7 @@ from uuid import uuid4
 
 from src.config_loader import PublicationEditorialConfig
 from src.domain.edition_geography import standardize_edition_area_slang
+from src.domain.edition_terminology import standardize_edition_terminology
 from src.publication.article_context import ArticleEditorialContext
 from src.publication.article_coverage import ArticleCoveragePlan
 from src.publication.article_coverage_diagnostics import (
@@ -37,6 +38,7 @@ from src.publication.article_models import (
 from src.publication.article_quality import (
     _PRIVATE_SECTOR_RE,
     ARTICLE_READER_QUALITY_VERSION,
+    UNSPECIFIED_DISTRICT_NOTE_RE,
     ArticleReaderQualityReport,
     _citable_support_ids,
     _has_specific_source_area,
@@ -981,9 +983,6 @@ _SOURCE_ATTRIBUTION_RULES: tuple[tuple[re.Pattern[str], str, str], ...] = (
         "в сообщениях говорится",
     ),
 )
-_UNSPECIFIED_DISTRICT_NOTE_RE = re.compile(
-    r"\bрайон\s+в\s+сообщении\s+не\s+указан\b", re.IGNORECASE
-)
 
 
 def _direct_quote_content_spans(text: str) -> tuple[tuple[int, int], ...]:
@@ -1251,7 +1250,7 @@ def _add_unknown_district_context(
     if (
         not text
         or place_resolver is None
-        or _UNSPECIFIED_DISTRICT_NOTE_RE.search(text)
+        or UNSPECIFIED_DISTRICT_NOTE_RE.search(text)
         or not _has_unresolved_private_sector_location(text)
     ):
         return text, ()
@@ -1278,7 +1277,7 @@ def _add_unknown_district_context(
             quoted_private_sector = True
             continue
         visible_private_sector = True
-        text = text[: match.end()] + " (район в сообщении не указан)" + text[match.end() :]
+        text = text[: match.end()] + " (район не уточняется)" + text[match.end() :]
         # The phrase is unique in the unit in normal prose; avoid a second
         # replacement against shifted offsets.
         break
@@ -1295,10 +1294,14 @@ def _add_unknown_district_context(
             ends_with_terminal_mark = True
         separator = " " if ends_with_terminal_mark else ". "
         return (
-            stripped_text + separator + "Район в сообщении не указан.",
+            stripped_text + separator + "Район не уточняется.",
             private_sector_support_ids,
         )
     return text, ()
+
+
+def _district_note_present(text: str, note_supports: Sequence[str]) -> bool:
+    return bool(note_supports) or bool(UNSPECIFIED_DISTRICT_NOTE_RE.search(text))
 
 
 def _prepare_text_and_claims(
@@ -1316,7 +1319,10 @@ def _prepare_text_and_claims(
     )
     citable_unit_ids = _citable_support_ids(all_unit_support_ids, context, material_projection)
     prepared_text = _wrap_supported_organization_names(
-        standardize_edition_area_slang(repair_chat_kitchen_phrases(text), context.edition_slug),
+        standardize_edition_terminology(
+            standardize_edition_area_slang(repair_chat_kitchen_phrases(text), context.edition_slug),
+            context.edition_slug,
+        ),
         citable_unit_ids,
         context,
         place_resolver,
@@ -1336,8 +1342,11 @@ def _prepare_text_and_claims(
         for claim in claims
         for formatted_text in (
             _wrap_supported_organization_names(
-                standardize_edition_area_slang(
-                    repair_chat_kitchen_phrases(claim.text), context.edition_slug
+                standardize_edition_terminology(
+                    standardize_edition_area_slang(
+                        repair_chat_kitchen_phrases(claim.text), context.edition_slug
+                    ),
+                    context.edition_slug,
                 ),
                 _citable_support_ids(claim.cited_support_ids, context, material_projection),
                 context,
@@ -1388,7 +1397,7 @@ def _prepare_text_and_claims(
 
     if added_claim_supports:
         note_claim = ArticleClaimAtom(
-            text="Район в сообщении не указан.",
+            text="Район не уточняется.",
             cited_support_ids=added_claim_supports,
         )
         if not any(claim.text == note_claim.text for claim in new_claims):
@@ -1429,7 +1438,10 @@ def prepare_article_draft(
             )
         )
     )
-    lead, lead_claims, _ = _prepare_text_and_claims(
+    # The district note is placed once per article, at the first visible unspecified
+    # private-sector mention in reading order (lead, then paragraphs). Article-fidelity W6.3.
+    note_placed = False
+    lead, lead_claims, lead_note_supports = _prepare_text_and_claims(
         draft.lead,
         draft.lead_claims,
         lead_supports,
@@ -1438,6 +1450,7 @@ def prepare_article_draft(
         place_resolver=place_resolver,
         clarify_unknown_district=True,
     )
+    note_placed = _district_note_present(lead, lead_note_supports)
     sections: list[ArticleSection] = []
     changed = (
         title != draft.title
@@ -1480,8 +1493,9 @@ def prepare_article_draft(
                 context=context,
                 material_projection=material_projection,
                 place_resolver=place_resolver,
-                clarify_unknown_district=True,
+                clarify_unknown_district=not note_placed,
             )
+            note_placed = note_placed or _district_note_present(paragraph_text, note_supports)
             new_paragraph = replace(
                 paragraph,
                 text=paragraph_text,

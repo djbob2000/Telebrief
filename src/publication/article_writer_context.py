@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal
 
+from src.domain.edition_terminology import canonical_term_fields
 from src.publication.article_context import (
     ArticleEditorialContext,
     ArticleSupport,
@@ -621,6 +622,11 @@ def _render_article_story_packets(
                 "primary_source": source_text or None,
                 "reply_parent_context": parent_context or None,
             }
+            # Edition terminology: the canonical spelling to use outside direct quotes
+            # (article-fidelity W6.4). Present only when a declared variant occurs.
+            terms = canonical_term_fields(context.edition_slug, fact_text)
+            if terms:
+                base_record["canonical_terms"] = terms
             key = json.dumps(base_record, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
             record = records_by_key.get(key)
             if record is None:
@@ -806,6 +812,7 @@ def _compact_evidence_record(record: dict[str, object]) -> dict[str, object]:
         ("l", record.get("narrative_line_id")),
         ("p", record.get("primary_source")),
         ("q", record.get("reply_parent_context")),
+        ("c", record.get("canonical_terms")),
     )
     compact.update({key: value for key, value in optional_values if value not in (None, "")})
 

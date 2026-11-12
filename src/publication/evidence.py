@@ -19,11 +19,18 @@ SERVICE_SUBJECT_FAMILY_BY_KEY: dict[str, str] = {
 
 @dataclass(frozen=True)
 class ServiceSubjectHint:
-    """Optional advisory topic copied from structured service-state evidence."""
+    """Optional advisory topic copied from structured service-state evidence.
+
+    ``state`` and ``location`` are the structured service-state values of the same
+    evidence (article-fidelity W5.3 compares them across sources). They are
+    navigation for the composition checks, never evidence on their own.
+    """
 
     subject_key: str
     subject_label: str
     family: str | None
+    state: str = ""
+    location: str = ""
 
 
 @dataclass(frozen=True)

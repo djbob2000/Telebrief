@@ -118,7 +118,7 @@ _POLICIES: dict[str, ArticleQualityFindingPolicy] = {
         "blocking",
         "unit",
         "block_publication",
-        "A section heading names areas that the profile shows do not contain its places.",
+        "A section heading names areas that the profile shows do not contain its places or areas.",
     ),
     "NON_PLACE_NAME_AS_PLACE": ArticleQualityFindingPolicy(
         "geography_consistency",
@@ -247,6 +247,14 @@ _POLICIES: dict[str, ArticleQualityFindingPolicy] = {
         "unit",
         "repair_recommended",
         "A hedge or hearsay marker in the source is missing from prose that relies on that source alone.",
+    ),
+    # article-fidelity W5/W6
+    "UNFRAMED_CONFLICTING_ACCOUNTS": ArticleQualityFindingPolicy(
+        "source_attribution",
+        "repair",
+        "unit",
+        "repair_recommended",
+        "One paragraph states two opposite accounts of one service in one place without a framing.",
     ),
 }
 
