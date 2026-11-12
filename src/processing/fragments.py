@@ -17,7 +17,7 @@ from src.processing.noise_detection import (
     classify_text_noise_or_exclusion,
 )
 
-FRAGMENTER_VERSION = "v2"
+FRAGMENTER_VERSION = "v3"
 
 _DEPENDENT_PREFIX_PATTERN = re.compile(
     r"^(?:[📍🏛🏢🛣🕗🕒📞☎️📱🌟📅📆🕖✅❤️❗️❗\s]*)(?:адрес|режим работы|график(?: работы)?|часы работы|время работы|контакты|запись|телефон|тел|стоимость|цена|вход|прием|приём|мы находимся|наш адрес|находимся по адресу)[:\s]",

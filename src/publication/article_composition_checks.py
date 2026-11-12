@@ -8,7 +8,7 @@ Conflicting accounts (W5.3) are visible only from structured ``service_state`` c
 ``ServiceSubjectHint``: the same resolved location, the same ``subject_key``, opposite
 states (AVAILABLE against UNAVAILABLE), supported by different source items, and one
 paragraph that states them without a disagreement marker. Anything else is not evaluated.
-Distinct source items are a proxy for distinct speakers until per-speaker identity exists.
+Speakers are told apart by their speaker key; supports without one fall back to source items.
 """
 
 from __future__ import annotations
@@ -44,13 +44,13 @@ class _StructuredAccount:
     subject_key: str
     state: str
     location_ids: frozenset[str]
-    source_item_ids: frozenset[int]
+    source_item_ids: frozenset[object]
 
 
 def _structured_account(
     support_id: str,
     hint: ServiceSubjectHint | None,
-    source_item_ids: frozenset[int],
+    source_item_ids: frozenset[object],
     location_ids: Callable[[str], frozenset[str]],
 ) -> _StructuredAccount | None:
     if hint is None or hint.state not in _OPPOSITE_STATES or not hint.location.strip():
@@ -71,7 +71,7 @@ def find_unframed_conflicting_accounts(
     paragraphs: Sequence[tuple[str, str, tuple[str, ...]]],
     *,
     hint_for: Callable[[str], ServiceSubjectHint | None],
-    source_items_for: Callable[[str], frozenset[int]],
+    source_items_for: Callable[[str], frozenset[object]],
     location_ids: Callable[[str], frozenset[str]],
 ) -> tuple[CompositionFinding, ...]:
     """Find one paragraph that states two opposite service accounts without a framing.

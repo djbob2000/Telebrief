@@ -266,7 +266,7 @@ def test_area_inside_the_heading_part_passes_for_a_neighbourhood_on_upland():
     assert flagged == ()
 
 
-def test_heading_area_mismatch_is_repair_level_in_the_registry():
+def test_heading_area_mismatch_stays_blocking_in_the_registry():
     assert ARTICLE_QUALITY_FINDING_POLICIES["HEADING_AREA_MISMATCH"].severity == "blocking"
 
 
@@ -405,3 +405,32 @@ def test_writer_is_told_to_frame_conflicting_accounts_and_keep_hedges_and_ordina
     for marker in ("похоже", "кажется", "вроде", "видимо", "говорят", "по слухам"):
         assert marker in rule
     assert "canonical_terms" in rule
+
+
+def test_two_messages_of_one_speaker_are_one_account(resolver):
+    """Separate messages by the same speaker key are not two conflicting accounts."""
+    from dataclasses import replace
+
+    context = _akz_context()
+    same_speaker = _context(
+        replace(context.support_by_id["a1"], speaker_key="k1"),
+        replace(context.support_by_id["a2"], speaker_key="k1"),
+    )
+    findings = _conflicts(
+        "Часть АКЗ с рынком без света, а вторая часть со светом.", same_speaker, resolver
+    )
+    assert findings == ()
+
+
+def test_two_speakers_with_opposite_states_are_flagged(resolver):
+    from dataclasses import replace
+
+    context = _akz_context()
+    two_speakers = _context(
+        replace(context.support_by_id["a1"], speaker_key="k1"),
+        replace(context.support_by_id["a2"], speaker_key="k2"),
+    )
+    findings = _conflicts(
+        "Часть АКЗ с рынком без света, а вторая часть со светом.", two_speakers, resolver
+    )
+    assert [finding.code for finding in findings] == ["UNFRAMED_CONFLICTING_ACCOUNTS"]

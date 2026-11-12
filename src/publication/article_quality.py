@@ -44,7 +44,7 @@ from src.publication.article_speaker import speaker_quality_findings
 from src.publication.article_temporal_checks import temporal_quality_findings
 
 QualitySeverity = Literal["repair", "warning", "blocking"]
-ARTICLE_READER_QUALITY_VERSION = "article-reader-quality-v12"
+ARTICLE_READER_QUALITY_VERSION = "article-reader-quality-v13"
 logger = logging.getLogger(__name__)
 
 _QUOTE_RE = re.compile(r"[«“„\"]([^»”\"]+)[»”\"]")
@@ -2171,9 +2171,14 @@ def _diagnose_unframed_conflicting_accounts(
         support = context.support_by_id.get(support_id)
         return support.service_subject_hint if support is not None else None
 
-    def source_items_for(support_id: str) -> frozenset[int]:
+    def source_items_for(support_id: str) -> frozenset[object]:
+        # One speaker identity per support: the speaker key when known, else its messages.
         support = context.support_by_id.get(support_id)
-        return frozenset(support.source_item_ids) if support is not None else frozenset()
+        if support is None:
+            return frozenset()
+        if support.speaker_key:
+            return frozenset({f"speaker:{support.speaker_key}"})
+        return frozenset(f"item:{item_id}" for item_id in support.source_item_ids)
 
     def location_ids(text: str) -> frozenset[str]:
         return frozenset(

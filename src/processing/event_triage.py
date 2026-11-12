@@ -63,7 +63,7 @@ from src.repositories.event_clusters import EventClusterRepository
 
 logger = logging.getLogger(__name__)
 
-TRIAGE_VERSION = "v19"
+TRIAGE_VERSION = "v20"
 
 # An explicit claim that the supplied input is absent is a response failure,
 # not a geographic or editorial judgment. Keep this narrow: uncertainty about

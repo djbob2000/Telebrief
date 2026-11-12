@@ -15,7 +15,7 @@ from src.publication.article_temporal_checks import ARTICLE_TEMPORAL_WRITER_RULE
 if TYPE_CHECKING:
     from src.publication.article_length import ArticleLengthProfile
 
-ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v15-heading-city-parts"
+ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v16-fidelity-rules"
 DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v24-no-report-disclaimers"
 
 DIGEST_REPLY_CONTEXT_GUIDE = (

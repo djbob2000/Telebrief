@@ -42,7 +42,7 @@ _SUPPORT_STORY_ID_RE = re.compile(r"story:(?:[^:]+|\d+)")
 # the existing completion ceiling and fail explicitly if the complete dossier
 # exceeds this character budget.
 ARTICLE_WRITER_CONTEXT_MAX_CHARS = 999_999
-ARTICLE_WRITER_CONTEXT_VERSION = "event-article-context-v6-period-review-synthesis"
+ARTICLE_WRITER_CONTEXT_VERSION = "event-article-context-v7-speaker-send-time"
 _SUPPORT_FACT_MAX_CHARS = 900
 _SUPPORT_SOURCE_MAX_CHARS = 1_800
 _SUPPORT_COMPACT_FACT_MAX_CHARS = 360

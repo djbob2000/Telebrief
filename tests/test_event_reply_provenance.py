@@ -65,7 +65,7 @@ def test_gate_prompt_preserves_direct_report_when_parent_only_resolves_referent(
 def test_gate_prompt_resolves_explicit_city_deixis_only_for_matching_edition_source() -> None:
     prompt = event_triage._GATE_V2_SYSTEM_PROMPT.casefold()
 
-    assert event_triage.TRIAGE_VERSION == "v19"
+    assert event_triage.TRIAGE_VERSION == "v20"
     assert "generic city-level locator" in prompt
     assert "primary source text itself" in prompt
     assert "source metadata name exactly matches the configured target edition" in prompt
