@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from src.publication.article_composition_checks import ARTICLE_FIDELITY_WRITER_RULES
+
 if TYPE_CHECKING:
     from src.publication.article_length import ArticleLengthProfile
 
@@ -170,7 +172,7 @@ Output ordinary Markdown only: one title, a lead, and thematic chapters with nor
   * If you mention a resident question, frame it strictly as an inquiry or uncertainty (e.g. "жители интересуются...", "поступают вопросы о..."), NEVER as an established fact (e.g. do not state "фонд закрыт" or "нотариус работает" unless a PUBLISH support separately states that fact).
   * Do not assert trends such as "участились вопросы" or "повышенный интерес" from a single question.
 - Corroboration may strengthen wording or grouping, but never require two sources merely to publish a legitimate local report.
-"""
+{ARTICLE_FIDELITY_WRITER_RULES}"""
 
 
 DIGEST_ITEM_COMPOSITION_GUIDE = """Digest item composition:

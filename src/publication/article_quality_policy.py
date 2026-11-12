@@ -115,10 +115,10 @@ _POLICIES: dict[str, ArticleQualityFindingPolicy] = {
     ),
     "HEADING_AREA_MISMATCH": ArticleQualityFindingPolicy(
         "geography_consistency",
-        "blocking",
+        "repair",
         "unit",
-        "block_publication",
-        "A section heading names areas that the profile shows do not contain its places.",
+        "repair_recommended",
+        "A section heading names areas that the profile shows do not contain its places or areas.",
     ),
     "NON_PLACE_NAME_AS_PLACE": ArticleQualityFindingPolicy(
         "geography_consistency",
@@ -217,6 +217,14 @@ _POLICIES: dict[str, ArticleQualityFindingPolicy] = {
         "unit",
         "repair_recommended",
         "A planned concrete detail is absent from an otherwise represented story.",
+    ),
+    # article-fidelity W5/W6
+    "UNFRAMED_CONFLICTING_ACCOUNTS": ArticleQualityFindingPolicy(
+        "source_attribution",
+        "repair",
+        "unit",
+        "repair_recommended",
+        "One paragraph states two opposite accounts of one service in one place without a framing.",
     ),
 }
 

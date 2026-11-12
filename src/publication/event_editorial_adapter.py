@@ -285,6 +285,8 @@ class EventEditorialAdapter:
                             subject_key=service_state.subject_key,
                             subject_label=service_state.subject_label,
                             family=SERVICE_SUBJECT_FAMILY_BY_KEY.get(service_state.subject_key),
+                            state=service_state.state.upper(),
+                            location=service_state.location,
                         )
                     for fid in evi.source_fragment_ids:
                         if fid in frag_meta_map:
