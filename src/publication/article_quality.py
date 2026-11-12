@@ -106,8 +106,14 @@ _QUOTED_LOCATION_PREPOSITION_RE = re.compile(
     r"\b(?:в|во|на|у|около|возле|за|перед|из|с|о|об)\s*$", re.IGNORECASE
 )
 _PRIVATE_SECTOR_RE = re.compile(r"\b(?:частн\w*|приватн\w*)\s+сектор\w*\b", re.IGNORECASE)
+# The article-level note that clarifies an unspecified district. It is placed once,
+# at the first visible private-sector mention in reading order (article-fidelity W6.3).
+UNSPECIFIED_DISTRICT_NOTE_RE = re.compile(
+    r"\bрайон\s+(?:в\s+сообщении\s+не\s+указан|не\s+уточняется)\b", re.IGNORECASE
+)
 _PRIVATE_SECTOR_LOCATION_UNCLEAR_RE = re.compile(
     r"(?:район|часть\s+города|место|участок).{0,35}\bне\s+(?:указан\w*|уточн[её]н\w*|назван\w*|известен|яс(?:н\w*|ен|на|но|ны)|определ[её]н\w*|обозначен\w*)\b|"
+    r"(?:район|часть\s+города|место|участок).{0,35}\bне\s+уточня\w*\b|"
     r"(?:район|часть\s+города|место|участок).{0,35}\bне(?:извест\w*|яс(?:н\w*|ен|на|но|ны)|указан\w*|уточн[её]н\w*|назван\w*|определ[её]н\w*|обозначен\w*)\b|"
     r"\bне\s+(?:указан\w*|уточн[её]н\w*|назван\w*|известен|яс(?:н\w*|ен|на|но|ны)|определ[её]н\w*|обозначен\w*)\s+(?:район|часть\s+города|место|участок)\b|"
     r"\bне(?:извест\w*|яс(?:н\w*|ен|на|но|ны)|указан\w*|уточн[её]н\w*|назван\w*|определ[её]н\w*|обозначен\w*)\s+(?:район|часть\s+города|место|участок)\b|"
@@ -1370,6 +1376,23 @@ def _has_unresolved_private_sector_location(text: str) -> bool:
     return bool(_PRIVATE_SECTOR_RE.search(text)) and not bool(
         _PRIVATE_SECTOR_LOCATION_UNCLEAR_RE.search(text)
     )
+
+
+def _private_sector_note_precedes(draft: StructuredArticleDraft, paragraph: object) -> bool:
+    """Return whether the article already clarified the district before this paragraph.
+
+    The lead counts as the first unit in reading order. Only one note is placed per
+    article (article-fidelity W6.3), so later unspecified mentions are not flagged again.
+    """
+    if UNSPECIFIED_DISTRICT_NOTE_RE.search(draft.lead):
+        return True
+    for section in draft.sections:
+        for candidate in section.paragraphs:
+            if candidate is paragraph:
+                return False
+            if UNSPECIFIED_DISTRICT_NOTE_RE.search(candidate.text):
+                return True
+    return False
 
 
 def _effective_intervals_are_disjoint(first: ArticleSupport, second: ArticleSupport) -> bool:
@@ -3109,6 +3132,7 @@ def diagnose_article_quality(
                     _has_unresolved_private_sector_location(paragraph.text)
                     and private_sector_supports
                     and not _has_specific_source_area(private_sector_source_texts, place_resolver)
+                    and not _private_sector_note_precedes(draft, paragraph)
                 ):
                     findings.append(
                         ArticleReaderQualityFinding(
