@@ -28,6 +28,13 @@ from src.publication.models import (
     PublicationSelectionDecision,
     WriterPolicyVersion,
 )
+from src.publication.publication_window import (
+    DEFAULT_LOOKBACK_HOURS,
+    PublicationWindowSpec,
+    build_window_spec,
+    window_spec_from_metadata,
+    window_spec_to_metadata,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -773,6 +780,124 @@ class PublicationRepository:
             (new_status, error_kind, completed_at, run_id),
         )
 
+    async def latest_succeeded_run_before(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        edition_id: int,
+        publication_type: str,
+        source_cutoff_at: dt.datetime,
+    ) -> tuple[int, dt.datetime] | None:
+        """The previous succeeded issue of the same edition and type, by source cutoff."""
+        cursor = await conn.execute(
+            """
+            SELECT id, source_cutoff_at
+            FROM publication_runs
+            WHERE edition_id = %s
+              AND publication_type = %s
+              AND status = 'succeeded'
+              AND source_cutoff_at < %s
+            ORDER BY source_cutoff_at DESC, id DESC
+            LIMIT 1
+            """,
+            (edition_id, publication_type, source_cutoff_at),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        return int(row[0]), row[1]
+
+    async def run_lookback_hours(
+        self,
+        conn: psycopg.AsyncConnection,
+        eligibility_policy_id: int | None,
+    ) -> int:
+        """Lookback of the frozen eligibility policy, with the same default as eligibility."""
+        if eligibility_policy_id is None:
+            return DEFAULT_LOOKBACK_HOURS
+        cursor = await conn.execute(
+            "SELECT config->>'lookback_hours' FROM eligibility_policy_versions WHERE id = %s",
+            (eligibility_policy_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None or row[0] is None:
+            return DEFAULT_LOOKBACK_HOURS
+        try:
+            return int(row[0])
+        except (ValueError, TypeError):
+            return DEFAULT_LOOKBACK_HOURS
+
+    async def resolve_run_publication_window(
+        self,
+        conn: psycopg.AsyncConnection,
+        run: PublicationRun,
+    ) -> PublicationWindowSpec:
+        """The run's frozen window: the stored one when present, otherwise computed now.
+
+        Read-only. Sealing persists the computed window (see ``ensure_run_publication_window``),
+        so a replay of a sealed run reuses the same window and previous issue.
+        """
+        stored = window_spec_from_metadata(run.metadata)
+        if stored is not None:
+            return stored
+        source_cutoff_at = run.source_cutoff_at or run.snapshot_at
+        lookback_hours = await self.run_lookback_hours(conn, run.eligibility_policy_id)
+        previous = await self.latest_succeeded_run_before(
+            conn,
+            edition_id=run.edition_id,
+            publication_type=run.publication_type,
+            source_cutoff_at=source_cutoff_at,
+        )
+        return build_window_spec(
+            source_cutoff_at=source_cutoff_at,
+            lookback_hours=lookback_hours,
+            previous_run_id=previous[0] if previous is not None else None,
+            previous_source_cutoff_at=previous[1] if previous is not None else None,
+        )
+
+    async def ensure_run_publication_window(
+        self,
+        conn: psycopg.AsyncConnection,
+        run: PublicationRun,
+    ) -> PublicationWindowSpec:
+        """Resolve the run's window and persist it in run metadata once (at sealing)."""
+        if window_spec_from_metadata(run.metadata) is not None:
+            return await self.resolve_run_publication_window(conn, run)
+        spec = await self.resolve_run_publication_window(conn, run)
+        await conn.execute(
+            "UPDATE publication_runs SET metadata = metadata || %s WHERE id = %s",
+            (Jsonb(window_spec_to_metadata(spec)), run.id),
+        )
+        run.metadata.update(window_spec_to_metadata(spec))
+        return spec
+
+    async def previously_published_fragment_ids(
+        self,
+        conn: psycopg.AsyncConnection,
+        previous_run_id: int | None,
+    ) -> frozenset[int]:
+        """Fragments cited by the previous issue's article claim trace (§0.7, previously published)."""
+        if previous_run_id is None:
+            return frozenset()
+        cursor = await conn.execute(
+            "SELECT metadata FROM publications WHERE publication_run_id = %s",
+            (previous_run_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None or not isinstance(row[0], dict):
+            return frozenset()
+        trace = row[0].get("claim_trace")
+        if not isinstance(trace, list):
+            return frozenset()
+        fragment_ids: set[int] = set()
+        for unit in trace:
+            if not isinstance(unit, dict):
+                continue
+            for value in unit.get("fragment_ids") or ():
+                if isinstance(value, int) and not isinstance(value, bool):
+                    fragment_ids.add(value)
+        return frozenset(fragment_ids)
+
     async def eligible_story_revisions(
         self,
         conn: psycopg.AsyncConnection,
@@ -782,8 +907,13 @@ class PublicationRepository:
         eligibility_policy_id: int | None = None,
         scope_config_hash: str | None = None,
         source_cutoff_at: dt.datetime | None = None,
+        window_start_override: dt.datetime | None = None,
     ) -> list[dict[str, Any]]:
-        """Query stories and their latest revision visible at snapshot_at with recent activity."""
+        """Query stories and their latest revision visible at snapshot_at with recent activity.
+
+        ``window_start_override`` is the frozen start of a chained window (see
+        ``publication_window``); without it the lookback is measured from the cutoff.
+        """
         lookback_hours = 24
         excluded_platforms: list[str] = []
         triage_version: str | None = None
@@ -835,7 +965,10 @@ class PublicationRepository:
             scope_version = scope_version or "v1"
 
         effective_source_cutoff_at = source_cutoff_at or snapshot_at
-        window_start = effective_source_cutoff_at - dt.timedelta(hours=lookback_hours)
+        if window_start_override is not None:
+            window_start = window_start_override
+        else:
+            window_start = effective_source_cutoff_at - dt.timedelta(hours=lookback_hours)
 
         query = f"""{_candidate_universe_sql()}
         SELECT
