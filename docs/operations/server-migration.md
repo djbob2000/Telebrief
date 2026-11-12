@@ -91,7 +91,7 @@ ssh -i "$OCI_SSH_KEY" -N \
 2. Сверьте SHA-256 исходного потока и файла на целевом VM. Проверьте читаемость через `pg_restore --list`, затем восстановите архив в отдельный временный PostgreSQL для репетиции. Сравните версию схемы и выбранные counts с источником. Не выполняйте `--clean` против единственной production-копии.
 3. Файловые данные `data/` и нужные `logs/` переносите по согласованному списку. `sessions/` и volume `telebrief_auth` копируйте для финального переноса только после остановки старых процессов, которые могут писать в эти данные.
 4. Перед cutover gracefully остановите на старом host приложение и три workers, оставив PostgreSQL доступным. Снимите финальный `pg_dump -Fc`, передайте и повторно проверьте checksum/`pg_restore --list`; восстановите его в production volume нового PostgreSQL. Сохраните старый database volume как rollback copy.
-5. Общий порядок backup/restore см. в [Database Backup and Disaster Recovery](../database_backup.md). Не переносите физически старый PostgreSQL data volume в новый контейнер вместо логического dump/restore.
+5. Общий порядок backup/restore см. в [Database Backup and Disaster Recovery](database-backup.md). Не переносите физически старый PostgreSQL data volume в новый контейнер вместо логического dump/restore.
 
 ## 5. Cutover и проверка
 
@@ -116,7 +116,7 @@ Coolify builds выполняются на общей VM вместе с Postgre
 
 - [Production deployment, rollback, services and persistent state](production.md)
 - [Oracle Cloud budget and Free Tier guardrail](oracle-cloud-budget.md)
-- [Database backup and disaster recovery](../database_backup.md)
+- [Database backup and disaster recovery](database-backup.md)
 - [OCI Always Free resources](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm)
 - [Coolify self-hosted installation](https://coolify.io/docs/start-with-self-hosted)
 - [Coolify firewall](https://coolify.io/docs/core/infrastructure/servers/firewall)

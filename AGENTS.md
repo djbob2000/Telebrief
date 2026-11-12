@@ -6,6 +6,8 @@
 
 For the production deployment path, Oracle/Coolify access, persistent state, database backup, and rollback procedures, see [Production operations runbook](docs/operations/production.md). For VM provisioning and migration, see [Server migration runbook](docs/operations/server-migration.md); for the OCI budget and Free Tier guardrail, see [Oracle Cloud budget guide](docs/operations/oracle-cloud-budget.md). Verify live OCI and Coolify settings before operating on a server; this repository does not store host secrets or the new VM's connection details.
 
+**Architecture documentation.** The architecture documentation in `docs/` (sources in `docs/architecture/`, built into `docs/index.html`) describes the current system. Update it in the same change as any architectural change: a component, Compose process, queue, Procrastinate job or schedule; scenario step order, a state machine, readiness, retry or failure behavior; tables, uniqueness keys, external services or model roles; an L3-documented constant, limit, timeout or error code; a decision someone could question (add an ADR or supersede one); or a known risk (`l3-risks`). Then run `npm run build` in `docs/` and commit the sources with the rebuilt `index.html`. Follow `docs/AGENTS.md` for where each fact belongs.
+
 ---
 
 # 0. Product Editorial Contract — READ THIS FIRST
@@ -1257,9 +1259,9 @@ docs(editorial): update Telebrief product contract
 
 # 16. Documentation and Plan Precedence
 
-Telebrief has many historical plans/specs under `docs/superpowers/`.
+Historical plans and specs were removed from the working tree; they remain in git history (former `docs/plans/` and `docs/superpowers/`). The current system is described in the architecture documentation in `docs/` (ADRs explain the key decisions).
 
-They are useful design history but may contain superseded decisions.
+Historical plans are design history and may contain superseded decisions.
 
 When conflicts exist, use this precedence unless the user says otherwise:
 

@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="ru" data-project="telebrief">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Telebrief — архитектурная документация</title>
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&family=JetBrains+Mono:wght@400;500&display=swap"
+    />
+    <link rel="stylesheet" href="assets/docs.css" />
+    <script>
+      (function () {
+        try {
+          var savedTheme = localStorage.getItem("telebrief-theme");
+          if (savedTheme === "light" || savedTheme === "dark") {
+            document.documentElement.dataset.theme = savedTheme;
+          }
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <header class="top-bar">
+      <div class="top-left">
+        <button
+          id="sidebar-toggle"
+          class="sidebar-toggle-btn"
+          onclick="toggleSidebar()"
+          title="Свернуть / развернуть панель (Ctrl+B)"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            width="16"
+            height="16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+            <line x1="9" y1="3" x2="9" y2="21"></line>
+          </svg>
+          <span id="sidebar-toggle-text">Свернуть меню</span>
+        </button>
+        <div class="top-nav-info">
+          <span class="top-project-title">Telebrief</span>
+          <span class="top-divider">/</span>
+          <span class="top-project-desc">Архитектурная документация (L1 · L2 · L3 · ADR)</span>
+        </div>
+      </div>
+
+      <div class="top-right">
+        <div class="theme-switch-group" role="group" aria-label="Выбор темы оформления">
+          <button
+            class="theme-switch-btn"
+            data-theme-val="light"
+            onclick="setAppTheme('light')"
+            title="Светлая тема"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              width="13"
+              height="13"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <circle cx="12" cy="12" r="5"></circle>
+              <line x1="12" y1="1" x2="12" y2="3"></line>
+              <line x1="12" y1="21" x2="12" y2="23"></line>
+              <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+              <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+              <line x1="1" y1="12" x2="3" y2="12"></line>
+              <line x1="21" y1="12" x2="23" y2="12"></line>
+              <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+              <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+            </svg>
+            <span>Светлая</span>
+          </button>
+          <button
+            class="theme-switch-btn"
+            data-theme-val="dark"
+            onclick="setAppTheme('dark')"
+            title="Тёмная тема"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              width="13"
+              height="13"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+            </svg>
+            <span>Тёмная</span>
+          </button>
+          <button
+            class="theme-switch-btn active"
+            data-theme-val="auto"
+            onclick="setAppTheme('auto')"
+            title="Авто (системная тема)"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              width="13"
+              height="13"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+              <line x1="8" y1="21" x2="16" y2="21"></line>
+              <line x1="12" y1="17" x2="12" y2="21"></line>
+            </svg>
+            <span>Авто</span>
+          </button>
+        </div>
+      </div>
+    </header>
+    <div class="projects" id="projects">
+    <!-- ======================================================================= -->
+    <!-- PROJECT: TELEBRIEF                                                       -->
+    <!-- ======================================================================= -->
+    <div class="shell" id="shell-telebrief" data-project="telebrief">
+      <aside class="side">
+        <div class="brand">
+          <div class="bt">
+            <span>Telebrief</span>
+            <span class="bt-version">пилот</span>
+          </div>
+          <div class="bs">Архитектурная документация городского медиа<br />L1 → L2 → L3 → ADR</div>
+        </div>
+
+        <nav>
+{{nav}}
+        </nav>
+
+        <div class="foot">
+          Telebrief Architecture · docs/architecture
+        </div>
+      </aside>
+
+      <main class="main">
+{{sections}}
+      </main>
+    </div>
+    </div>
+    <script>
+      // Раздел из URL-хеша: прокрутить к нему после рендера диаграмм.
+      // Старые якоря слитых разделов ведут на новое место.
+      (function () {
+        var aliases = {{aliases}};
+        var id = decodeURIComponent(location.hash.slice(1));
+        if (aliases[id]) {
+          id = aliases[id];
+          history.replaceState(null, "", "#" + id);
+        }
+        if (id) window.pendingScrollId = id;
+        window.addEventListener("hashchange", function () {
+          var next = decodeURIComponent(location.hash.slice(1));
+          if (!aliases[next]) return;
+          location.replace("#" + aliases[next]);
+        });
+      })();
+    </script>
+
+    <!-- ======================================================================= -->
+    <!-- FULLSCREEN SLIDESHOW MODAL                                              -->
+    <!-- ======================================================================= -->
+    <div
+      id="slideshow-modal"
+      class="slideshow-modal"
+      aria-hidden="true"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Слайдшоу архитектурных диаграмм"
+    >
+      <div class="slideshow-backdrop" onclick="closeSlideshow()"></div>
+
+      <header class="slideshow-header">
+        <div class="slideshow-meta">
+          <span class="slideshow-counter" id="slideshow-counter">1 / 7</span>
+          <span class="slideshow-badge" id="slideshow-badge">L1</span>
+          <h3 class="slideshow-title" id="slideshow-title">Архитектурная диаграмма</h3>
+        </div>
+
+        <div class="slideshow-zoom-tools">
+          <button class="slideshow-tool-btn" onclick="zoomSlideshow(-0.15)" title="Уменьшить (-)">
+            <svg
+              viewBox="0 0 24 24"
+              width="14"
+              height="14"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.5"
+            >
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+            </svg>
+          </button>
+          <span class="slideshow-zoom-val" id="slideshow-zoom-val">100%</span>
+          <button class="slideshow-tool-btn" onclick="zoomSlideshow(0.15)" title="Увеличить (+)">
+            <svg
+              viewBox="0 0 24 24"
+              width="14"
+              height="14"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.5"
+            >
+              <line x1="12" y1="5" x2="12" y2="19"></line>
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+            </svg>
+          </button>
+          <button
+            class="slideshow-tool-btn"
+            id="btn-zoom-original"
+            onclick="setSlideshowScale(1.0)"
+            title="1:1 Исходный векторный размер"
+          >
+            <span>1:1 Оригинал</span>
+          </button>
+          <button
+            class="slideshow-tool-btn"
+            id="btn-zoom-fit"
+            onclick="fitSlideshowToScreen()"
+            title="Вписать в экран"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              width="14"
+              height="14"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.2"
+            >
+              <path
+                d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"
+              ></path>
+            </svg>
+            <span>Вписать</span>
+          </button>
+        </div>
+
+        <div class="slideshow-controls">
+          <button
+            class="slideshow-close-btn"
+            onclick="closeSlideshow()"
+            title="Закрыть и вернуться (Esc)"
+            aria-label="Закрыть диаграмму"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              width="18"
+              height="18"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+            <span>Закрыть</span>
+          </button>
+        </div>
+      </header>
+
+      <button
+        class="slideshow-nav-btn prev"
+        onclick="navigateSlideshow(-1)"
+        title="Предыдущая диаграмма (←)"
+        aria-label="Предыдущая диаграмма"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          width="28"
+          height="28"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <polyline points="15 18 9 12 15 6"></polyline>
+        </svg>
+      </button>
+
+      <div class="slideshow-viewport" id="slideshow-viewport">
+        <div class="slideshow-canvas" id="slideshow-canvas">
+          <div class="slideshow-card" id="slideshow-card">
+            <div id="slideshow-svg-container"></div>
+          </div>
+        </div>
+      </div>
+
+      <button
+        class="slideshow-nav-btn next"
+        onclick="navigateSlideshow(1)"
+        title="Следующая диаграмма (→)"
+        aria-label="Следующая диаграмма"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          width="28"
+          height="28"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <polyline points="9 18 15 12 9 6"></polyline>
+        </svg>
+      </button>
+
+      <footer class="slideshow-footer">
+        <span
+          >💡 Колесо — масштаб · Зажмите и тяните — перемещение · <strong>Esc</strong> —
+          закрыть</span
+        >
+      </footer>
+    </div>
+
+    <!-- ======================================================================= -->
+    <!-- SCRIPTS & CONTROLLERS                                                   -->
+    <!-- ======================================================================= -->
+
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <script src="assets/docs.js"></script>
+  </body>
+</html>

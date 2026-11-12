@@ -1,0 +1,16 @@
+{
+  "name": "telebrief-docs",
+  "private": true,
+  "scripts": {
+    "build": "node tools/build.mjs && node tools/check.mjs",
+    "check": "node tools/check.mjs",
+    "serve": "npm run build && node serve.js"
+  },
+  "dependencies": {
+    "gray-matter": "^4.0.3",
+    "jsdom": "^24.1.3",
+    "markdown-it": "^14.3.2",
+    "markdown-it-attrs": "^4.5.0",
+    "markdown-it-container": "^4.0.0"
+  }
+}

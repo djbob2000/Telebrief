@@ -1,6 +1,6 @@
 # Проверка редакционного качества дайджеста
 
-План: `docs/superpowers/plans/2026-10-04-readable-city-digest.md`.
+План: `docs/superpowers/plans/2026-10-04-readable-city-digest.md` (удалён из рабочей копии, есть в истории git).
 Снимки synthetic-v1 созданы до настройки нового writer/editor; live source prose в Git не сохраняется.
 
 Development: rich_utilities, quiet_day, local_contrasts, practical_services.

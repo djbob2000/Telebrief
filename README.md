@@ -614,7 +614,7 @@ make backup
 ./scripts/backup_to_mega.sh
 ```
 
-For full setup, environment variables, cron scheduling, and restore instructions, see the [Database Backup Guide](docs/database_backup.md).
+For full setup, environment variables, cron scheduling, and restore instructions, see the [Database Backup Guide](docs/operations/database-backup.md).
 
 ---
 

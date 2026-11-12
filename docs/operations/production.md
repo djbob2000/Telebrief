@@ -72,7 +72,7 @@ Coolify may resolve relative bind mounts under its resource directory. Check ren
 
 ## Database backup and migration
 
-Use [Database Backup and Disaster Recovery](../database_backup.md) for backup and restore commands. For server-to-server migration, use a PostgreSQL custom-format dump (`pg_dump -Fc`) streamed over SSH to a mode-0600 temporary file on the target. Do not route the dump through the workstation or Git.
+Use [Database Backup and Disaster Recovery](database-backup.md) for backup and restore commands. For server-to-server migration, use a PostgreSQL custom-format dump (`pg_dump -Fc`) streamed over SSH to a mode-0600 temporary file on the target. Do not route the dump through the workstation or Git.
 
 Before restoring, verify the transfer checksum and that `pg_restore --list` can read the archive. Confirm the restore exit status and schema/table checks. Keep the old database volume intact until the new deployment is accepted. Never run a destructive `pg_restore --clean` against the only production copy.
 
