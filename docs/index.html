@@ -217,6 +217,7 @@
 <li><a href="#adr-0006">ADR-0006: Один автор и редактор</a></li>
 <li><a href="#adr-0007">ADR-0007: Обзоры на хронике</a></li>
 <li><a href="#adr-0008">ADR-0008: Хранение знаний</a></li>
+<li><a href="#adr-0009">ADR-0009: Повтор материала</a></li>
 </ul>
 </div>
         </nav>
@@ -1262,15 +1263,19 @@ sequenceDiagram
 <li><strong>Детали — главная ценность.</strong> «Жильцы скинулись по 300 рублей на домовой генератор» лучше, чем «жители адаптируются». План заранее отмечает такие детали, чтобы автор их сохранил.</li>
 <li><strong>Объявления не захватывают текст.</strong> Телефоны, ссылки на бронирование, прайс-листы и рекламный текст не попадают в досье автора; исходные сообщения при этом остаются в базе.</li>
 <li><strong>Длина зависит от дня.</strong> Тихий день даёт короткую статью без «воды», насыщенный — длинную, с бо́льшим числом разделов.</li>
+<li><strong>Окно начинается там, где закончился прошлый выпуск.</strong> Статья не пересказывает вчерашнюю: материал, уже вышедший в прошлой статье, в текст не попадает. Если по сюжету вышло только старое, сюжет из статьи выпадает (<a href="#adr-0009">ADR-0009</a>).</li>
+<li><strong>Время и голоса проверяются.</strong> Прошлое событие датируется своим днём, а не звучит как сегодняшнее. Слова «сегодня» и «вчера» сверяются с днём, когда сообщение отправили. «Другой житель» требует другого автора: один житель, написавший несколько сообщений, не становится несколькими людьми.</li>
+<li><strong>Названия выровнены.</strong> Местные термины приводятся к принятому написанию, прямые цитаты при этом не меняются.</li>
 <li><strong>Один автор и аккуратный редактор.</strong> Черновик пишет одна модель за один вызов. Редактор исправляет только отмеченные места, может перенести абзац в подходящий раздел или пересобрать несколько абзацев, но не переписывает статью целиком (<a href="#adr-0006">ADR-0006</a>). Если модель вернула пустой ответ или отказ, один раз используется следующая модель из списка.</li>
-<li><strong>Блокирует только опасное.</strong> Выдуманные места, числа, причины, искажённые цитаты и вводящие в заблуждение сочетания останавливают статью. Стилистические замечания уходят редактору и выпуск не отменяют.</li>
+<li><strong>Блокирует только опасное.</strong> Выдуманные места, числа, причины, искажённые цитаты и вводящие в заблуждение сочетания останавливают статью: время или число, приписанные не тому источнику, вчерашнее событие, поданное как сегодняшнее, «другой житель» без другого автора. Стилистические замечания уходят редактору и выпуск не отменяют.</li>
 <li><strong>Один повтор целиком.</strong> Если проверка отклонила статью, система один раз запускает всю генерацию заново на тех же данных: модель недетерминирована, и второй черновик может пройти.</li>
 <li><strong>Неделя — те же правила на семи днях.</strong> «Итоги недели» собирают сюжеты в сквозные линии по времени и учитывают, что уже выходило за неделю.</li>
 </ul>
 <h3>Гарантии и ограничения</h3>
 <ul>
 <li>В статью попадает только текст, целиком прошедший проверку по источникам. Прямые цитаты дословны; если цитату нужно сократить или перевести, она становится косвенной речью.</li>
-<li>Сообщение жителя остаётся сообщением жителя: «по словам жителей», а не установленный факт (<a href="#adr-0002">ADR-0002</a>).</li>
+<li>Сообщение жителя остаётся сообщением жителя: «по словам жителей», а не установленный факт (<a href="#adr-0002">ADR-0002</a>). Оговорки («похоже», «по словам соседей») сохраняются в тексте.</li>
+<li>Цитата из сообщения с замаскированным словом или с бранью в статью не попадает.</li>
 <li>Внутренняя «кухня» сбора и названия чатов в текст не попадают.</li>
 <li>Число обращений к модели ограничено: один автор (плюс одна замена при непригодном ответе), не больше двух вызовов редактора, один повтор всего прогона.</li>
 <li>Страница Telegra.ph и обложка не обязательны: если их создать не удалось, статья всё равно выходит, но пост в канале выглядит иначе (<a href="#l3-risks">Риски</a>).</li>
@@ -1305,6 +1310,10 @@ sequenceDiagram
 <tr>
 <td>Почему нет запасного текста</td>
 <td><a href="#adr-0003">ADR-0003</a></td>
+</tr>
+<tr>
+<td>Почему материал прошлой статьи не повторяется</td>
+<td><a href="#adr-0009">ADR-0009</a></td>
 </tr>
 </tbody>
 </table>
@@ -1728,16 +1737,20 @@ sequenceDiagram
 <li><strong>Сессия Telegram:</strong> личный аккаунт через Telethon, файл <code>sessions/user.session</code> в смонтированном томе. Создаётся интерактивно <code>python create_session.py</code>.</li>
 <li><strong>Окно чтения:</strong> каждый скан берёт последние сообщения за <code>lookback_hours</code> (по умолчанию <code>DEFAULT_LOOKBACK_HOURS = 24</code>) без фильтра по id — только так видны правки старых сообщений. Если самое старое сообщение окна новее водяного знака, пропуск догружается назад не больше <code>MAX_CATCHUP_PAGES = 3</code> страниц; при упоре в лимит водяной знак сдвигается лишь до самого старого прочитанного id, и остаток читается в следующем скане.</li>
 <li><strong>Идентичность:</strong> <code>source_items</code> уникальны по <code>(source_id, external_id)</code>, где <code>external_id</code> — id сообщения Telegram; тема форума — метаданные, не часть идентичности. Новая ревизия создаётся, только если хеш содержимого отличается от последней; гонку двух сборщиков закрывает <code>UNIQUE (source_item_id, revision_no)</code>.</li>
+<li><strong>Автор сообщения.</strong> Telegram <code>sender_id</code> записывается в <code>source_items.author_external_id</code> (<code>sender_external_id</code> в <code>src/providers/telegram.py</code>); канал и анонимный отправитель без id. Для сообщений без id личность автора — отображаемое имя внутри одного источника; это слабее идентичности и описано в <a href="#l3-risks">рисках</a>.</li>
 <li><strong>Источники</strong> — строки таблицы <code>sources</code>, синхронизируемые из <code>channels</code> в <code>config.yaml</code> (<code>src/ingestion/registry.py</code>). Коллекторы: <code>telegram</code> всегда, <code>facebook</code> только при <code>facebook.enabled: true</code>.</li>
 </ul>
 <h3>Processing (что не видно на диаграмме)</h3>
 <ul>
 <li><strong>Владение ревизиями.</strong> <code>process_event_revisions</code> берёт ревизии с арендой <code>revision_claim_lease_seconds</code> и продлевает её фоновым heartbeat. Потеря аренды — <code>RevisionClaimLostError</code>, ревизии помечаются <code>failed</code> с типом ошибки из <code>classify_processing_failure</code> и подбираются recovery-проходом.</li>
 <li><strong>Транзакции.</strong> Фрагменты пишутся в короткой транзакции; вызовы провайдера эмбеддингов идут вне любой транзакции пула (до <code>embedding_concurrency</code> пачек параллельно, сохранение строго по порядку); кластеризация — по 20 фрагментов (<code>_CLUSTER_CHUNK_SIZE</code>) в отдельной транзакции, до 3 повторов на кусок. Сбой куска не откатывает уже сохранённые эмбеддинги и предыдущие куски.</li>
+<li><strong>Объявление целиком.</strong> Фрагментер сначала проверяет сообщение целиком (<code>classify_message_classified</code>): если это объявление о продаже или аренде — глагол предложения в начале плюс цена с валютой, телефон, «риелтор» или ссылка на вступление или бронирование, — все фрагменты сообщения получают причину отказа (<code>commercial_classified</code> или <code>private_classified</code>) и не становятся кандидатами. Гражданское сообщение сохраняет пофрагментную классификацию. Версия — <code>FRAGMENTER_VERSION</code> (см. «Версии логики»).</li>
 <li><strong>Кеш эмбеддингов.</strong> <code>fragment_embedding_vectors</code> уникальна по <code>(normalized_hash, model, dimensions)</code>: одинаковый текст в разных сообщениях отправляется провайдеру один раз. Текущая модель — <code>qwen/qwen3-embedding-8b:floor</code>, 1536 измерений, провайдер <code>openrouter</code> (секция <code>embedding</code> в <code>config.yaml</code>).</li>
 <li><strong>Кластеризация.</strong> Векторы нормализуются (L2). Кандидаты — сюжеты издания с активностью за <code>active_window_hours = 72</code>, не больше <code>max_cluster_candidates = 20</code> (поиск по индексу кластеров в памяти воркера, запасной путь — запрос к БД). Присоединение при косинусной близости <code>≥ join_similarity = 0.84</code>, центроид пересчитывается инкрементально. «Тонкий» фрагмент (не больше <code>thin_fragment_max_content_words = 2</code> значимых слов) присоединяется только по ответу (<code>reply_join</code>, центроид не меняется), по почти дословному совпадению или к сюжету с соседним сообщением того же чата.</li>
 <li><strong>Gate-пачки.</strong> До <code>triage_batch_size = 10</code> сюжетов (валидатор не пускает больше 10) и до <code>triage_max_input_chars = 48000</code> символов. При ошибках <code>token_budget</code>, <code>context_size</code>, <code>other</code> пачка делится пополам (<code>_should_split_gate</code>), не больше <code>triage_split_max_extra_calls_per_cycle = 8</code> дополнительных вызовов за цикл; сюжет, пропущенный в ответе, переотправляется один. На одно назначение — <code>triage_max_attempts_per_assignment = 2</code> попытки, пауза <code>provider_retry_backoff_seconds = 300</code> с ростом до <code>3600</code>. Таймаут провайдера — <code>authority_provider_timeout_seconds = 540</code>.</li>
 <li><strong>Хронология чата.</strong> Gate получает <code>CHAT TIMELINE</code> — не цитируемый контекст. Свидетельство, которое берёт место, число или цитату только из строки хронологии, получает <code>publication_use = CONTEXT</code>; выжимка с такой деталью уходит в ограниченное восстановление (<code>context_detail_in_summary</code>).</li>
+<li><strong>Формулировки Gate.</strong> Промпт (<code>GATE_ORDINAL_AND_HEDGE_RULES</code>, <code>src/processing/gate_fidelity_rules.py</code>) требует, чтобы порядковый срок оставался порядковым («4 неделю» → «идёт четвёртая неделя», не «четыре недели») и чтобы оговорки и пересказ с чужих слов («похоже», «кажется», «по словам соседей») оставались в факте и заголовке. Правило работает только в промпте: ни дополнительного вызова модели, ни детерминированного шлюза.</li>
+<li><strong>Место из контекста.</strong> <code>clear_context_only_service_locations</code> (<code>src/processing/conversation.py</code>) очищает <code>service_state.location</code>, если его называет только строка <code>CHAT TIMELINE</code> или родительское сообщение ответа. Свидетельство остаётся <code>PUBLISH</code>, без этого места. Проверка идёт до проверки заголовка.</li>
 <li><strong>Детерминированные guard-проверки после ответа модели:</strong> <code>broad_region_without_focus_impact</code> (общие областные новости без упоминания мест издания → <code>OUT_OF_SCOPE/DROP</code>), <code>story_placed_outside_by_message</code> (абзац после внешнего места без местного маркера → <code>OUT_OF_SCOPE</code>), <code>unsupported_fire_reading</code> («горят окна» — это свет, а не пожар).</li>
 <li><strong>Rich Analysis</strong> запускается не раньше чем через <code>analysis_quiet_seconds = 120</code> после последнего фрагмента и не чаще чем раз в <code>analysis_min_interval_seconds = 600</code> на сюжет; до <code>analysis_max_attempts_per_assignment = 2</code> попыток.</li>
 </ul>
@@ -1864,7 +1877,7 @@ erDiagram
 <li><strong>Вопрос жителя не создаёт состояние службы:</strong> <code>normalize_question_evidence</code> переводит <code>resident_question</code> в <code>CONTEXT</code>.</li>
 </ul>
 <h3>Версии логики</h3>
-<p><code>FRAGMENTER_VERSION = &quot;v2&quot;</code>, <code>TRIAGE_VERSION = &quot;v19&quot;</code>, <code>SCOPE_VERSION = &quot;v1&quot;</code>, <code>ANALYSIS_VERSION = &quot;v10&quot;</code>. Смена версии не переписывает сохранённые решения: выпуск будет читать старые, пока сюжеты активного окна не переобработаны. Сравнение «до/после» на старых данных проверяет только композицию, а не новую логику.</p>
+<p><code>FRAGMENTER_VERSION = &quot;v3&quot;</code>, <code>TRIAGE_VERSION = &quot;v20&quot;</code>, <code>SCOPE_VERSION = &quot;v1&quot;</code>, <code>ANALYSIS_VERSION = &quot;v10&quot;</code>. Версия Gate <code>v20</code> вводит правила из «Формулировок Gate» и очистку места из контекста; при выкладке активное окно 72 ч переобрабатывается, это платные вызовы (<a href="#l3-risks">Риски</a>). Смена версии не переписывает сохранённые решения: выпуск будет читать старые, пока сюжеты активного окна не переобработаны. Сравнение «до/после» на старых данных проверяет только композицию, а не новую логику.</p>
 <h3>Implementation References:</h3>
 <ul>
 <li><strong>Telebrief:</strong> <code>src/jobs/ingestion.py</code> (<code>scan_source</code>, <code>dispatch_due_sources</code>), <code>src/ingestion/service.py</code>, <code>src/ingestion/repository.py</code>, <code>src/ingestion/registry.py</code>, <code>src/ingestion/schedule.py</code>.</li>
@@ -2270,13 +2283,15 @@ sequenceDiagram
 <ul>
 <li><strong>Кандидаты</strong> — как у дайджеста: сюжеты окна с решением Gate <code>KEEP</code> и <code>scope_class ∈ {LOCAL, DIRECT_IMPACT}</code>. Отбор для статьи возвращает короткий список приоритетов; остальные сюжеты получают <code>brief</code>, а не исключение. Больше 200 кандидатов (<code>ARTICLE_AI_SELECTION_MAX_CANDIDATES</code>) — сразу эвристический отбор.</li>
 <li><strong><code>ArticleSupport</code></strong> — единица материала: id опоры, нормализованный факт, исходный <code>source_text</code>, вид свидетельства, <code>publication_use</code>, роль источника, id фрагментов и сообщений, время, временная роль, подача; необязательная подсказка темы из <code>service_access.service_state</code> (только точные ключи: <code>water_supply</code> → <code>water</code>, <code>power_supply</code> → <code>power</code> и т. д.).</li>
-<li><strong>Окно:</strong> <code>lookback_hours</code> 24 для ежедневной, 168 для недельной (<code>resolve_publication_lookback_hours</code>).</li>
+<li><strong>Окно:</strong> <code>lookback_hours</code> 24 для ежедневной, 168 для недельной (<code>resolve_publication_lookback_hours</code>). Для <code>daily_article</code> и типов дайджеста начало окна — <code>max(source_cutoff_at − lookback, source_cutoff_at предыдущего succeeded выпуска того же издания и типа)</code>. Значение фиксируется при запечатывании в <code>publication_runs.metadata[&quot;publication_window&quot;]</code> (<code>PublicationRepository.ensure_run_publication_window</code>), повтор использует его. <code>PublicationWindow.lookback_start</code> строится от того же начала. Недельная статья (скользящие 168 ч) и периодические итоги цепочку не используют.</li>
 </ul>
 <h3>Processing (что не видно на диаграмме)</h3>
 <ul>
 <li><strong>План покрытия</strong> (<code>build_article_coverage_plan</code>): глубина <code>DEVELOP</code> / <code>WEAVE</code> / <code>BRIEF</code> и якорные детали. Для недели — <code>cluster_stories_into_threads</code> и <code>build_longitudinal_coverage_plan</code>, плюс уже вышедшие публикации недели (<code>query_anchor_publications</code>).</li>
 <li><strong>Проекция материала</strong> (<code>project_article_material</code>): контакты, ссылки бронирования и прайс-листы убираются из текста для автора; опора, у которой после этого не осталось текста, не показывается. Сюжет убирается, только если пусты все его не-вопросные опоры <code>PUBLISH</code>. Исходные опоры и provenance сохраняются.</li>
 <li><strong>Досье</strong> (<code>build_article_writer_input</code>): сначала справка по полям и полный список цитируемых фактов, затем навигация по композиции, география, счётчики и список разрешённых цитат. Строки-границы материала экранируются внутри досье. Сначала пробуется полная форма; если она длиннее 999 999 символов — компактная, без потери фактов, id и provenance; если не влезает и она — отказ до вызова модели.</li>
+<li><strong>Предыдущий выпуск</strong> (<code>previously_published</code>): опора, все фрагменты которой процитированы предыдущей успешной ежедневной статьёй (<code>publications.metadata.claim_trace[*].fragment_ids</code>), получает флаг. Проекция материала (<code>project_article_material</code>) убирает её из текста автора с причиной <code>previously_published</code> и действием <code>SUPPRESS_PROMOTION_ONLY</code>; опора остаётся в provenance. Сюжет, у которого не осталось другого цитируемого материала, исключается из материала статьи с той же причиной (<code>previously_published_story_ids</code>). Это проверка наличия материала, а не eligibility. Дайджест флаг не использует (<a href="#adr-0009">ADR-0009</a>).</li>
+<li><strong>Поля досье о людях и времени:</strong> у каждой опоры <code>sent_at</code> — время отправления сообщения в локальной зоне издания (в блоке времени записи, <code>d.s</code>); <code>speaker</code> (алиас <code>S1</code>, <code>S2</code>…), <code>reply_to_speaker</code> (алиас автора родительского сообщения ответа) и <code>speaker_gender</code> (<code>f</code>, <code>m</code> или <code>unknown</code> по собственному тексту автора). Внутренние ключи авторов и <code>author_external_id</code> в досье не попадают. Для точных терминов издания добавляется <code>canonical_terms</code> (вариант и каноническое написание). Совет <code>context_theme_hint</code> — тема родительского сообщения или сюжета, когда у опоры нет своей, навигация без статуса факта.</li>
 <li><strong>Ранний отказ:</strong> если у окна нет ни одной текущей опоры <code>PUBLISH</code>, на которую мог бы опереться заголовок или лид, — <code>global_incompleteness</code> без вызова модели.</li>
 <li><strong>Ответ автора:</strong> непригодным считается только пустой или неразборчивый ответ без прозы, а также отказ или служебное сообщение целиком (<code>chat_completion_with_acceptance</code>). Тогда тот же запрос один раз уходит в следующий неиспользованный слот. Короткий текст, нет заголовка или лида, низкое покрытие — не повод для замены: это находки для редактора.</li>
 <li><strong>Подготовка</strong> (<code>prepare_article_draft</code>): нормализация уже подтверждённой атрибуции, пометка «район не указан» для «частного сектора», кавычки вокруг названий заведений, замена «в чатах», «перекличка», «в комментариях» на нейтральные формулировки (<code>article_kitchen.py</code>). Цитаты не меняются, абзацы не удаляются.</li>
@@ -2301,7 +2316,7 @@ sequenceDiagram
 <td>Evidence Boundary</td>
 <td><code>article_validator.py</code></td>
 <td>Да, если остались после редактора</td>
-<td><code>UNSUPPORTED_CONCRETE_CLAIM</code>, <code>UNSUPPORTED_PROPER_NAME</code>, <code>UNSUPPORTED_CAUSAL_RELATION</code>, <code>UNSUPPORTED_MECHANISM</code>, <code>UNSUPPORTED_DIRECT_QUOTE</code>, <code>QUESTION_CONTEXT_OVERCLAIM</code>, <code>UNSUPPORTED_PROXIMITY_RELATION</code>, <code>CHAT_KITCHEN_LEAK</code>, <code>UNKNOWN_SUPPORT_ID</code></td>
+<td><code>UNSUPPORTED_CONCRETE_CLAIM</code>, <code>UNSUPPORTED_PROPER_NAME</code>, <code>UNSUPPORTED_CAUSAL_RELATION</code>, <code>UNSUPPORTED_MECHANISM</code>, <code>UNSUPPORTED_DIRECT_QUOTE</code>, <code>QUESTION_CONTEXT_OVERCLAIM</code>, <code>UNSUPPORTED_PROXIMITY_RELATION</code>, <code>CHAT_KITCHEN_LEAK</code>, <code>UNKNOWN_SUPPORT_ID</code>, <code>CONCRETE_VALUE_MISBOUND</code> (значение времени, даты, числа или длительности принадлежит другому источнику или другой службе или месту), <code>SPEAKER_MULTIPLICITY_MISMATCH</code> («другой житель» без второго автора), <code>HISTORICAL_PRESENTED_AS_CURRENT</code> (прошлое событие с маркером текущего момента), <code>RELATIVE_TIME_MISDATED</code> («сегодня»/«вчера» не совпадает с днём отправления источника)</td>
 </tr>
 <tr>
 <td>Качество для читателя — блокирующие</td>
@@ -2313,12 +2328,12 @@ sequenceDiagram
 <td>Качество для читателя — правки</td>
 <td><code>article_quality_policy.py</code></td>
 <td>Нет: редактору или диагностика</td>
-<td><code>QUOTE_ROLL_PARAGRAPH</code>, <code>THEME_MISMATCHED_SECTION</code>, <code>COLLOQUIAL_AUTHOR_PROSE</code>, <code>PRIVATE_SECTOR_AREA_UNSPECIFIED</code>, <code>REPEATED_CENTRAL_THESIS</code>, <code>MISSING_DEVELOP_STORY</code> (только «готовность неполная»)</td>
+<td><code>QUOTE_ROLL_PARAGRAPH</code>, <code>THEME_MISMATCHED_SECTION</code>, <code>COLLOQUIAL_AUTHOR_PROSE</code>, <code>PRIVATE_SECTOR_AREA_UNSPECIFIED</code>, <code>REPEATED_CENTRAL_THESIS</code>, <code>MISSING_DEVELOP_STORY</code> (только «готовность неполная»), <code>RELATIVE_TIME_COPIED</code>, <code>REDUNDANT_PARAGRAPH</code>, <code>UNFRAMED_CONFLICTING_ACCOUNTS</code>, <code>ORDINAL_DURATION_INFLATED</code>, <code>HEDGE_DROPPED</code>, <code>PLURAL_SOURCE_INFLATION</code>, <code>UNSUPPORTED_SPEAKER_GENDER</code>, <code>QUOTE_STARTS_AFTER_MASK</code>, <code>PROFANITY_IN_ARTICLE</code></td>
 </tr>
 </tbody>
 </table>
 </div>
-<p>Код качества, которого нет в реестре <code>_POLICIES</code>, — ошибка конфигурации, а не безопасная находка. Написание сверяется со свёрткой регистра, <code>ё/е</code>, украинских пар букв и апострофов; неизвестные имена, числа и слова цитат по-прежнему блокируют.</p>
+<p>Backstop одного предложения (<code>_SENTENCE_TRIM_CODES</code>) снимает только блокирующие находки, указывающие на абзац: <code>MISSING_CLAIM_SUPPORT</code>, <code>UNSUPPORTED_CLAIM_ATOM</code>, <code>UNSUPPORTED_DIRECT_QUOTE</code>, <code>UNSUPPORTED_CONCRETE_CLAIM</code>, <code>UNSUPPORTED_PROPER_NAME</code>, <code>UNSUPPORTED_CRITICAL_TERM</code>, <code>CONCRETE_VALUE_MISBOUND</code>, <code>SPEAKER_MULTIPLICITY_MISMATCH</code>, <code>HISTORICAL_PRESENTED_AS_CURRENT</code>, <code>RELATIVE_TIME_MISDATED</code>. <code>CONCRETE_VALUE_NOT_EVALUATED</code> — диагностика без блокировки; она попадает в <code>ArticleValidationResult.not_evaluated</code>, но в метаданные публикации статьи не записывается (<a href="#l3-risks">Риски</a>). Код качества, которого нет в реестре <code>_POLICIES</code>, — ошибка конфигурации, а не безопасная находка. Написание сверяется со свёрткой регистра, <code>ё/е</code>, украинских пар букв и апострофов; неизвестные имена, числа и слова цитат по-прежнему блокируют.</p>
 <h3>Output (Выходные данные и изменение состояния)</h3>
 <ul>
 <li><code>publications</code>: заголовок, лид, тело в Markdown; <code>metadata.telegraph_url</code>, <code>photo_path</code>, <code>image_prompt</code>, <code>article_claim_trace</code> (привязка утверждений к опорам).</li>
@@ -2391,6 +2406,8 @@ sequenceDiagram
 </table>
 </div>
 <p>Профиль длины (<code>derive_article_length_profile</code>): «тонкий» день — не больше 4 сюжетов или 8 опор <code>PUBLISH</code>, «стандартный» — до 10 сюжетов или 24 опор, иначе «насыщенный». Счётчики богатства композиции — контекст для автора, не квота и не шлюз.</p>
+<h3>Версии логики</h3>
+<p><code>ARTICLE_WRITER_CONTEXT_VERSION = &quot;event-article-context-v7-speaker-send-time&quot;</code> (досье), <code>ARTICLE_READER_QUALITY_VERSION = &quot;article-reader-quality-v13&quot;</code> (реестр качества), <code>ARTICLE_NARRATIVE_PROMPT_VERSION = &quot;event-article-narrative-v16-fidelity-rules&quot;</code> (промпт автора). Версии записываются в метаданные попыток и публикации. Смена версии не переписывает уже вышедшие статьи; сравнение «до/после» на замороженном прогоне проверяет только текущий код.</p>
 <h3>Failure scenarios (Сценарии ошибок и обработка сбоев)</h3>
 <div class="tw">
 <table>
@@ -2448,6 +2465,9 @@ sequenceDiagram
 <li><strong>Telebrief:</strong> <code>src/article_generator.py</code> (<code>ArticleGenerator._generate_from_event_article_context</code>), <code>src/publication/article_coverage.py</code>, <code>src/publication/article_material.py</code>, <code>src/publication/article_composition.py</code>, <code>src/publication/article_writer_input.py</code>, <code>src/publication/article_writer_context.py</code>, <code>src/publication/article_length.py</code>, <code>src/publication/story_threads.py</code>.</li>
 <li><strong>Telebrief:</strong> <code>src/publication/article_finalization.py</code>, <code>src/publication/article_validator.py</code>, <code>src/publication/article_quality_policy.py</code>, <code>src/publication/article_editor.py</code>, <code>src/publication/article_kitchen.py</code>, <code>src/publication/article_trace.py</code>, <code>src/publication/errors.py</code>.</li>
 <li><strong>Telebrief:</strong> <code>src/publication/delivery.py</code> (<code>_render_payload</code>), <code>src/publication/adapters.py</code>, <code>src/telegraph.py</code>, <code>src/image_generator.py</code>, <code>src/ai_providers.py</code> (<code>chat_completion_with_acceptance</code>).</li>
+<li><strong>Telebrief:</strong> <code>src/publication/publication_window.py</code>, <code>src/publication/repository.py</code> (<code>resolve_run_publication_window</code>, <code>ensure_run_publication_window</code>), <code>src/publication/snapshot.py</code> (<code>_seal_on</code>).</li>
+<li><strong>Telebrief:</strong> <code>src/publication/article_temporal_checks.py</code> (временные проверки и <code>ARTICLE_TEMPORAL_WRITER_RULES</code>), <code>src/publication/article_value_binding.py</code> (связь значения с источником), <code>src/publication/article_speaker.py</code> (алиасы, пол, число авторов), <code>src/publication/article_quote_masks.py</code> (маски и брань в цитатах), <code>src/publication/article_composition_checks.py</code>, <code>src/publication/article_evidence_checks.py</code>.</li>
+<li><strong>Telebrief:</strong> <code>src/domain/edition_terminology.py</code> (термины издания), <code>src/publication/article_semantic_lexicon.py</code> (критические понятия).</li>
 </ul>
 <p><a href="#l2-article">↑ Сценарий 3 (Уровень 2)</a></p>
 </section>
@@ -3317,6 +3337,45 @@ erDiagram
 </tbody>
 </table>
 </div>
+<h3>Статья: окно, авторы и проверки</h3>
+<div class="tw">
+<table>
+<thead>
+<tr>
+<th>Риск</th>
+<th>Последствие</th>
+<th>Варианты</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Старые сообщения без <code>sender_id</code> опознаются по отображаемому имени внутри источника. Два жителя с одним именем сливаются в одного автора</td>
+<td>Ложная <code>SPEAKER_MULTIPLICITY_MISMATCH</code> на «другой житель» блокирует абзац; редактор или backstop одного предложения могут его снять, иначе статья отклоняется. Алиасы <code>speaker</code> в досье тоже неверны</td>
+<td>Заполнить <code>author_external_id</code> из Telegram для старых сообщений; считать имя слабой идентичностью и не выводить число людей из него</td>
+</tr>
+<tr>
+<td><code>CONCRETE_VALUE_NOT_EVALUATED</code> попадает в <code>ArticleValidationResult.not_evaluated</code>, но не сохраняется в метаданных публикации статьи. Только дайджест пишет <code>not_evaluated</code> в метаданные ремонта</td>
+<td>Нерешённые связи времени, места и службы не видны в аудите; статья может выглядеть проверенной</td>
+<td>Писать диагностики в попытки и метаданные публикации статьи; показывать счётчик в <code>preview_article.py</code></td>
+</tr>
+<tr>
+<td>Скользящая недельная статья (168 ч) не связана с предыдущим выпуском (<code>publication_window</code> не используется)</td>
+<td>Ручной или позднего запуска может захватить материал предыдущего выпуска</td>
+<td>Применить цепочку окна к <code>weekly_article</code> после проверки повторных запусков; до этого не запускать недельную статью вручную вне слота</td>
+</tr>
+<tr>
+<td>Гражданское объявление о транспорте с ценой, например «Автобус до Мелитополя 500 руб, ходит раз в час», отбрасывается как <code>commercial_classified</code> пофрагментным детектором (<code>is_noise_or_classified</code>, проверено на текущем коде). Правило «объявление целиком» (<code>classify_message_classified</code>) этот случай не покрывает: глагол объявления в начале отсутствует</td>
+<td>Полезная сводка о маршруте не попадает в Gate и статью</td>
+<td>Отличать ценовой маршрут от продажи: требовать признаки товара или услуги продажи, а не только цену и маршрут</td>
+</tr>
+<tr>
+<td>Повышение <code>TRIAGE_VERSION</code> (сейчас <code>v20</code>) на выкладке переобрабатывает активное окно 72 ч через Gate</td>
+<td>Платные вызовы модели и задержка выпуска после деплоя; без согласования не делать</td>
+<td>Выкладывать вне слота хроники 16:35 и при отсутствии активных заявок; заранее согласовать объём вызовов</td>
+</tr>
+</tbody>
+</table>
+</div>
 <p><a href="#l1-limitations">↑ Ключевые ограничения (Уровень 1)</a></p>
 </section>
 
@@ -3466,6 +3525,12 @@ erDiagram
 <td>Знания хранятся бессрочно, рабочие векторы — пока нужны</td>
 <td>Принято</td>
 <td>2026-11-05</td>
+</tr>
+<tr>
+<td><a href="#adr-0009">0009</a></td>
+<td>Материал, уже вышедший в прошлой статье, не цитируется повторно</td>
+<td>Принято</td>
+<td>2026-11-12</td>
 </tr>
 </tbody>
 </table>
@@ -3738,6 +3803,41 @@ erDiagram
 <ul>
 <li><a href="#l3-maintenance-detail">Обслуживание и хранение</a></li>
 <li><a href="#l3-data-model">Модель данных</a></li>
+</ul>
+</section>
+
+<section id="adr-0009" data-level="ADR">
+<div class="eyebrow">ADR · Решение 0009</div>
+<h2>ADR-0009: Материал, уже вышедший в прошлой статье, не цитируется повторно</h2>
+<p class="adr-meta"><span class="badge badge-ok">Принято</span> · Дата: 2026-11-12 · Касается: <a href="#l2-article">Сценарий 3</a></p>
+<h3>Контекст и проблема</h3>
+<p>Вечерняя статья охватывает окно, которое заканчивается в момент снимка знаний. Предыдущий выпуск мог закончиться позже, чем начинается следующее окно, поэтому окна перекрывались. Кроме того, сюжет, в который пришло новое сообщение, тянул за собой старые опоры, которые лежат вне окна. В результате статья от 12 ноября повторила статью от 11 ноября: одни и те же напоры, адреса и «дозвонилась на третий день». Предыдущий выпуск закончился в 21:51 UTC, а окно нового выпуска начиналось раньше.</p>
+<h3>Движущие факторы</h3>
+<ul>
+<li>Читатель, который видит статью каждый вечер, должен получать новое, а не пересказ вчерашнего.</li>
+<li>Сообщения вне окна не должны становиться «сегодняшними» новостями.</li>
+<li>Факт, уже опубликованный и не получивший нового развития, не должен поддерживать абзац как свежий.</li>
+<li>Проверка не должна отсеивать сюжеты: это проверка наличия материала, а не право на публикацию.</li>
+</ul>
+<h3>Рассмотренные варианты</h3>
+<ul>
+<li><strong>Исключать такой материал полностью.</strong> Опоры, все фрагменты которых уже процитированы предыдущей статьёй, не попадают в материал автора. Сюжет без другого материала выпадает из статьи. Цена: если новость продолжается, её предыдущая часть в новой статье не упоминается.</li>
+<li><strong>Разрешать как датированную подводку.</strong> Например, «как сообщалось 11 ноября». Вариант сохраняет контекст, но снова открывает путь к тому, что вчерашний факт звучит как сегодняшний: писатель может переписать подводку в настоящем времени.</li>
+</ul>
+<h3>Решение</h3>
+<p>Принят первый вариант: материал, уже вышедший в предыдущей ежедневной статье, полностью исключается из материала автора и не цитируется. Решение принял владелец проекта. Окно выпуска для ежедневной статьи и дайджеста начинается там, где закончился предыдущий выпуск того же типа, и не длиннее суток.</p>
+<h3>Последствия</h3>
+<ul>
+<li>Статья не повторяет вчерашний текст. Продолжение новости без нового факта в статью не попадает.</li>
+<li>Дайджест не меняется: это отдельный утренний продукт с полным окном.</li>
+<li>Исключение оставляет опоры во внутреннем provenance, а сюжет остаётся связанным с решением Gate.</li>
+<li>Ограничение: окно нельзя растянуть назад, поэтому материал, который вышел до предыдущего выпуска и не был в нём процитирован, в статью тоже не попадёт.</li>
+</ul>
+<h3>Реализация</h3>
+<ul>
+<li><a href="#l3-article-detail">Статья: генерация и проверка</a></li>
+<li><a href="#l3-ingestion-detail">Сбор и обработка</a>: границы окна не меняют сбор.</li>
+<li><code>src/publication/publication_window.py</code>, <code>src/publication/repository.py</code> (<code>resolve_run_publication_window</code>), <code>src/publication/article_material.py</code> (причина <code>previously_published</code>).</li>
 </ul>
 </section>
       </main>

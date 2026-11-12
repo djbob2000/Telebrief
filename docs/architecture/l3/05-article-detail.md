@@ -59,13 +59,15 @@ sequenceDiagram
 
 - **Кандидаты** — как у дайджеста: сюжеты окна с решением Gate `KEEP` и `scope_class ∈ {LOCAL, DIRECT_IMPACT}`. Отбор для статьи возвращает короткий список приоритетов; остальные сюжеты получают `brief`, а не исключение. Больше 200 кандидатов (`ARTICLE_AI_SELECTION_MAX_CANDIDATES`) — сразу эвристический отбор.
 - **`ArticleSupport`** — единица материала: id опоры, нормализованный факт, исходный `source_text`, вид свидетельства, `publication_use`, роль источника, id фрагментов и сообщений, время, временная роль, подача; необязательная подсказка темы из `service_access.service_state` (только точные ключи: `water_supply` → `water`, `power_supply` → `power` и т. д.).
-- **Окно:** `lookback_hours` 24 для ежедневной, 168 для недельной (`resolve_publication_lookback_hours`).
+- **Окно:** `lookback_hours` 24 для ежедневной, 168 для недельной (`resolve_publication_lookback_hours`). Для `daily_article` и типов дайджеста начало окна — `max(source_cutoff_at − lookback, source_cutoff_at предыдущего succeeded выпуска того же издания и типа)`. Значение фиксируется при запечатывании в `publication_runs.metadata["publication_window"]` (`PublicationRepository.ensure_run_publication_window`), повтор использует его. `PublicationWindow.lookback_start` строится от того же начала. Недельная статья (скользящие 168 ч) и периодические итоги цепочку не используют.
 
 ### Processing (что не видно на диаграмме)
 
 - **План покрытия** (`build_article_coverage_plan`): глубина `DEVELOP` / `WEAVE` / `BRIEF` и якорные детали. Для недели — `cluster_stories_into_threads` и `build_longitudinal_coverage_plan`, плюс уже вышедшие публикации недели (`query_anchor_publications`).
 - **Проекция материала** (`project_article_material`): контакты, ссылки бронирования и прайс-листы убираются из текста для автора; опора, у которой после этого не осталось текста, не показывается. Сюжет убирается, только если пусты все его не-вопросные опоры `PUBLISH`. Исходные опоры и provenance сохраняются.
 - **Досье** (`build_article_writer_input`): сначала справка по полям и полный список цитируемых фактов, затем навигация по композиции, география, счётчики и список разрешённых цитат. Строки-границы материала экранируются внутри досье. Сначала пробуется полная форма; если она длиннее 999 999 символов — компактная, без потери фактов, id и provenance; если не влезает и она — отказ до вызова модели.
+- **Предыдущий выпуск** (`previously_published`): опора, все фрагменты которой процитированы предыдущей успешной ежедневной статьёй (`publications.metadata.claim_trace[*].fragment_ids`), получает флаг. Проекция материала (`project_article_material`) убирает её из текста автора с причиной `previously_published` и действием `SUPPRESS_PROMOTION_ONLY`; опора остаётся в provenance. Сюжет, у которого не осталось другого цитируемого материала, исключается из материала статьи с той же причиной (`previously_published_story_ids`). Это проверка наличия материала, а не eligibility. Дайджест флаг не использует ([ADR-0009](#adr-0009)).
+- **Поля досье о людях и времени:** у каждой опоры `sent_at` — время отправления сообщения в локальной зоне издания (в блоке времени записи, `d.s`); `speaker` (алиас `S1`, `S2`…), `reply_to_speaker` (алиас автора родительского сообщения ответа) и `speaker_gender` (`f`, `m` или `unknown` по собственному тексту автора). Внутренние ключи авторов и `author_external_id` в досье не попадают. Для точных терминов издания добавляется `canonical_terms` (вариант и каноническое написание). Совет `context_theme_hint` — тема родительского сообщения или сюжета, когда у опоры нет своей, навигация без статуса факта.
 - **Ранний отказ:** если у окна нет ни одной текущей опоры `PUBLISH`, на которую мог бы опереться заголовок или лид, — `global_incompleteness` без вызова модели.
 - **Ответ автора:** непригодным считается только пустой или неразборчивый ответ без прозы, а также отказ или служебное сообщение целиком (`chat_completion_with_acceptance`). Тогда тот же запрос один раз уходит в следующий неиспользованный слот. Короткий текст, нет заголовка или лида, низкое покрытие — не повод для замены: это находки для редактора.
 - **Подготовка** (`prepare_article_draft`): нормализация уже подтверждённой атрибуции, пометка «район не указан» для «частного сектора», кавычки вокруг названий заведений, замена «в чатах», «перекличка», «в комментариях» на нейтральные формулировки (`article_kitchen.py`). Цитаты не меняются, абзацы не удаляются.
@@ -81,13 +83,13 @@ sequenceDiagram
 
 | Группа | Кто решает | Блокируют публикацию | Примеры кодов |
 | --- | --- | --- | --- |
-| Evidence Boundary | `article_validator.py` | Да, если остались после редактора | `UNSUPPORTED_CONCRETE_CLAIM`, `UNSUPPORTED_PROPER_NAME`, `UNSUPPORTED_CAUSAL_RELATION`, `UNSUPPORTED_MECHANISM`, `UNSUPPORTED_DIRECT_QUOTE`, `QUESTION_CONTEXT_OVERCLAIM`, `UNSUPPORTED_PROXIMITY_RELATION`, `CHAT_KITCHEN_LEAK`, `UNKNOWN_SUPPORT_ID` |
+| Evidence Boundary | `article_validator.py` | Да, если остались после редактора | `UNSUPPORTED_CONCRETE_CLAIM`, `UNSUPPORTED_PROPER_NAME`, `UNSUPPORTED_CAUSAL_RELATION`, `UNSUPPORTED_MECHANISM`, `UNSUPPORTED_DIRECT_QUOTE`, `QUESTION_CONTEXT_OVERCLAIM`, `UNSUPPORTED_PROXIMITY_RELATION`, `CHAT_KITCHEN_LEAK`, `UNKNOWN_SUPPORT_ID`, `CONCRETE_VALUE_MISBOUND` (значение времени, даты, числа или длительности принадлежит другому источнику или другой службе или месту), `SPEAKER_MULTIPLICITY_MISMATCH` («другой житель» без второго автора), `HISTORICAL_PRESENTED_AS_CURRENT` (прошлое событие с маркером текущего момента), `RELATIVE_TIME_MISDATED` («сегодня»/«вчера» не совпадает с днём отправления источника) |
 | Качество для читателя — блокирующие | `article_quality_policy.py` | Да | `CONTRADICTORY_SERVICE_STATE`, `CONSECUTIVE_DIRECT_SPEECH_ROLL`, `ARTICLE_PLACE_AREA_MISMATCH`, `HEADING_AREA_MISMATCH`, `NON_PLACE_NAME_AS_PLACE`, `OVERLOADED_ROSTER_PARAGRAPH`, `MULTI_SENTENCE_ADDRESS_STATUS_ROSTER`, `DIRECTORY_TIMETABLE_SECTION` |
-| Качество для читателя — правки | `article_quality_policy.py` | Нет: редактору или диагностика | `QUOTE_ROLL_PARAGRAPH`, `THEME_MISMATCHED_SECTION`, `COLLOQUIAL_AUTHOR_PROSE`, `PRIVATE_SECTOR_AREA_UNSPECIFIED`, `REPEATED_CENTRAL_THESIS`, `MISSING_DEVELOP_STORY` (только «готовность неполная») |
+| Качество для читателя — правки | `article_quality_policy.py` | Нет: редактору или диагностика | `QUOTE_ROLL_PARAGRAPH`, `THEME_MISMATCHED_SECTION`, `COLLOQUIAL_AUTHOR_PROSE`, `PRIVATE_SECTOR_AREA_UNSPECIFIED`, `REPEATED_CENTRAL_THESIS`, `MISSING_DEVELOP_STORY` (только «готовность неполная»), `RELATIVE_TIME_COPIED`, `REDUNDANT_PARAGRAPH`, `UNFRAMED_CONFLICTING_ACCOUNTS`, `ORDINAL_DURATION_INFLATED`, `HEDGE_DROPPED`, `PLURAL_SOURCE_INFLATION`, `UNSUPPORTED_SPEAKER_GENDER`, `QUOTE_STARTS_AFTER_MASK`, `PROFANITY_IN_ARTICLE` |
 
 </div>
 
-Код качества, которого нет в реестре `_POLICIES`, — ошибка конфигурации, а не безопасная находка. Написание сверяется со свёрткой регистра, `ё/е`, украинских пар букв и апострофов; неизвестные имена, числа и слова цитат по-прежнему блокируют.
+Backstop одного предложения (`_SENTENCE_TRIM_CODES`) снимает только блокирующие находки, указывающие на абзац: `MISSING_CLAIM_SUPPORT`, `UNSUPPORTED_CLAIM_ATOM`, `UNSUPPORTED_DIRECT_QUOTE`, `UNSUPPORTED_CONCRETE_CLAIM`, `UNSUPPORTED_PROPER_NAME`, `UNSUPPORTED_CRITICAL_TERM`, `CONCRETE_VALUE_MISBOUND`, `SPEAKER_MULTIPLICITY_MISMATCH`, `HISTORICAL_PRESENTED_AS_CURRENT`, `RELATIVE_TIME_MISDATED`. `CONCRETE_VALUE_NOT_EVALUATED` — диагностика без блокировки; она попадает в `ArticleValidationResult.not_evaluated`, но в метаданные публикации статьи не записывается ([Риски](#l3-risks)). Код качества, которого нет в реестре `_POLICIES`, — ошибка конфигурации, а не безопасная находка. Написание сверяется со свёрткой регистра, `ё/е`, украинских пар букв и апострофов; неизвестные имена, числа и слова цитат по-прежнему блокируют.
 
 ### Output (Выходные данные и изменение состояния)
 
@@ -116,6 +118,10 @@ sequenceDiagram
 </div>
 
 Профиль длины (`derive_article_length_profile`): «тонкий» день — не больше 4 сюжетов или 8 опор `PUBLISH`, «стандартный» — до 10 сюжетов или 24 опор, иначе «насыщенный». Счётчики богатства композиции — контекст для автора, не квота и не шлюз.
+
+### Версии логики
+
+`ARTICLE_WRITER_CONTEXT_VERSION = "event-article-context-v7-speaker-send-time"` (досье), `ARTICLE_READER_QUALITY_VERSION = "article-reader-quality-v13"` (реестр качества), `ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v16-fidelity-rules"` (промпт автора). Версии записываются в метаданные попыток и публикации. Смена версии не переписывает уже вышедшие статьи; сравнение «до/после» на замороженном прогоне проверяет только текущий код.
 
 ### Failure scenarios (Сценарии ошибок и обработка сбоев)
 
@@ -147,5 +153,8 @@ sequenceDiagram
 - **Telebrief:** `src/article_generator.py` (`ArticleGenerator._generate_from_event_article_context`), `src/publication/article_coverage.py`, `src/publication/article_material.py`, `src/publication/article_composition.py`, `src/publication/article_writer_input.py`, `src/publication/article_writer_context.py`, `src/publication/article_length.py`, `src/publication/story_threads.py`.
 - **Telebrief:** `src/publication/article_finalization.py`, `src/publication/article_validator.py`, `src/publication/article_quality_policy.py`, `src/publication/article_editor.py`, `src/publication/article_kitchen.py`, `src/publication/article_trace.py`, `src/publication/errors.py`.
 - **Telebrief:** `src/publication/delivery.py` (`_render_payload`), `src/publication/adapters.py`, `src/telegraph.py`, `src/image_generator.py`, `src/ai_providers.py` (`chat_completion_with_acceptance`).
+- **Telebrief:** `src/publication/publication_window.py`, `src/publication/repository.py` (`resolve_run_publication_window`, `ensure_run_publication_window`), `src/publication/snapshot.py` (`_seal_on`).
+- **Telebrief:** `src/publication/article_temporal_checks.py` (временные проверки и `ARTICLE_TEMPORAL_WRITER_RULES`), `src/publication/article_value_binding.py` (связь значения с источником), `src/publication/article_speaker.py` (алиасы, пол, число авторов), `src/publication/article_quote_masks.py` (маски и брань в цитатах), `src/publication/article_composition_checks.py`, `src/publication/article_evidence_checks.py`.
+- **Telebrief:** `src/domain/edition_terminology.py` (термины издания), `src/publication/article_semantic_lexicon.py` (критические понятия).
 
 [↑ Сценарий 3 (Уровень 2)](#l2-article)
