@@ -33,6 +33,7 @@ from src.processing.conversation import (
     ConversationTimeline,
     ConversationTimelineSettings,
     TimelineAnchor,
+    clear_context_only_service_locations,
     context_only_details,
     load_conversation_timeline,
     withhold_context_only_evidence,
@@ -52,6 +53,7 @@ from src.processing.fire_reading import (
     LIT_WINDOWS_VS_FIRE_RULES,
     unsupported_fire_reading,
 )
+from src.processing.gate_fidelity_rules import GATE_ORDINAL_AND_HEDGE_RULES
 from src.processing.hard_exclusion import evaluate_story_hard_exclusion
 from src.processing.operational_semantics import (
     has_unstructured_publish_service_access,
@@ -383,6 +385,7 @@ EVIDENCE SOURCE OWNERSHIP:
 
 """
     + LIT_WINDOWS_VS_FIRE_RULES
+    + GATE_ORDINAL_AND_HEDGE_RULES
     + """
 CHAT SARCASM, RUMORS, AND SCHEDULED OUTAGES:
 - Informal chat banter, sarcasm, emotional reactions, and ungrounded rumors/predictions about future outages (e.g. "после 20-го всё вырубят", "зимой тепла не будет", "завтра опять отключат") MUST NEVER be classified as service_access or SCHEDULED.
@@ -1405,6 +1408,15 @@ class StoryTriageService:
             message_contexts = [
                 _fragment_message_context(sf, same_message_context) for sf in story_frags
             ]
+            # Reply parents are non-citable context for a place they alone name.
+            story_message_own_texts = [
+                *(standardize_edition_area_slang(c.text, edition_slug) for c in message_contexts),
+                *(
+                    text
+                    for context in message_contexts
+                    for text in (*context.earlier_message_texts, *context.later_message_texts)
+                ),
+            ]
             # Gate sees each message's date, so the day it was posted counts as
             # stated. Official area names replace slang by contract (§3).
             story_own_texts = [
@@ -1454,6 +1466,21 @@ class StoryTriageService:
                     )
                     rejected_publish_extraction = (
                         rejected_publish_extraction or withheld_context_detail
+                    )
+                    # Before the headline check: a place only the timeline or a reply
+                    # parent names is cleared; the item stays PUBLISH.
+                    brief_payload, _ = clear_context_only_service_locations(
+                        brief_payload,
+                        own_texts=story_message_own_texts,
+                        context_texts=(
+                            *timeline_texts,
+                            *(
+                                standardize_edition_area_slang(text, edition_slug)
+                                for text in story_reply_parent_contexts.values()
+                            ),
+                        ),
+                        scope=scope_config,
+                        geo_context=geo_context,
                     )
                     if service_audit.rejected_count > 0:
                         self.logger.debug(

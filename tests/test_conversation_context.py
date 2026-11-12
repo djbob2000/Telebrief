@@ -28,6 +28,7 @@ from src.processing.conversation import (
     TimelineAnchor,
     TimelineLine,
     build_timeline_lines,
+    clear_context_only_service_locations,
     content_words,
     context_only_details,
     is_thin_fragment,
@@ -884,3 +885,75 @@ async def test_official_area_name_for_slang_in_a_parent_is_not_borrowed() -> Non
 
     assert result.invalid_story_ids == ()
     assert [gate.story_id for gate in result.results] == [30]
+
+
+def _located_power(
+    location: str, *, kind: str = "service_access", use: str = "PUBLISH"
+) -> EventPayload:
+    state = ServiceStatePayload(
+        subject_key="power_supply",
+        subject_label="Электроснабжение",
+        dimension="availability",
+        state="AVAILABLE",
+        location=location,
+    )
+    return EventPayload(
+        evidence_items=(
+            EvidenceItemPayload("Свет есть, но не везде.", kind, use, (7,), service_state=state),
+        )
+    )
+
+
+def _clear(payload: EventPayload, *, own: str, context: str) -> tuple[EventPayload, bool]:
+    return clear_context_only_service_locations(
+        payload,
+        own_texts=[own],
+        context_texts=[context],
+        scope=SCOPE,
+        geo_context=GEO,
+    )
+
+
+def test_a_location_only_the_timeline_names_is_cleared_and_the_item_kept() -> None:
+    payload = _located_power("центр")
+
+    result, cleared = _clear(payload, own="Свет есть, но не везде.", context="В центре свет дали")
+
+    item = result.evidence_items[0]
+    assert cleared is True
+    assert item.publication_use == "PUBLISH"
+    assert item.kind == "service_access"
+    assert item.text == "Свет есть, но не везде."
+    assert item.service_state is not None
+    assert item.service_state.location == ""
+    assert item.service_state.state == "AVAILABLE"
+    assert item.service_state.subject_key == "power_supply"
+
+
+def test_a_location_the_story_itself_names_is_kept() -> None:
+    payload = _located_power("центр")
+
+    result, cleared = _clear(payload, own="В центре свет есть.", context="В центре свет дали")
+
+    assert cleared is False
+    assert result is payload
+    assert result.evidence_items[0].service_state.location == "центр"
+
+
+def test_a_location_no_context_names_is_kept() -> None:
+    payload = _located_power("центр")
+
+    result, cleared = _clear(payload, own="Свет есть, но не везде.", context="")
+
+    assert cleared is False
+    assert result.evidence_items[0].service_state.location == "центр"
+
+
+def test_context_only_items_and_items_without_a_location_are_untouched() -> None:
+    context_item = _located_power("центр", use="CONTEXT")
+    no_location = _located_power("")
+
+    for payload in (context_item, no_location):
+        result, cleared = _clear(payload, own="Свет есть.", context="В центре свет дали")
+        assert cleared is False
+        assert result is payload
