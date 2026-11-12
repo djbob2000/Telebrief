@@ -28,6 +28,7 @@ from src.domain.event_payload import (
 from src.domain.service_state import ServiceStatePayload
 from src.llm_telemetry import llm_call_context
 from src.processing.conversation import (
+    FIGURATIVE_REMARK_RULE,
     SAME_INCIDENT_RELATION,
     ConversationTimeline,
     ConversationTimelineSettings,
@@ -346,7 +347,9 @@ For LOCAL or DIRECT_IMPACT content:
 - If another fragment answers the question, represent the answer separately as service_access/community_report/official_statement as appropriate.
 - Do not infer trends such as "повышенный спрос" or "участились вопросы" from one question.
 - A reply or remark that only generalizes or opines (for example "мало у кого остались рабочие печи", "многие давно забыли", "всем всё равно") without its own place, time, event, number or service state is conversational CONTEXT, not a PUBLISH community_report or a new Story. Short reports with a place and a state ("На Димитрова с водой печально") stay PUBLISH.
-- A reply that only locates a street/building or explains a neighborhood's name is CONTEXT, not a new event. Preserve that location when it anchors a separately supported development or concrete service/access detail. Do not manufacture a digest item from a location clarification or an unanchored discussion about an institution.
+"""
+    + FIGURATIVE_REMARK_RULE
+    + """- A reply that only locates a street/building or explains a neighborhood's name is CONTEXT, not a new event. Preserve that location when it anchors a separately supported development or concrete service/access detail. Do not manufacture a digest item from a location clarification or an unanchored discussion about an institution.
 - A private location answer stays context even when it names street numbering or nearby shops/landmarks. For example, explaining which residential "line" a relative's home belongs to, in answer to where that home is, is not a city update; the parent's concern about whether the relative has power does not establish a power state. Keep it publishable only if the reply itself also reports a concrete current service state/change or public access detail.
 - A bare personal ranking such as "MTS is the best provider" is opinion/context, not evidence that the service is available, superior, or broadly useful. Keep a service recommendation only when the message adds concrete first-hand access details, prices, coverage, or a current change; do not create sales copy from an endorsement.
 - A greeting, wish, or vague city mood such as "город спит, и пусть так будет всегда" is not a report of a safety condition or city event. A casual historical anecdote/correction about the city's origin is context unless it is tied to a current public event, anniversary, or concrete present-day consequence.

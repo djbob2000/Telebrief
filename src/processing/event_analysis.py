@@ -22,6 +22,7 @@ from src.domain.event_payload import (
 from src.domain.event_pipeline import SourceFragment
 from src.domain.stories import NewStoryRevision, StoryRevision
 from src.llm_telemetry import llm_call_context
+from src.processing.conversation import FIGURATIVE_REMARK_RULE
 from src.processing.evidence_sampling import (
     FragmentWithContext,
     RepresentativeEvidenceSampler,
@@ -54,7 +55,9 @@ SOURCE FRAGMENT OWNERSHIP:
 - Each evidence_items.source_fragment_ids list must cite the exact input fragments whose own text directly supports every material part of that evidence item.
 - Do not assign a fact from one fragment to a different fragment because they discuss the same event. When an item combines separate supported claims, cite the fragments that support those respective claims.
 - A reply or remark that only generalizes or opines (for example "мало у кого остались рабочие печи", "многие давно забыли", "всем всё равно") without its own place, time, event, number or service state is conversational CONTEXT, not a PUBLISH community_report or a new Story. Short reports with a place and a state ("На Димитрова с водой печально") stay PUBLISH.
-- Keep a reply's own statement separate from a parent or neighboring message. A line tagged REPLY-PARENT CONTEXT ONLY — NOT CITABLE may clarify the reply's subject or location only when it is the unique question the reply directly answers; it must never support the reply's status, duration, cause, number, or completion state.
+"""
+    + FIGURATIVE_REMARK_RULE
+    + """- Keep a reply's own statement separate from a parent or neighboring message. A line tagged REPLY-PARENT CONTEXT ONLY — NOT CITABLE may clarify the reply's subject or location only when it is the unique question the reply directly answers; it must never support the reply's status, duration, cause, number, or completion state.
 - For a short yes/no reply, use it only when its linked parent is an unambiguous question that explicitly names the service; derive the answer's polarity from the reply itself and cite only the reply's own fragment ID. If the parent does not make the referent clear, do not infer what the reply means.
 - Do not infer a fragment's service from its Story topic, headline, neighboring fragments, or message order. For every PUBLISH service_access or community_report item, each cited fragment must either name the service in its own text or be an elliptical reply directly linked to a parent that names the service; the reply itself must state the reported status or answer polarity and any claimed duration or concrete detail.
 - A direct, useful reply remains eligible for PUBLISH even when it is conversational, single-source, or elliptical. Use the unique parent question only to resolve its subject or location, cite only the reply, and preserve the reply's own status and details.

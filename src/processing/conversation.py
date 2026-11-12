@@ -31,6 +31,12 @@ from src.processing.edition_scope import local_detail_anchors, names_anchor
 SAME_INCIDENT_RELATION = "same_incident"
 TIMELINE_PAUSE_MARK = "--- pause ---"
 
+# Shared by Gate and Rich Analysis. Chat jokes often name a street or an
+# institution, and a place name made models treat them as local reports.
+FIGURATIVE_REMARK_RULE = """\
+- A joke, hyperbole or figurative remark stays CONTEXT even when it names a street, district or institution: a place name does not turn it into a report. It is PUBLISH only when its own words literally report something observable at that place: an event, a service state, a number or a concrete action. Never restate a figurative remark as fact: "мы всем двором живём в магазине на углу 🤣" does not mean that anyone moved into the shop, and what it hints at depends on the conversation, so it stays CONTEXT. A reply parent may explain what a joke refers to; it never turns the joke into the parent's fact. Laughing or shrugging emoji decide nothing on their own: "Свет дали 😂" still reports a service state.
+"""
+
 _WORD_RE = re.compile(r"[a-zа-яёіїєґ0-9'’]+", re.IGNORECASE)
 _NUMBER_RE = re.compile(r"\d+")
 _QUOTED_SPAN_RE = re.compile(r"«([^«»]{3,})»|“([^”]{3,})”|\"([^\"]{3,})\"")
