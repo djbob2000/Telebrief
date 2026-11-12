@@ -198,6 +198,59 @@ def is_private_classified(text: str) -> bool:
     return False
 
 
+# Message-level rental/sale classifieds (article-fidelity W7.4). A whole message counts as an
+# ad only with an offer verb at its start AND one strong contact or price signal. A civic
+# report that merely contains a phone or a price does not start with an offer verb.
+_MESSAGE_OFFER_VERB_START_PATTERN = re.compile(
+    r"^[\W_]*(?:сда[её]тся|сдам|прода[её]тся|продам|куплю|аренда|"
+    r"здається|здам|продається|оренда)\b",
+    re.IGNORECASE,
+)
+_MESSAGE_PRICE_PATTERN = re.compile(
+    r"\d[\d\s.,]*\s*(?:руб|рублей|р\.|₽|грн|гривен|\$|usd|долл|евро|€)"
+    r"|(?:\$|usd|₽|€)\s*\d",
+    re.IGNORECASE,
+)
+_MESSAGE_PHONE_PATTERN = re.compile(
+    r"(?<!\w)\+\d[\d\s()-]{8,14}\d|(?<!\d)8[\s(-]*\d{3}[\s)-]*\d{3}[\s-]*\d{2}[\s-]*\d{2}(?!\d)"
+)
+_MESSAGE_REALTOR_PATTERN = re.compile(r"\bри[еэ]лтор", re.IGNORECASE)
+_MESSAGE_JOIN_OR_BOOKING_LINK_PATTERN = re.compile(
+    r"(?:t\.me/\+|t\.me/joinchat|telegram\.me/\+|max\.ru/join|https?://\S*book\S*)",
+    re.IGNORECASE,
+)
+
+
+def has_message_offer_signal(text: str) -> bool:
+    """True when a whole message is a rental or sale offer: offer verb at the start plus a
+    strong signal (price with currency, phone number, «риелтор», or a join/booking link)."""
+    trimmed = text.strip()
+    if not trimmed or _MESSAGE_OFFER_VERB_START_PATTERN.search(trimmed) is None:
+        return False
+    return bool(
+        _MESSAGE_PRICE_PATTERN.search(trimmed)
+        or _MESSAGE_PHONE_PATTERN.search(trimmed)
+        or _MESSAGE_REALTOR_PATTERN.search(trimmed)
+        or _MESSAGE_JOIN_OR_BOOKING_LINK_PATTERN.search(trimmed)
+    )
+
+
+def classify_message_classified(text: str) -> str | None:
+    """Drop reason for a whole message that is a rental or sale classified, else None.
+
+    The strong signal in ``has_message_offer_signal`` decides whether the message is an ad;
+    the existing detectors pick the reason. A message that is not an ad returns None, so
+    civic messages keep their per-fragment classification.
+    """
+    if not has_message_offer_signal(text):
+        return None
+    if is_commercial_classified(text) or detect_classified_cues(text):
+        return "commercial_classified"
+    if is_private_classified(text):
+        return "private_classified"
+    return "commercial_classified"
+
+
 _PIN_LABEL_PATTERN = re.compile(r"^\s*[📍📌🗺]\ufe0f?\s*(?P<label>[^\n]{1,60})$")
 _EVENT_OR_STATE_WORD = re.compile(
     r"\b(?:не|нет|есть|был\w*|будет|дали|да[её]т|включ\w*|отключ\w*|работа\w*|"
