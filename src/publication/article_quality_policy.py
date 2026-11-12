@@ -218,6 +218,21 @@ _POLICIES: dict[str, ArticleQualityFindingPolicy] = {
         "repair_recommended",
         "A planned concrete detail is absent from an otherwise represented story.",
     ),
+    # article-fidelity W1
+    "RELATIVE_TIME_COPIED": ArticleQualityFindingPolicy(
+        "temporal_reference",
+        "repair",
+        "unit",
+        "repair_recommended",
+        "A paragraph copies the chat's elapsed time («N минут назад», «только что»); date it or state the time of day.",
+    ),
+    "REDUNDANT_PARAGRAPH": ArticleQualityFindingPolicy(
+        "repetition",
+        "repair",
+        "unit",
+        "repair_recommended",
+        "A paragraph restates the previous paragraph with the same supports; merge the passages.",
+    ),
 }
 
 ARTICLE_QUALITY_FINDING_POLICIES: Mapping[str, ArticleQualityFindingPolicy] = MappingProxyType(
