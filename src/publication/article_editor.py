@@ -47,6 +47,7 @@ from src.publication.article_quality_policy import (
     ArticleQualityPolicyError,
     article_quality_policy,
 )
+from src.publication.article_speaker import article_speaker_editor_instruction
 from src.publication.article_temporal_checks import TEMPORAL_SENTENCE_TRIM_CODES
 from src.publication.article_validator import (
     _HEADING_EDITORIAL_FILLER,
@@ -236,6 +237,7 @@ _SENTENCE_TRIM_CODES = frozenset(
         "UNSUPPORTED_CRITICAL_TERM",
         # article-fidelity W2.1: a concrete value bound to another source's service or place.
         "CONCRETE_VALUE_MISBOUND",
+        "SPEAKER_MULTIPLICITY_MISMATCH",
     }
     | TEMPORAL_SENTENCE_TRIM_CODES
 )
@@ -3080,6 +3082,8 @@ class ArticleEditor:
                     msg += " -> ВАЖНО: замените относительное слово («сегодня», «вчера») на дату или время, к которым оно относится в источнике!"
                 elif iss.code == "PHANTOM_HEADING_TOPIC":
                     msg += " -> ВАЖНО: скорректируйте заголовок раздела, удалив из перечисления после двоеточия темы, которые фактически не освещены в тексте абзацев!"
+                elif iss.code == "SPEAKER_MULTIPLICITY_MISMATCH":
+                    msg += article_speaker_editor_instruction(iss.code) or ""
                 elif iss.code == "LEAKED_META_OMISSION":
                     msg += " -> ВАЖНО: полностью удалите любые мета-комментарии об опущенных контактах/телефонах!"
                 blocks.append(msg)
@@ -3352,7 +3356,7 @@ class ArticleEditor:
                 "«по словам жителя» недостаточно. Не добавляйте новых фактов и не меняйте прямые цитаты."
             ),
         }
-        instruction = instructions.get(code)
+        instruction = instructions.get(code) or article_speaker_editor_instruction(code)
         if instruction is None and policy.repair_scope in {"unit", "support_units", "story_unit"}:
             raise ArticleQualityPolicyError(
                 f"Reader-quality repair policy has no editor instruction: {code!r}"

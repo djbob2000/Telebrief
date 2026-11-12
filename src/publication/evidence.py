@@ -66,3 +66,7 @@ class PublicationEvidence:
     # Source message send time (published_at). observed_at is collection-side
     # chronology; temporal framing prefers the send time when it is known.
     sent_at: dt.datetime | None = None
+    # Internal opaque speaker keys (hashes of the platform author); never written
+    # to the writer dossier, which receives per-article aliases only.
+    speaker_key: str = ""
+    reply_parent_speaker_key: str = ""

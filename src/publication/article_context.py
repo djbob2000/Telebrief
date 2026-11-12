@@ -127,6 +127,10 @@ class ArticleSupport:
     context_theme_hint: str = ""
     context_theme_origin: str = ""
 
+    # Internal speaker keys (see article_speaker.speaker_key_for); "" when unknown.
+    speaker_key: str = ""
+    reply_parent_speaker_key: str = ""
+
 
 # Service families that carry an advisory theme into the article composition checks.
 _CONTEXT_THEME_FAMILIES = frozenset(
@@ -614,6 +618,8 @@ def build_article_editorial_context(
                 previously_published=_all_fragments_published(
                     evidence_fragment_ids, published_fragments
                 ),
+                speaker_key=evi.speaker_key,
+                reply_parent_speaker_key=evi.reply_parent_speaker_key,
             ),
         )
 

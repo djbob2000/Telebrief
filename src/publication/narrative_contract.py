@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from src.publication.article_composition_checks import ARTICLE_FIDELITY_WRITER_RULES
+from src.publication.article_speaker import ARTICLE_SPEAKER_WRITER_RULE
 from src.publication.article_temporal_checks import ARTICLE_TEMPORAL_WRITER_RULES
 
 if TYPE_CHECKING:
@@ -175,7 +176,10 @@ Output ordinary Markdown only: one title, a lead, and thematic chapters with nor
 - Corroboration may strengthen wording or grouping, but never require two sources merely to publish a legitimate local report.
 {ARTICLE_TEMPORAL_WRITER_RULES}
 
-{ARTICLE_FIDELITY_WRITER_RULES}"""
+{ARTICLE_FIDELITY_WRITER_RULES}
+
+- {ARTICLE_SPEAKER_WRITER_RULE}
+"""
 
 
 DIGEST_ITEM_COMPOSITION_GUIDE = """Digest item composition:

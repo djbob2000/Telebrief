@@ -10,6 +10,7 @@ from typing import Any, Literal, Mapping, Sequence
 from src.publication.digest_narrative import DigestNarrativeDraft
 from src.publication.digest_place_areas import non_places_presented_as_places
 from src.publication.evidence import PublicationEvidence
+from src.publication.profanity_terms import PROFANITY_AND_ABUSE_RE
 
 DIGEST_DIAGNOSTICS_VERSION = "digest-diagnostics-v18-report-disclaimers"
 
@@ -118,34 +119,7 @@ _CLASSIFIED_AD_RE = re.compile(
     r"(?:\b(?:куплю|продам|купить\s+стекло|цена\s+от|позвонить\s+по\s+номеру)\b)",
     re.IGNORECASE,
 )
-_PROFANITY_AND_ABUSE_RE = re.compile(
-    r"\b(?:"
-    r"ху[йяеёюиы]\w*|"
-    r"[нп]аху[йяе]\w*|"
-    r"поху[йяе]\w*|"
-    r"пизд\w*|"
-    r"[её]б[аеёиуытлн]\w*|"
-    r"у[её]б\w*|"
-    r"в[ъь][её]б\w*|"
-    r"за[её]б\w*|"
-    r"от[её]б\w*|"
-    r"раз[её]б\w*|"
-    r"до[её]б\w*|"
-    r"пере[её]б\w*|"
-    r"бл[яя]т\w*|"
-    r"бляд\w*|"
-    r"сук[аиоуые]\w*|"
-    r"мудак\w*|"
-    r"мудил\w*|"
-    r"залуп\w*|"
-    r"срак\w*|"
-    r"г[іие]вн\w*|"
-    r"дерьм\w*|"
-    r"хер\w*|"
-    r"жоп\w*"
-    r")\b",
-    re.IGNORECASE,
-)
+_PROFANITY_AND_ABUSE_RE = PROFANITY_AND_ABUSE_RE
 _MALFORMED_CHAT_SYNTAX_RE = re.compile(
     r"(?:\(в\s+ответ\s+на\b|\(в\s+ответ\b|при\s+генератора\b)",
     re.IGNORECASE,

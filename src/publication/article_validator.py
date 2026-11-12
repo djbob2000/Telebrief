@@ -44,6 +44,7 @@ from src.publication.article_semantic_support import (
     assess_semantic_support,
     prepare_semantic_context,
 )
+from src.publication.article_speaker import speaker_validation_issues
 from src.publication.article_temporal_checks import temporal_prose_findings
 from src.publication.article_value_binding import check_concrete_value_binding
 
@@ -1768,6 +1769,9 @@ def validate_article_draft(
                     )
                 )
                 break
+
+    # Speaker count (article-fidelity W3.3): another speaker needs another author.
+    issues.extend(speaker_validation_issues(draft, context))
 
     is_valid = not any(iss.blocking for iss in issues)
 

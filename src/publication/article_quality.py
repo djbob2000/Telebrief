@@ -39,6 +39,8 @@ from src.publication.article_quality_policy import (
     article_quality_policy_metadata,
     validate_article_quality_severity,
 )
+from src.publication.article_quote_masks import quote_mask_quality_findings
+from src.publication.article_speaker import speaker_quality_findings
 from src.publication.article_temporal_checks import temporal_quality_findings
 
 QualitySeverity = Literal["repair", "warning", "blocking"]
@@ -3871,6 +3873,9 @@ def diagnose_article_quality(
             evidence_units_for_draft(draft), context.support_by_id
         )
     )
+    # article-fidelity W3/W4: speaker count, speaker gender, masked quotes and profanity.
+    findings.extend(speaker_quality_findings(draft, context, material_projection))
+    findings.extend(quote_mask_quality_findings(draft, context, material_projection))
     logger.info(
         "Article quality diagnostic timings: headings=%.2fs lead_body=%.2fs "
         "paragraph_shape=%.2fs place_name_precision=%.2fs address_directory_theme=%.2fs "

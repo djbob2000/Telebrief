@@ -30,9 +30,7 @@ def test_every_inflection_and_capitalisation_keeps_its_ending():
     assert standardize_edition_terminology("Перефрезка водоводов", "berdyansk") == (
         "Переврезка водоводов"
     )
-    assert standardize_edition_terminology("после перефрезке", "berdyansk") == (
-        "после переврезке"
-    )
+    assert standardize_edition_terminology("после перефрезке", "berdyansk") == ("после переврезке")
 
 
 def test_direct_quote_keeps_the_variant_exactly():
@@ -55,9 +53,7 @@ def test_canonical_spelling_is_left_unchanged():
 
 def test_word_boundary_protects_longer_words():
     assert standardize_edition_terminology("перефрезкой", "berdyansk") == "переврезкой"
-    assert standardize_edition_terminology("супер-перефрезка", "berdyansk") == (
-        "супер-переврезка"
-    )
+    assert standardize_edition_terminology("супер-перефрезка", "berdyansk") == ("супер-переврезка")
     assert standardize_edition_terminology("неперефрезка", "berdyansk") == "неперефрезка"
 
 

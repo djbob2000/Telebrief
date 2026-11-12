@@ -17,6 +17,10 @@ from src.publication.article_context import (
     article_support_topic_context_lines,
 )
 from src.publication.article_coverage import ArticleCoveragePlan
+from src.publication.article_speaker import (
+    assign_speaker_aliases,
+    speaker_gender_by_key,
+)
 from src.publication.period_review import PERIOD_REVIEW_COMPOSITION_DIRECTIVE
 from src.timezones import get_timezone, normalize_timezone_name
 
@@ -557,6 +561,8 @@ def _render_article_story_packets(
                 )
 
     evidence_records: list[dict[str, object]] = []
+    speaker_identity_by_record_id: dict[int, tuple[str, str]] = {}
+    gender_by_speaker_key = speaker_gender_by_key(getattr(context, "support_index", ()) or ())
     packet_story_ids: list[str] = []
     packets_with_citable_support = 0
     citable_support_count = 0
@@ -627,7 +633,11 @@ def _render_article_story_packets(
             terms = canonical_term_fields(context.edition_slug, fact_text)
             if terms:
                 base_record["canonical_terms"] = terms
+            # Speaker identity is part of the collapse key: equal wording from two
+            # speakers stays two records, each with its own speaker alias.
+            speaker_identity = (support.speaker_key, support.reply_parent_speaker_key)
             key = json.dumps(base_record, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            key = f"{key}\x1f{speaker_identity[0]}\x1f{speaker_identity[1]}"
             record = records_by_key.get(key)
             if record is None:
                 record = {
@@ -638,6 +648,7 @@ def _render_article_story_packets(
                     "provenance_by_support_id": [],
                 }
                 records_by_key[key] = record
+                speaker_identity_by_record_id[id(record)] = speaker_identity
             support_ids = record["support_ids"]
             provenance_rows = record["provenance_by_support_id"]
             if not isinstance(support_ids, list) or not isinstance(provenance_rows, list):
@@ -672,6 +683,9 @@ def _render_article_story_packets(
                 str(record["story_id"]), len(composition_order)
             )
         )
+
+    # Aliases follow the final dossier order, so the first record to show a speaker names it S1.
+    assign_speaker_aliases(evidence_records, speaker_identity_by_record_id, gender_by_speaker_key)
 
     return (
         evidence_records,
@@ -728,6 +742,7 @@ def _fit_story_packets(
                     "k/e=support/evidence kind; a=source roles; f=framing; tr=temporal role; "
                     "d={o:observed_at,s:sent_at (source send time, edition-local),f:effective_from,u:effective_until}; n=advisory navigation; "
                     "p=optional primary-source text; q=reply-parent context only; i=support IDs; "
+                    "sp/rs/sg=speaker alias, reply-parent author alias, speaker gender f/m/unknown; "
                     "v=provenance rows [support ID, source refs, fragment IDs, source item IDs]. "
                     "Optional g/l/p/q keys may be absent when empty; publication_use is omitted and always PUBLISH.",
                 )
@@ -747,7 +762,10 @@ def _fit_story_packets(
                 "preserve source/status context; times contains supplied observed/effective times. "
                 "navigation is advisory. primary_source and reply_parent_context are optional context; "
                 "reply-parent context alone does not establish a fact. support_ids owns the record's fact; "
-                "provenance_by_support_id maps each support ID to source_refs, fragment_ids, and source_item_ids.",
+                "provenance_by_support_id maps each support ID to source_refs, fragment_ids, and source_item_ids. "
+                "speaker is an opaque per-article alias of the message author (one alias is one person); "
+                "reply_to_speaker is the alias of the reply-parent author; speaker_gender is f, m or unknown "
+                "from the speaker's own text.",
             )
         )
 
@@ -813,6 +831,9 @@ def _compact_evidence_record(record: dict[str, object]) -> dict[str, object]:
         ("p", record.get("primary_source")),
         ("q", record.get("reply_parent_context")),
         ("c", record.get("canonical_terms")),
+        ("sp", record.get("speaker")),
+        ("rs", record.get("reply_to_speaker")),
+        ("sg", record.get("speaker_gender")),
     )
     compact.update({key: value for key, value in optional_values if value not in (None, "")})
 

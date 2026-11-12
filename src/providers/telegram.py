@@ -132,6 +132,18 @@ async def ensure_connected(client: Any, logger: logging.Logger | None) -> None:
         log.warning(f"Could not cache dialogs: {e}")
 
 
+def sender_external_id(message: Any) -> str | None:
+    """Return the stable Telegram sender user id as text, or None when absent.
+
+    Channel posts and anonymous senders carry no user id; their display name is
+    then the only identity available, which callers must treat as weaker.
+    """
+    sender_id = getattr(message, "sender_id", None)
+    if isinstance(sender_id, bool) or not isinstance(sender_id, int):
+        return None
+    return str(sender_id)
+
+
 async def sender_display_name(message: Any) -> str:
     """Resolve the human-readable sender name, falling back to 'Unknown'."""
     try:
@@ -763,6 +775,7 @@ class TelegramCollector:
             external_id=str(message.id),
             text=text,
             author_name=await sender_display_name(message),
+            author_external_id=sender_external_id(message),
             published_at=message.date,
             canonical_url=message_link(entity, message.id),
             metadata=metadata,
