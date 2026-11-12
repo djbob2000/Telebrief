@@ -10,7 +10,12 @@ from typing import Any, Literal
 
 from src.config_loader import PublicationEditorialConfig
 from src.domain.edition_geography import standardize_edition_area_slang
-from src.publication.article_claim_support import assess_claim_against_supports
+from src.publication.article_claim_support import (
+    QUESTION_FRAMING_MARKERS,
+    assess_claim_against_supports,
+    fact_supports,
+    is_question_framed,
+)
 from src.publication.article_claims import (
     ConcreteClaim,
     _stem,
@@ -39,6 +44,7 @@ from src.publication.article_semantic_support import (
     prepare_semantic_context,
 )
 from src.publication.article_temporal_checks import temporal_prose_findings
+from src.publication.article_value_binding import check_concrete_value_binding
 
 _INTERNAL_HANDLE_PATTERN = re.compile(
     r"\[(?:story:\d+:evidence:\d+:frag:\d+|story:\d+|evidence:\d+:frag:\d+|op:[^\]]+|SUPPORT\s+[^\]]+)\]",
@@ -793,6 +799,9 @@ class ArticleValidationResult:
     section_count: int
     issues: tuple[ArticleValidationIssue, ...] = ()
     unknown_evidence_ids: tuple[str, ...] = ()
+    # Non-blocking NOT_EVALUATED diagnostics (article-fidelity W2.1), for example
+    # "CONCRETE_VALUE_NOT_EVALUATED:P001:2:no_owner"; they never affect is_valid.
+    not_evaluated: tuple[str, ...] = ()
 
     @property
     def violations(self) -> tuple[str, ...]:
@@ -819,6 +828,15 @@ def _official_area_source_texts(supports: Sequence[ArticleSupport], edition_slug
         and (official := standardize_edition_area_slang(support.source_text, edition_slug))
         != support.source_text
     ]
+
+
+def _first_sentence_with_concepts(text: str, concepts: Sequence[str]) -> str | None:
+    """The first sentence naming one of the given critical concepts (backstop probe)."""
+    wanted = set(concepts)
+    for sentence in _split_sentences_safe(text):
+        if canonical_semantic_concepts(sentence) & wanted:
+            return sentence
+    return None
 
 
 def validate_article_draft(
@@ -861,6 +879,7 @@ def validate_article_draft(
 
     issues: list[ArticleValidationIssue] = []
     unknown_evidence_ids: list[str] = []
+    value_binding_not_evaluated: list[str] = []
 
     # 1. Structural constraints: Title and Lead presence
     if not draft.title or not draft.title.strip():
@@ -980,17 +999,26 @@ def validate_article_draft(
     all_known_draft_supports: list[ArticleSupport] = [
         support_map[sid] for sid in all_cited_ids if sid in support_map
     ]
-    all_draft_support_texts: list[str] = [
-        *(s.text for s in all_known_draft_supports if s.text),
-        *(s.source_text for s in all_known_draft_supports if s.source_text),
-        *_official_area_source_texts(all_known_draft_supports, context.edition_slug),
-    ]
-    for s in all_known_draft_supports:
-        if (obs := getattr(s, "observed_at", None)) is not None:
-            all_draft_support_texts.append(obs.strftime("%H:%M"))
-            all_draft_support_texts.append(obs.strftime("%-H:%M"))
-            all_draft_support_texts.append(obs.strftime("%d.%m"))
-            all_draft_support_texts.append(f"{obs.day} {_MONTHS_RU[obs.month - 1]}")
+
+    def _support_check_texts(supports: Sequence[ArticleSupport]) -> list[str]:
+        texts: list[str] = [
+            *(s.text for s in supports if s.text),
+            *(s.source_text for s in supports if s.source_text),
+            *_official_area_source_texts(list(supports), context.edition_slug),
+        ]
+        for s in supports:
+            if (obs := getattr(s, "observed_at", None)) is not None:
+                texts.append(obs.strftime("%H:%M"))
+                texts.append(obs.strftime("%-H:%M"))
+                texts.append(obs.strftime("%d.%m"))
+                texts.append(f"{obs.day} {_MONTHS_RU[obs.month - 1]}")
+        return texts
+
+    # article-fidelity W2.2: a resident question backs only question framing.
+    all_draft_support_texts = _support_check_texts(
+        fact_supports(all_known_draft_supports, question_framed=False)
+    )
+    all_draft_support_texts_framed = _support_check_texts(all_known_draft_supports)
 
     all_draft_concepts: set[str] = set()
     for st in all_draft_support_texts:
@@ -1239,6 +1267,27 @@ def validate_article_draft(
         if has_unknown or not valid_supports:
             continue
 
+        unit_question_framed = is_question_framed(unit_text)
+
+        # article-fidelity W2.1: each concrete value of a paragraph needs its own owner.
+        if unit_type in ("lead", "paragraph"):
+            binding = check_concrete_value_binding(
+                unit_id, unit_text, valid_supports, place_resolver=place_resolver
+            )
+            for finding in binding.findings:
+                issues.append(
+                    ArticleValidationIssue(
+                        code=finding.code,
+                        unit_id=finding.unit_id,
+                        message=finding.message,
+                        support_ids=finding.support_ids,
+                        severity="error",
+                        blocking=True,
+                        claim_text=finding.claim_text,
+                    )
+                )
+            value_binding_not_evaluated.extend(binding.not_evaluated_codes())
+
         proximity_assertions = [
             (claim.text, claim.cited_support_ids) for claim in claim_atoms if claim.text.strip()
         ]
@@ -1406,19 +1455,11 @@ def validate_article_draft(
                     s.evidence_kind == "resident_question" or s.publication_use == "CONTEXT"
                     for s in c_supports
                 ):
-                    question_markers = (
-                        "вопрос",
-                        "спрашива",
-                        "интересу",
-                        "уточня",
-                        "выясня",
-                        "неизвестно",
-                        "неясно",
-                        "?",
-                    )
                     claim_lower = claim.text.lower()
                     unit_lower = unit_text.lower()
-                    if not any(m in claim_lower or m in unit_lower for m in question_markers):
+                    if not any(
+                        m in claim_lower or m in unit_lower for m in QUESTION_FRAMING_MARKERS
+                    ):
                         issues.append(
                             ArticleValidationIssue(
                                 code="QUESTION_CONTEXT_OVERCLAIM",
@@ -1444,6 +1485,7 @@ def validate_article_draft(
                     prepared_context=prepared_edition_context,
                     all_known_draft_supports=all_edition_support_texts,
                     direct_quote_allowlist=quote_allowlist,
+                    question_framed=is_question_framed(claim.text) or unit_question_framed,
                 )
                 claim_supports = [
                     support_map[sid] for sid in claim.cited_support_ids if sid in support_map
@@ -1574,20 +1616,15 @@ def validate_article_draft(
                         )
                     )
 
-        support_texts = [t for s in valid_supports for t in (s.text, s.source_text) if t]
-        support_texts.extend(_official_area_source_texts(valid_supports, context.edition_slug))
-        for s in valid_supports:
-            if (obs := getattr(s, "observed_at", None)) is not None:
-                support_texts.append(obs.strftime("%H:%M"))
-                support_texts.append(obs.strftime("%-H:%M"))
-                support_texts.append(obs.strftime("%d.%m"))
-                support_texts.append(f"{obs.day} {_MONTHS_RU[obs.month - 1]}")
+        unit_fact_supports = fact_supports(valid_supports, question_framed=unit_question_framed)
+        support_texts = _support_check_texts(unit_fact_supports)
         primary_source_texts = [s.source_text for s in valid_supports if s.source_text]
         unit_context_terms = allowed_edition_terms
 
-        claims_support_texts = (
-            all_draft_support_texts if unit_type in ("title", "lead") else support_texts
+        unit_draft_texts = (
+            all_draft_support_texts_framed if unit_question_framed else all_draft_support_texts
         )
+        claims_support_texts = unit_draft_texts if unit_type in ("title", "lead") else support_texts
         claims_primary_sources = (
             [s.source_text for s in all_known_draft_supports if s.source_text]
             if unit_type in ("title", "lead")
@@ -1638,7 +1675,7 @@ def validate_article_draft(
         # Defense in depth: Check reader-facing unit text for unsupported proper names or critical concepts
         if unit_type != "heading" or claim_atoms:
             semantic_supports = (
-                all_draft_support_texts if unit_type in ("title", "lead") else support_texts
+                unit_draft_texts if unit_type in ("title", "lead") else support_texts
             )
             unit_semantic = assess_semantic_support(
                 unit_text,
@@ -1679,6 +1716,7 @@ def validate_article_draft(
                                 f"{tuple(novel_critical)}"
                             ),
                             support_ids=cited_ids,
+                            claim_text=_first_sentence_with_concepts(unit_text, novel_critical),
                         )
                     )
 
@@ -1731,4 +1769,5 @@ def validate_article_draft(
         section_count=section_count,
         issues=tuple(issues),
         unknown_evidence_ids=tuple(dict.fromkeys(unknown_evidence_ids)),
+        not_evaluated=tuple(dict.fromkeys(value_binding_not_evaluated)),
     )

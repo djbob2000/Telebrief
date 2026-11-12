@@ -234,6 +234,8 @@ _SENTENCE_TRIM_CODES = frozenset(
         "UNSUPPORTED_CONCRETE_CLAIM",
         "UNSUPPORTED_PROPER_NAME",
         "UNSUPPORTED_CRITICAL_TERM",
+        # article-fidelity W2.1: a concrete value bound to another source's service or place.
+        "CONCRETE_VALUE_MISBOUND",
     }
     | TEMPORAL_SENTENCE_TRIM_CODES
 )
@@ -3330,6 +3332,17 @@ class ArticleEditor:
             "REDUNDANT_PARAGRAPH": (
                 " -> Объедините этот абзац с предыдущим: оставьте каждый факт один раз, "
                 "не повторяйте те же подтверждения другими словами и не добавляйте новых фактов."
+            ),
+            "ORDINAL_DURATION_INFLATED": (
+                " -> Источник называет порядковую неделю или месяц («4 неделю», «четвёртая неделя»). "
+                "Замените количественную длительность на порядковую форму из источника, например "
+                "«идёт четвёртая неделя без света». Не добавляйте новых чисел и не меняйте прямые "
+                "цитаты."
+            ),
+            "HEDGE_DROPPED": (
+                " -> Источник передаёт оговорку или пересказ с чужих слов. Сохраните эту оговорку "
+                "(«похоже», «по слухам», «со слов соседей» — как в источнике); одной атрибуции "
+                "«по словам жителя» недостаточно. Не добавляйте новых фактов и не меняйте прямые цитаты."
             ),
         }
         instruction = instructions.get(code)

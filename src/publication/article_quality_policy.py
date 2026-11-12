@@ -233,6 +233,21 @@ _POLICIES: dict[str, ArticleQualityFindingPolicy] = {
         "repair_recommended",
         "A paragraph restates the previous paragraph with the same supports; merge the passages.",
     ),
+    # article-fidelity W2
+    "ORDINAL_DURATION_INFLATED": ArticleQualityFindingPolicy(
+        "duration_precision",
+        "repair",
+        "unit",
+        "repair_recommended",
+        "Prose states a cardinal week or month count where the source gives only the ordinal form.",
+    ),
+    "HEDGE_DROPPED": ArticleQualityFindingPolicy(
+        "epistemic_fidelity",
+        "repair",
+        "unit",
+        "repair_recommended",
+        "A hedge or hearsay marker in the source is missing from prose that relies on that source alone.",
+    ),
 }
 
 ARTICLE_QUALITY_FINDING_POLICIES: Mapping[str, ArticleQualityFindingPolicy] = MappingProxyType(

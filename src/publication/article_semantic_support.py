@@ -686,6 +686,17 @@ class PreparedSemanticContext:
     equivalent_match_prefixes: frozenset[str]
     active_family_ids: frozenset[int]
 
+    def merged_with(self, other: "PreparedSemanticContext") -> "PreparedSemanticContext":
+        """Union of two indexes; every matching rule is an OR over the members."""
+        return PreparedSemanticContext(
+            tokens_lower=self.tokens_lower | other.tokens_lower,
+            stems=self.stems | other.stems,
+            prefix_stems=self.prefix_stems | other.prefix_stems,
+            equivalent_match_prefixes=self.equivalent_match_prefixes
+            | other.equivalent_match_prefixes,
+            active_family_ids=self.active_family_ids | other.active_family_ids,
+        )
+
     def matches_stem(self, stem: str) -> bool:
         """Match with the same exact, bilingual, family, and prefix rules as _stems_match."""
         if stem in self.stems:

@@ -17,6 +17,19 @@ from src.publication.article_semantic_support import (
     _STOPWORDS,
     PreparedSemanticContext,
     assess_semantic_support,
+    prepare_semantic_context,
+)
+
+# Wording of an inquiry itself («дозвонился ли кто-нибудь»). Only a question-framed
+# claim may use it without a fact-bearing source word; facts, critical concepts,
+# concrete values and proper names are still checked against the supports.
+QUESTION_FRAME_TERMS: tuple[str, ...] = (
+    "дозвонился",
+    "дозвонилась",
+    "дозвониться",
+    "кто",
+    "нибудь",
+    "ли",
 )
 
 
@@ -39,6 +52,44 @@ def extract_content_stems(text: str) -> set[str]:
             continue
         stems.add(stem_word(tok))
     return stems
+
+
+# Markers that frame text as an inquiry, not a factual assertion. Shared with the
+# validator's QUESTION_CONTEXT_OVERCLAIM check so both use one definition.
+QUESTION_FRAMING_MARKERS: tuple[str, ...] = (
+    "вопрос",
+    "спрашива",
+    "интересу",
+    "уточня",
+    "выясня",
+    "неизвестно",
+    "неясно",
+    "?",
+)
+
+
+def is_question_framed(text: str) -> bool:
+    """True when text is an inquiry or a report of one (question framing)."""
+    lowered = text.lower()
+    return any(marker in lowered for marker in QUESTION_FRAMING_MARKERS)
+
+
+def fact_supports(
+    supports: Sequence[ArticleSupport], *, question_framed: bool
+) -> list[ArticleSupport]:
+    """Supports that may back a factual assertion (article-fidelity W2.2).
+
+    A resident question is context: it can back the wording of a question, but
+    never a fact or a term the question merely mentions. A question-framed text
+    keeps every support.
+    """
+    if question_framed:
+        return list(supports)
+    return [
+        s
+        for s in supports
+        if s.publication_use == "PUBLISH" and s.evidence_kind != "resident_question"
+    ]
 
 
 @dataclass(frozen=True)
@@ -66,8 +117,19 @@ def assess_claim_against_supports(
     prepared_context: PreparedSemanticContext | None = None,
     all_known_draft_supports: Sequence[str] = (),
     direct_quote_allowlist: Sequence[str] | None = None,
+    question_framed: bool | None = None,
 ) -> ClaimSupportAssessment:
-    """Conservatively assess whether claim_text is substantiated by cited supports."""
+    """Conservatively assess whether claim_text is substantiated by cited supports.
+
+    Resident questions back a claim only when the claim (or its unit, when the
+    caller passes ``question_framed``) is itself framed as an inquiry.
+    """
+    if question_framed is None:
+        question_framed = is_question_framed(claim_text)
+    supports = fact_supports(supports, question_framed=question_framed)
+    if question_framed:
+        base = prepared_context or prepare_semantic_context(allowed_context_terms)
+        prepared_context = base.merged_with(prepare_semantic_context(QUESTION_FRAME_TERMS))
     support_texts: list[str] = []
     for s in supports:
         if s.text:
