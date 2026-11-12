@@ -5,13 +5,16 @@ from collections.abc import Collection, Mapping
 from typing import TYPE_CHECKING
 
 from src.publication.article_claims import _quote_tokens_match, quote_words
+from src.publication.article_quote_masks import (
+    mask_safe_quote_candidate,
+    split_sentences_outside_masks,
+)
 from src.publication.article_writer_context import sanitize_writer_source_text
 
 if TYPE_CHECKING:
     from src.publication.article_context import ArticleEditorialContext
 
 _TRIVIAL_WORDS = frozenset({"да", "нет", "ок", "не", "хорошо", "точно", "плюс", "плюсую"})
-_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…])\s+|\n+")
 
 
 def build_article_quote_allowlist(
@@ -62,12 +65,15 @@ def build_article_quote_allowlist(
             ]
             candidates.extend(
                 sentence.strip()
-                for sentence in _SENTENCE_SPLIT_RE.split(projected_text)
+                for sentence in split_sentences_outside_masks(projected_text)
                 if sentence.strip()
             )
             candidates.append(projected_text)
 
-        for cand in dict.fromkeys(candidate for candidate in candidates if candidate):
+        for raw_cand in dict.fromkeys(candidate for candidate in candidates if candidate):
+            # A masked word (e.g. «Б... Дь») is never split and never starts a quote;
+            # profanity is never allowlisted.
+            cand = mask_safe_quote_candidate(raw_cand, sup.source_text) or ""
             if len(cand) < 3:
                 continue
             tokens = quote_words(cand)
