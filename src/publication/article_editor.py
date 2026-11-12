@@ -233,6 +233,8 @@ _SENTENCE_TRIM_CODES = frozenset(
         "UNSUPPORTED_CONCRETE_CLAIM",
         "UNSUPPORTED_PROPER_NAME",
         "UNSUPPORTED_CRITICAL_TERM",
+        # article-fidelity W2.1: a concrete value bound to another source's service or place.
+        "CONCRETE_VALUE_MISBOUND",
     }
 )
 _SENTENCE_TRIM_MIN_OVERLAP = 0.6
