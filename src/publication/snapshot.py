@@ -16,6 +16,7 @@ from src.publication.models import (
 )
 from src.publication.period_review import is_period_review, seal_period_review
 from src.publication.policies import PublicationPolicyService
+from src.publication.publication_window import is_window_chain_type
 from src.publication.repository import PublicationRepository
 from src.runtime import get_runtime
 
@@ -224,12 +225,20 @@ class PublicationSnapshotService:
             # (AGENTS.md §0.12), not every Story active in a months-long window.
             return await seal_period_review(conn, self.repo, run)
 
+        # A chained window (daily article, digest) starts where the previous issue
+        # ended; the start is persisted once so replays reuse it (AGENTS.md §0.7).
+        window_start_override: dt.datetime | None = None
+        if is_window_chain_type(run.publication_type):
+            window = await self.repo.ensure_run_publication_window(conn, run)
+            window_start_override = window.window_start
+
         eligible_rows = await self.repo.eligible_story_revisions(
             conn,
             edition_id=run.edition_id,
             source_cutoff_at=run.source_cutoff_at or run.snapshot_at,
             snapshot_at=run.snapshot_at,
             eligibility_policy_id=run.eligibility_policy_id,
+            window_start_override=window_start_override,
         )
 
         # Defense-in-depth: audit candidates before sealing

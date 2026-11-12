@@ -34,6 +34,7 @@ from src.publication.article_quality_policy import (
     article_quality_policy_metadata,
     validate_article_quality_severity,
 )
+from src.publication.article_temporal_checks import temporal_quality_findings
 
 QualitySeverity = Literal["repair", "warning", "blocking"]
 ARTICLE_READER_QUALITY_VERSION = "article-reader-quality-v12"
@@ -3724,6 +3725,16 @@ def diagnose_article_quality(
     finish_phase("coverage_and_details")
     findings.extend(_diagnose_contradictions(draft, context, material_projection, place_resolver))
     finish_phase("contradictions")
+    for temporal in temporal_quality_findings(draft, context):
+        findings.append(
+            ArticleReaderQualityFinding(
+                code=temporal.code,
+                unit_id=temporal.unit_id,
+                message=temporal.message,
+                support_ids=temporal.support_ids,
+                severity="repair",
+            )
+        )
     logger.info(
         "Article quality diagnostic timings: headings=%.2fs lead_body=%.2fs "
         "paragraph_shape=%.2fs place_name_precision=%.2fs address_directory_theme=%.2fs "

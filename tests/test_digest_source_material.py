@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from src.editorial_models import EditorialAnalysis, StoryCard, StoryElement
 from src.publication.digest_source_material import project_digest_source_material
 from src.publication.evidence import PublicationEvidence
+from src.publication.publication_window import build_window_spec
 
 _NOW = dt.datetime(2026, 10, 3, 13, tzinfo=dt.timezone.utc)
 _PENSION_AD = """Помощь с пенсиями, картами и банками
@@ -305,6 +306,15 @@ def test_adapter_loads_own_frozen_revision_and_projects_only_digest_material() -
 
         async def get_run_by_id(self, conn, run_id):
             return SimpleNamespace(publication_type=self.publication_type, snapshot_at=_NOW)
+
+        async def resolve_run_publication_window(self, conn, run):
+            # Chained digest window: no previous issue in this fixture, so one lookback.
+            return build_window_spec(
+                source_cutoff_at=_NOW,
+                lookback_hours=24,
+                previous_run_id=None,
+                previous_source_cutoff_at=None,
+            )
 
     async def adapt(publication_type):
         adapter = EventEditorialAdapter(uow=None, repo=Repository(publication_type))

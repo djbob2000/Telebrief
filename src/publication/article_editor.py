@@ -47,6 +47,7 @@ from src.publication.article_quality_policy import (
     ArticleQualityPolicyError,
     article_quality_policy,
 )
+from src.publication.article_temporal_checks import TEMPORAL_SENTENCE_TRIM_CODES
 from src.publication.article_validator import (
     _HEADING_EDITORIAL_FILLER,
     _TOKEN_RE,
@@ -234,6 +235,7 @@ _SENTENCE_TRIM_CODES = frozenset(
         "UNSUPPORTED_PROPER_NAME",
         "UNSUPPORTED_CRITICAL_TERM",
     }
+    | TEMPORAL_SENTENCE_TRIM_CODES
 )
 _SENTENCE_TRIM_MIN_OVERLAP = 0.6
 
@@ -3070,6 +3072,10 @@ class ArticleEditor:
                         )
                     else:
                         msg += " -> ВАЖНО: если событие длится уже несколько дней или произошло ранее, обязательно добавьте маркер продолжения («по-прежнему», «продолжаются», «сохраняются») либо сфокусируйте формулировку строго на событиях сегодняшнего дня!"
+                elif iss.code == "HISTORICAL_PRESENTED_AS_CURRENT":
+                    msg += " -> ВАЖНО: перепишите предложение так, чтобы прошлое событие было датировано собственной датой и не звучало как сегодняшняя новость; не используйте «сегодня», «сейчас», «только что» для него!"
+                elif iss.code == "RELATIVE_TIME_MISDATED":
+                    msg += " -> ВАЖНО: замените относительное слово («сегодня», «вчера») на дату или время, к которым оно относится в источнике!"
                 elif iss.code == "PHANTOM_HEADING_TOPIC":
                     msg += " -> ВАЖНО: скорректируйте заголовок раздела, удалив из перечисления после двоеточия темы, которые фактически не освещены в тексте абзацев!"
                 elif iss.code == "LEAKED_META_OMISSION":
@@ -3315,6 +3321,15 @@ class ArticleEditor:
                 "«накануне», «час назад») на дату из указанного источника или уберите слово, "
                 "сохранив факт, атрибуцию и смысл. Не добавляйте новых дат и не меняйте прямые "
                 "цитаты."
+            ),
+            "RELATIVE_TIME_COPIED": (
+                " -> Не копируйте из чата «N минут назад» или «только что»: укажите дату источника "
+                "или время суток, к которому относится сообщение, сохранив факт и атрибуцию. "
+                "Не добавляйте новых времён и не меняйте прямые цитаты."
+            ),
+            "REDUNDANT_PARAGRAPH": (
+                " -> Объедините этот абзац с предыдущим: оставьте каждый факт один раз, "
+                "не повторяйте те же подтверждения другими словами и не добавляйте новых фактов."
             ),
         }
         instruction = instructions.get(code)

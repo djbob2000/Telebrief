@@ -38,6 +38,7 @@ from src.publication.article_semantic_support import (
     assess_semantic_support,
     prepare_semantic_context,
 )
+from src.publication.article_temporal_checks import temporal_prose_findings
 
 _INTERNAL_HANDLE_PATTERN = re.compile(
     r"\[(?:story:\d+:evidence:\d+:frag:\d+|story:\d+|evidence:\d+:frag:\d+|op:[^\]]+|SUPPORT\s+[^\]]+)\]",
@@ -1372,6 +1373,26 @@ def validate_article_draft(
                             support_ids=cited_ids,
                         )
                     )
+
+        # 3. Historical material presented as current; wrong relative day (article-fidelity W1)
+        for temporal in temporal_prose_findings(
+            unit_id=unit_id,
+            unit_type=unit_type,
+            unit_text=unit_text,
+            cited_ids=cited_ids,
+            claim_atoms=claim_atoms,
+            support_map=support_map,
+            context=context,
+        ):
+            issues.append(
+                ArticleValidationIssue(
+                    code=temporal.code,
+                    unit_id=temporal.unit_id,
+                    message=temporal.message,
+                    support_ids=temporal.support_ids,
+                    claim_text=temporal.claim_text,
+                )
+            )
 
         # Check claim atoms against their cited supports
         for claim in claim_atoms:
