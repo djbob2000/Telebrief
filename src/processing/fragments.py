@@ -13,6 +13,7 @@ from src.processing.noise_detection import (
     WHITESPACE_PATTERN as _WHITESPACE_PATTERN,
 )
 from src.processing.noise_detection import (
+    classify_message_classified,
     classify_text_noise_or_exclusion,
 )
 
@@ -138,7 +139,9 @@ def split_into_fragments(
             if current:
                 raw_chunks.append(current.strip())
 
-    # 2. Build NewSourceFragment list
+    # 2. Build NewSourceFragment list. The message is classified as a whole first, so
+    # paragraphs of one ad cannot survive as separate civic reports.
+    message_drop_reason = classify_message_classified(raw_text)
     fragments: list[NewSourceFragment] = []
     ordinal = 0
     for chunk in raw_chunks:
@@ -150,6 +153,9 @@ def split_into_fragments(
         norm = normalize_fragment_text(chunk_clean)
         h = hash_normalized_text(norm)
 
+        # A rental or sale ad is one message: every fragment of it drops with the message reason.
+        if message_drop_reason is not None:
+            is_noise, reason = True, message_drop_reason
         is_candidate = not is_noise
         drop_reason = reason if is_noise else None
 
