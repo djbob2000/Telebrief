@@ -6,7 +6,7 @@ import datetime as dt
 import hashlib
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
@@ -117,6 +117,11 @@ class ArticleSupport:
     reply_parent_context_text: str = ""
     reply_parent_item_id: int | None = None
     service_subject_hint: ServiceSubjectHint | None = None
+    # Source message send time; the temporal role is classified from it when known.
+    sent_at: dt.datetime | None = None
+    # True when every fragment of this support was already cited by the previous
+    # issue of the same type (AGENTS.md §0.7). Kept for provenance, not citable.
+    previously_published: bool = False
 
 
 def article_support_theme_hints(support: ArticleSupport) -> tuple[str, ...]:
@@ -343,6 +348,8 @@ def _append_unique_support(
             source_item_ids=tuple(
                 dict.fromkeys((*existing.source_item_ids, *support.source_item_ids))
             ),
+            # Merged fragments are previously published only when every one was.
+            previously_published=existing.previously_published and support.previously_published,
         )
         return True
 
@@ -423,6 +430,11 @@ def _edition_anchor_terms(edition_name: str, edition_slug: str = "") -> tuple[st
         return (clean,)
 
 
+def _all_fragments_published(fragment_ids: Sequence[int], published: frozenset[int]) -> bool:
+    """A support is previously published only when it has fragments and all were published."""
+    return bool(fragment_ids) and all(fid in published for fid in fragment_ids)
+
+
 def build_article_editorial_context(
     cards: Sequence[StoryCard],
     evidence_items: Sequence[PublicationEvidence],
@@ -436,9 +448,11 @@ def build_article_editorial_context(
     edition_timezone: str = "UTC",
     edition_slug: str = "",
     selection_by_story: dict[str, ArticleSelectionSignal] | None = None,
+    previously_published_fragment_ids: Collection[int] | None = None,
 ) -> ArticleEditorialContext:
     """Build structured ArticleEditorialContext with unified ArticleSupport packets."""
     records = source_records or {}
+    published_fragments = frozenset(previously_published_fragment_ids or ())
 
     pub_win: PublicationWindow | None = None
     if publication_window is not None:
@@ -482,12 +496,13 @@ def build_article_editorial_context(
         temporal_role: TemporalRole = "CURRENT_WINDOW"
         if pub_win is not None:
             temporal_role = classify_support_temporal_role(
-                observed_at=evi.observed_at,
+                observed_at=evi.sent_at or evi.observed_at,
                 effective_from=None,
                 effective_until=None,
                 support_kind="evidence",
                 window=pub_win,
             )
+        evidence_fragment_ids = (evi.fragment_id,) if evi.fragment_id else ()
 
         _append_unique_support(
             support_list,
@@ -499,7 +514,7 @@ def build_article_editorial_context(
                 support_kind="evidence",
                 publication_use=evi.publication_use,  # "PUBLISH" or "CONTEXT"
                 source_refs=(evi.source_ref,) if evi.source_ref else (),
-                fragment_ids=(evi.fragment_id,) if evi.fragment_id else (),
+                fragment_ids=evidence_fragment_ids,
                 source_item_ids=tuple(
                     dict.fromkeys(
                         item_id
@@ -515,6 +530,10 @@ def build_article_editorial_context(
                 reply_parent_context_text=evi.reply_parent_context_text,
                 reply_parent_item_id=evi.reply_parent_item_id,
                 service_subject_hint=evi.service_subject_hint,
+                sent_at=evi.sent_at,
+                previously_published=_all_fragments_published(
+                    evidence_fragment_ids, published_fragments
+                ),
             ),
         )
 
@@ -607,6 +626,9 @@ def build_article_editorial_context(
                     evidence_kind="operational_observation",
                     source_roles=source_roles,
                     story_id=op_story_id,
+                    previously_published=_all_fragments_published(
+                        (fid,) if fid != 0 else (), published_fragments
+                    ),
                 ),
             )
 

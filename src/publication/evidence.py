@@ -56,3 +56,6 @@ class PublicationEvidence:
     # Publication-window membership is provenance, not an event date or proof
     # that a service state persisted until publication.
     reporting_window_role: ReportingWindowRole = "unknown"
+    # Source message send time (published_at). observed_at is collection-side
+    # chronology; temporal framing prefers the send time when it is known.
+    sent_at: dt.datetime | None = None

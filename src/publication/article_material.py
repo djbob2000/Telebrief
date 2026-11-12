@@ -181,6 +181,9 @@ class ArticleMaterialProjection:
     reasons_by_support_id: Mapping[str, str]
     suppressed_story_ids: tuple[str, ...] = ()
     trimmed_support_ids: tuple[str, ...] = ()
+    # Stories whose only citable PUBLISH material was already published by the
+    # previous issue (reason "previously_published"); also listed in suppressed_story_ids.
+    previously_published_story_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -198,6 +201,11 @@ class ArticleMaterialProjection:
         )
         object.__setattr__(self, "suppressed_story_ids", tuple(self.suppressed_story_ids))
         object.__setattr__(self, "trimmed_support_ids", tuple(self.trimmed_support_ids))
+        object.__setattr__(
+            self,
+            "previously_published_story_ids",
+            tuple(self.previously_published_story_ids),
+        )
 
     def to_metadata(self) -> dict[str, object]:
         """Return stable IDs and reason codes without source or contact payload."""
@@ -208,6 +216,7 @@ class ArticleMaterialProjection:
             "trimmed_support_ids": list(self.trimmed_support_ids),
             "suppressed_story_count": len(self.suppressed_story_ids),
             "trimmed_support_count": len(self.trimmed_support_ids),
+            "previously_published_story_ids": list(self.previously_published_story_ids),
         }
 
 
@@ -400,10 +409,20 @@ def _project_support_text(support: ArticleSupport) -> tuple[str, bool]:
 
 
 def project_article_material(context: ArticleEditorialContext) -> ArticleMaterialProjection:
-    """Project writer evidence and suppress Stories with no citable material."""
+    """Project writer evidence and suppress Stories with no citable material.
+
+    A support already published by the previous issue (``previously_published``)
+    has no citable text here. It is withheld with reason ``previously_published``
+    and keeps its own provenance (AGENTS.md §0.5, §0.7). It uses the same
+    ``SUPPRESS_PROMOTION_ONLY`` skip action as other withheld supports; the reason
+    code records why.
+    """
     supports = tuple(context.support_index)
     projected_by_support_id = {
-        support.support_id: _project_support_text(support) for support in supports
+        support.support_id: ("", False)
+        if support.previously_published
+        else _project_support_text(support)
+        for support in supports
     }
     publishable_by_story: dict[str, list[ArticleSupport]] = {}
     citable_publishable_by_story: dict[str, list[ArticleSupport]] = {}
@@ -435,7 +454,16 @@ def project_article_material(context: ArticleEditorialContext) -> ArticleMateria
         if story_supports
         and all(not projected_by_support_id[s.support_id][0].strip() for s in story_supports)
     }
-    suppressed_stories = tuple(sorted(promotion_suppressed_stories | empty_material_stories))
+    # A Story whose every citable PUBLISH support was already published has nothing
+    # new to report. This is a material-availability check, not an eligibility gate.
+    previously_published_stories = {
+        story_id
+        for story_id, story_supports in citable_publishable_by_story.items()
+        if story_supports and all(s.previously_published for s in story_supports)
+    }
+    suppressed_stories = tuple(
+        sorted(promotion_suppressed_stories | empty_material_stories | previously_published_stories)
+    )
 
     text_by_id: dict[str, str] = {}
     actions: dict[str, ArticleMaterialAction] = {}
@@ -448,6 +476,10 @@ def project_article_material(context: ArticleEditorialContext) -> ArticleMateria
         if not support_story_id:
             match = _ARTICLE_SUPPORT_STORY_ID_RE.search(support.support_id)
             support_story_id = match.group(0) if match else ""
+        if support.previously_published:
+            actions[support.support_id] = "SUPPRESS_PROMOTION_ONLY"
+            reasons[support.support_id] = "previously_published"
+            continue
         if (
             support_story_id in promotion_suppressed_stories
             and support.publication_use == "PUBLISH"
@@ -481,6 +513,7 @@ def project_article_material(context: ArticleEditorialContext) -> ArticleMateria
         reasons_by_support_id=reasons,
         suppressed_story_ids=suppressed_stories,
         trimmed_support_ids=tuple(trimmed_ids),
+        previously_published_story_ids=tuple(sorted(previously_published_stories)),
     )
 
 

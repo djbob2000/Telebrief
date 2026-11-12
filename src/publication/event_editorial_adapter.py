@@ -35,6 +35,10 @@ from src.publication.period_review import (
     run_review_plan,
 )
 from src.publication.policies import ARTICLE_PUBLICATION_TYPES, DIGEST_PUBLICATION_TYPES
+from src.publication.publication_window import (
+    PREVIOUSLY_PUBLISHED_EXCLUSION_TYPES,
+    is_window_chain_type,
+)
 from src.publication.repository import PublicationRepository
 from src.timezones import normalize_timezone_name
 
@@ -122,6 +126,10 @@ class EventEditorialAdapter:
             tuple[OperationalObservationPayload, dt.datetime, Sequence[str]]
         ] = []
         run = await self.repo.get_run_by_id(conn, run_id)
+        # Chained window (daily article, digest): the frozen start persisted at sealing.
+        window_spec = None
+        if run is not None and is_window_chain_type(run.publication_type):
+            window_spec = await self.repo.resolve_run_publication_window(conn, run)
 
         for _rank, inp in enumerate(inputs, start=1):
             # 1. Fetch story revision event_payload
@@ -158,7 +166,7 @@ class EventEditorialAdapter:
                 SELECT f.id, f.text_content, s.id, s.platform, s.name, s.role, s.url,
                        s.external_id, si.id, sir.id, si.canonical_url, si.author_name,
                        COALESCE(si.published_at, si.first_collected_at, f.created_at),
-                       si.parent_item_id, sir.text_content
+                       si.parent_item_id, sir.text_content, si.published_at
                 FROM source_fragments f
                 JOIN source_item_revisions sir ON sir.id = f.source_item_revision_id
                 JOIN source_items si ON si.id = sir.source_item_id
@@ -220,6 +228,10 @@ class EventEditorialAdapter:
                 ) = f_row[:13]
                 parent_item_id = f_row[13] if len(f_row) > 13 else None
                 own_item_text = str(f_row[14] or "") if len(f_row) > 14 else ""
+                # Send time of the source message; collection time is not a send time.
+                sent_at = (
+                    f_row[15] if len(f_row) > 15 and isinstance(f_row[15], dt.datetime) else None
+                )
                 reply_parent_text = (
                     parent_text_by_item_id.get(int(parent_item_id), "")
                     if parent_item_id is not None
@@ -242,6 +254,7 @@ class EventEditorialAdapter:
                     "source_item_context_text": own_item_text,
                     "source_role": src_role or "unknown",
                     "observed_at": obs_time,
+                    "sent_at": sent_at,
                     "source_ref": ref_key,
                     "source_text": ftext,
                     "reply_parent_context_text": reply_parent_text,
@@ -305,6 +318,7 @@ class EventEditorialAdapter:
                                 source_item_context_text=meta["source_item_context_text"],
                                 source_role=meta["source_role"],
                                 observed_at=meta["observed_at"],
+                                sent_at=meta.get("sent_at"),
                                 reply_parent_context_text=meta["reply_parent_context_text"],
                                 reply_parent_item_id=meta["reply_parent_item_id"],
                                 service_subject_hint=service_subject_hint,
@@ -330,6 +344,7 @@ class EventEditorialAdapter:
                                 source_item_context_text=meta["source_item_context_text"],
                                 source_role=meta["source_role"],
                                 observed_at=meta["observed_at"],
+                                sent_at=meta.get("sent_at"),
                                 reply_parent_context_text=meta["reply_parent_context_text"],
                                 reply_parent_item_id=meta["reply_parent_item_id"],
                             )
@@ -351,6 +366,7 @@ class EventEditorialAdapter:
                             source_item_context_text=meta["source_item_context_text"],
                             source_role=meta["source_role"],
                             observed_at=meta["observed_at"],
+                            sent_at=meta.get("sent_at"),
                             reply_parent_context_text=meta["reply_parent_context_text"],
                             reply_parent_item_id=meta["reply_parent_item_id"],
                         )
@@ -595,6 +611,7 @@ class EventEditorialAdapter:
             from src.domain.operational_state import ResolvedObservation, _parse_iso_ts
             from src.publication.article_context import (
                 ArticleSelectionSignal,
+                PublicationWindow,
                 build_article_editorial_context,
             )
 
@@ -648,6 +665,21 @@ class EventEditorialAdapter:
                     review_plan, run.snapshot_at, review_zone(edition_timezone)
                 )
 
+            # The chained window starts where the previous issue ended; the same start
+            # bounds candidate selection (AGENTS.md §0.7). Previously published
+            # fragments are the previous daily article's claim trace.
+            chained_window = None
+            previously_published: frozenset[int] = frozenset()
+            if window_spec is not None and run.publication_type in ARTICLE_PUBLICATION_TYPES:
+                chained_window = PublicationWindow(
+                    snapshot_at=run.snapshot_at,
+                    lookback_start=window_spec.window_start,
+                )
+                if run.publication_type in PREVIOUSLY_PUBLISHED_EXCLUSION_TYPES:
+                    previously_published = await self.repo.previously_published_fragment_ids(
+                        conn, window_spec.previous_run_id
+                    )
+
             article_ctx = build_article_editorial_context(
                 cards=story_cards,
                 evidence_items=list(all_evidence.values()),
@@ -655,10 +687,12 @@ class EventEditorialAdapter:
                 source_records=records,
                 snapshot_at=run.snapshot_at,
                 lookback_hours=lookback_hours,
+                publication_window=chained_window,
                 edition_name=edition_name,
                 edition_slug=edition_slug,
                 edition_timezone=edition_timezone,
                 selection_by_story=sel_signals,
+                previously_published_fragment_ids=previously_published,
             )
 
             if review_plan is not None:
@@ -728,6 +762,9 @@ class EventEditorialAdapter:
             )
             raw_hours = eligibility.config.get("lookback_hours") if eligibility else None
             hours = raw_hours if isinstance(raw_hours, (int, float)) else None
+            if window_spec is not None and run is not None:
+                # Reporting-window role must agree with the chained candidate window.
+                hours = (run.snapshot_at - window_spec.window_start).total_seconds() / 3600
             analysis = replace(
                 analysis,
                 evidence=annotate_digest_reporting_window(
