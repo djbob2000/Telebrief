@@ -23,6 +23,10 @@ from src.publication.article_context import (
 )
 from src.publication.article_coverage import ArticleCoveragePlan
 from src.publication.article_coverage_diagnostics import diagnose_article_coverage
+from src.publication.article_evidence_checks import (
+    diagnose_evidence_faithfulness,
+    evidence_units_for_draft,
+)
 from src.publication.article_geography import (
     article_place_label,
     resolve_article_place_area_map,
@@ -3724,6 +3728,19 @@ def diagnose_article_quality(
     finish_phase("coverage_and_details")
     findings.extend(_diagnose_contradictions(draft, context, material_projection, place_resolver))
     finish_phase("contradictions")
+    # article-fidelity W7.1/W7.3: non-blocking source-faithfulness repairs.
+    findings.extend(
+        ArticleReaderQualityFinding(
+            code=item.code,
+            unit_id=item.unit_id,
+            message=item.message,
+            support_ids=item.support_ids,
+            severity="repair",
+        )
+        for item in diagnose_evidence_faithfulness(
+            evidence_units_for_draft(draft), context.support_by_id
+        )
+    )
     logger.info(
         "Article quality diagnostic timings: headings=%.2fs lead_body=%.2fs "
         "paragraph_shape=%.2fs place_name_precision=%.2fs address_directory_theme=%.2fs "
