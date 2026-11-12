@@ -96,29 +96,65 @@ class EventRevisionProcessingRepository:
         *,
         retry_after_seconds: int,
         limit: int,
+        reply_parent_hops: int = 0,
     ) -> list[int]:
-        """Return unfinished revisions that no live job is expected to pick up.
+        """Return unfinished revisions that no live job is expected to pick up, oldest first.
 
         Failed or pending rows qualify once they have been untouched for
         ``retry_after_seconds``, which leaves a freshly queued job time to start.
-        Running rows qualify only when their claim lease has expired. The newest
-        collected revisions come first: the weekly publication reads recent
-        stories, so they must be ready before the historical backlog.
+        Running rows qualify only when their claim lease has expired.
+
+        The sweep takes the ``limit`` newest collected revisions: the publications
+        read recent stories, so they must be ready before the historical backlog.
+        It also takes the unfinished revisions of their reply parents, up to
+        ``reply_parent_hops`` messages up the chain, even when those are older.
+        The result is ordered oldest first. A short reply joins its parent's
+        Story only if the parent was clustered before it, and the processing
+        worker runs the queued batches in this order.
         """
         cursor = await conn.execute(
             """
-            SELECT state.source_item_revision_id
-            FROM event_revision_processing_state state
-            JOIN source_item_revisions sir ON sir.id = state.source_item_revision_id
-            WHERE (
-                state.status IN ('pending', 'failed')
-                AND state.updated_at <= now() - make_interval(secs => %s)
+            WITH RECURSIVE recoverable AS (
+                SELECT state.source_item_revision_id AS revision_id,
+                       sir.source_item_id,
+                       sir.collected_at
+                FROM event_revision_processing_state state
+                JOIN source_item_revisions sir ON sir.id = state.source_item_revision_id
+                WHERE (
+                    state.status IN ('pending', 'failed')
+                    AND state.updated_at <= now() - make_interval(secs => %(retry_after)s)
+                )
+                   OR (state.status = 'running' AND state.claim_expires_at <= now())
+            ),
+            newest AS (
+                SELECT revision_id, source_item_id, collected_at
+                FROM recoverable
+                ORDER BY collected_at DESC, revision_id DESC
+                LIMIT %(limit)s
+            ),
+            ancestors(item_id, depth) AS (
+                SELECT si.parent_item_id, 1
+                FROM newest
+                JOIN source_items si ON si.id = newest.source_item_id
+                WHERE si.parent_item_id IS NOT NULL AND %(hops)s >= 1
+                UNION
+                SELECT si.parent_item_id, ancestors.depth + 1
+                FROM ancestors
+                JOIN source_items si ON si.id = ancestors.item_id
+                WHERE si.parent_item_id IS NOT NULL AND ancestors.depth < %(hops)s
+            ),
+            selected AS (
+                SELECT revision_id, collected_at FROM newest
+                UNION
+                SELECT recoverable.revision_id, recoverable.collected_at
+                FROM recoverable
+                JOIN ancestors ON ancestors.item_id = recoverable.source_item_id
             )
-               OR (state.status = 'running' AND state.claim_expires_at <= now())
-            ORDER BY sir.collected_at DESC, state.source_item_revision_id DESC
-            LIMIT %s
+            SELECT revision_id
+            FROM selected
+            ORDER BY collected_at ASC, revision_id ASC
             """,
-            (retry_after_seconds, limit),
+            {"retry_after": retry_after_seconds, "limit": limit, "hops": reply_parent_hops},
         )
         return [int(row[0]) for row in await cursor.fetchall()]
 

@@ -27,7 +27,13 @@ class _FakeUow:
 
 def _runtime(batch_size: int) -> SimpleNamespace:
     settings = SimpleNamespace(
-        event_pipeline=SimpleNamespace(revision_processing_batch_size=batch_size)
+        event_pipeline=SimpleNamespace(
+            revision_processing_batch_size=batch_size,
+            thin_fragment_routing_enabled=True,
+            thin_fragment_max_content_words=2,
+            thin_fragment_near_identical_similarity=0.95,
+            thin_fragment_conversation_minutes=30,
+        )
     )
     return SimpleNamespace(uow=_FakeUow(), config=SimpleNamespace(settings=settings))
 
@@ -53,8 +59,13 @@ def defer_calls(monkeypatch) -> _DeferCalls:
 
 
 def _stub_recoverable(monkeypatch, revision_ids: list[int], seen: dict) -> None:
-    async def fake_list(self, conn, *, retry_after_seconds, limit):
-        seen.update(conn=conn, retry_after_seconds=retry_after_seconds, limit=limit)
+    async def fake_list(self, conn, *, retry_after_seconds, limit, reply_parent_hops):
+        seen.update(
+            conn=conn,
+            retry_after_seconds=retry_after_seconds,
+            limit=limit,
+            reply_parent_hops=reply_parent_hops,
+        )
         return list(revision_ids)
 
     monkeypatch.setattr(
@@ -74,6 +85,7 @@ async def test_sweep_defers_every_recoverable_revision_in_batches(monkeypatch, d
         "conn": _CONN,
         "retry_after_seconds": RECOVERY_RETRY_AFTER_SECONDS,
         "limit": RECOVERY_MAX_REVISIONS_PER_SWEEP,
+        "reply_parent_hops": 3,
     }
     assert [len(batch) for batch in defer_calls.batches] == [50, 50, 20]
     assert [rid for batch in defer_calls.batches for rid in batch] == list(range(1, 121))

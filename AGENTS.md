@@ -535,7 +535,7 @@ Do not modify `join_similarity` casually to solve publication presentation probl
 
 Publication composition and knowledge clustering are different layers.
 
-A thin chat remark, with at most `thin_fragment_max_content_words` content words, has a vector that mostly reflects chat register, so a vector match alone must not attach it to a Story. Such a remark joins by its reply link (`reply_join`, which leaves the centroid unchanged), by a near-identical text, or by a Story that has a nearby message in the same chat. Otherwise it starts its own Story. `join_similarity` stays the threshold for ordinary fragments.
+A thin chat remark, with at most `thin_fragment_max_content_words` content words, has a vector that mostly reflects chat register, so a vector match alone must not attach it to a Story. Such a remark joins by its reply link (`reply_join`, which leaves the centroid unchanged), by a near-identical text, or by a Story that has a nearby message in the same chat. Otherwise it starts its own Story. `join_similarity` stays the threshold for ordinary fragments. A reply link works only when the parent was clustered first, so the recovery sweep queues unfinished revisions oldest first and adds their unfinished reply parents to the same sweep, while still choosing the newest backlog first.
 
 ## 2.3 Gate V2
 

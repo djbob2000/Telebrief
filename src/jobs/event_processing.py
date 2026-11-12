@@ -160,12 +160,17 @@ async def requeue_unfinished_revisions(timestamp: int) -> None:
     del timestamp
     runtime = get_runtime()
     config = getattr(runtime, "config", None) or load_config()
-    batch_size = config.settings.event_pipeline.revision_processing_batch_size
+    cfg = config.settings.event_pipeline
+    batch_size = cfg.revision_processing_batch_size
+    # Oldest first, with unfinished reply parents pulled in, so that a short
+    # reply finds its parent's Story when it is clustered.
+    thin_routing = thin_routing_from_config(cfg)
     async with runtime.uow.transaction() as conn:
         revision_ids = await EventRevisionProcessingRepository().list_recoverable_revision_ids(
             conn,
             retry_after_seconds=RECOVERY_RETRY_AFTER_SECONDS,
             limit=RECOVERY_MAX_REVISIONS_PER_SWEEP,
+            reply_parent_hops=thin_routing.max_reply_hops if thin_routing else 0,
         )
         for start in range(0, len(revision_ids), batch_size):
             chunk = revision_ids[start : start + batch_size]
