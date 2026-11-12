@@ -47,6 +47,7 @@ from src.publication.article_quality_policy import (
     ArticleQualityPolicyError,
     article_quality_policy,
 )
+from src.publication.article_speaker import article_speaker_editor_instruction
 from src.publication.article_validator import (
     _HEADING_EDITORIAL_FILLER,
     _TOKEN_RE,
@@ -233,6 +234,7 @@ _SENTENCE_TRIM_CODES = frozenset(
         "UNSUPPORTED_CONCRETE_CLAIM",
         "UNSUPPORTED_PROPER_NAME",
         "UNSUPPORTED_CRITICAL_TERM",
+        "SPEAKER_MULTIPLICITY_MISMATCH",
     }
 )
 _SENTENCE_TRIM_MIN_OVERLAP = 0.6
@@ -3072,6 +3074,8 @@ class ArticleEditor:
                         msg += " -> ВАЖНО: если событие длится уже несколько дней или произошло ранее, обязательно добавьте маркер продолжения («по-прежнему», «продолжаются», «сохраняются») либо сфокусируйте формулировку строго на событиях сегодняшнего дня!"
                 elif iss.code == "PHANTOM_HEADING_TOPIC":
                     msg += " -> ВАЖНО: скорректируйте заголовок раздела, удалив из перечисления после двоеточия темы, которые фактически не освещены в тексте абзацев!"
+                elif iss.code == "SPEAKER_MULTIPLICITY_MISMATCH":
+                    msg += article_speaker_editor_instruction(iss.code) or ""
                 elif iss.code == "LEAKED_META_OMISSION":
                     msg += " -> ВАЖНО: полностью удалите любые мета-комментарии об опущенных контактах/телефонах!"
                 blocks.append(msg)
@@ -3317,7 +3321,7 @@ class ArticleEditor:
                 "цитаты."
             ),
         }
-        instruction = instructions.get(code)
+        instruction = instructions.get(code) or article_speaker_editor_instruction(code)
         if instruction is None and policy.repair_scope in {"unit", "support_units", "story_unit"}:
             raise ArticleQualityPolicyError(
                 f"Reader-quality repair policy has no editor instruction: {code!r}"

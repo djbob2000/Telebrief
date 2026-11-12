@@ -23,6 +23,7 @@ from src.editorial_models import (
 )
 from src.processing.event_analysis import EventAnalysisPayload
 from src.processing.operational_semantics import derive_operational_observations
+from src.publication.article_speaker import speaker_key_for
 from src.publication.editorial_adapter import FrozenEditorialInput
 from src.publication.models import PublicationInput
 from src.publication.period_review import (
@@ -158,7 +159,7 @@ class EventEditorialAdapter:
                 SELECT f.id, f.text_content, s.id, s.platform, s.name, s.role, s.url,
                        s.external_id, si.id, sir.id, si.canonical_url, si.author_name,
                        COALESCE(si.published_at, si.first_collected_at, f.created_at),
-                       si.parent_item_id, sir.text_content
+                       si.parent_item_id, sir.text_content, si.author_external_id
                 FROM source_fragments f
                 JOIN source_item_revisions sir ON sir.id = f.source_item_revision_id
                 JOIN source_items si ON si.id = sir.source_item_id
@@ -198,6 +199,23 @@ class EventEditorialAdapter:
                     if parent_text:
                         parent_text_by_item_id[int(parent_row[0])] = parent_text[:200]
 
+            # Speaker identity is internal: the platform author of each message and
+            # of its reply parent. Only the per-article alias reaches the writer.
+            parent_speaker_key_by_item_id: dict[int, str] = {}
+            if parent_item_ids:
+                parent_author_cur = await conn.execute(
+                    """
+                    SELECT si.id, si.source_id, si.author_name, si.author_external_id
+                    FROM source_items si
+                    WHERE si.id = ANY(%s)
+                    """,
+                    (parent_item_ids,),
+                )
+                for parent_author_row in await parent_author_cur.fetchall():
+                    parent_speaker_key_by_item_id[int(parent_author_row[0])] = speaker_key_for(
+                        parent_author_row[1], parent_author_row[3], parent_author_row[2]
+                    )
+
             card_source_refs: list[str] = []
             frag_id_to_ref: dict[int, str] = {}
             frag_ts_map: dict[int, dt.datetime] = {}
@@ -220,6 +238,13 @@ class EventEditorialAdapter:
                 ) = f_row[:13]
                 parent_item_id = f_row[13] if len(f_row) > 13 else None
                 own_item_text = str(f_row[14] or "") if len(f_row) > 14 else ""
+                author_external_id = f_row[15] if len(f_row) > 15 else None
+                speaker_key = speaker_key_for(src_id, author_external_id, author_name)
+                reply_parent_speaker_key = (
+                    parent_speaker_key_by_item_id.get(int(parent_item_id), "")
+                    if parent_item_id is not None
+                    else ""
+                )
                 reply_parent_text = (
                     parent_text_by_item_id.get(int(parent_item_id), "")
                     if parent_item_id is not None
@@ -250,6 +275,8 @@ class EventEditorialAdapter:
                         if parent_item_id is not None and reply_parent_text
                         else None
                     ),
+                    "speaker_key": speaker_key,
+                    "reply_parent_speaker_key": reply_parent_speaker_key,
                 }
 
                 if ref_key not in records:
@@ -307,6 +334,8 @@ class EventEditorialAdapter:
                                 observed_at=meta["observed_at"],
                                 reply_parent_context_text=meta["reply_parent_context_text"],
                                 reply_parent_item_id=meta["reply_parent_item_id"],
+                                speaker_key=str(meta["speaker_key"]),
+                                reply_parent_speaker_key=str(meta["reply_parent_speaker_key"]),
                                 service_subject_hint=service_subject_hint,
                             )
             elif frag_rows:
@@ -332,6 +361,8 @@ class EventEditorialAdapter:
                                 observed_at=meta["observed_at"],
                                 reply_parent_context_text=meta["reply_parent_context_text"],
                                 reply_parent_item_id=meta["reply_parent_item_id"],
+                                speaker_key=str(meta["speaker_key"]),
+                                reply_parent_speaker_key=str(meta["reply_parent_speaker_key"]),
                             )
                 else:
                     for fid, meta in frag_meta_map.items():
@@ -353,6 +384,8 @@ class EventEditorialAdapter:
                             observed_at=meta["observed_at"],
                             reply_parent_context_text=meta["reply_parent_context_text"],
                             reply_parent_item_id=meta["reply_parent_item_id"],
+                            speaker_key=str(meta["speaker_key"]),
+                            reply_parent_speaker_key=str(meta["reply_parent_speaker_key"]),
                         )
 
             # 3. Build StoryCard

@@ -218,6 +218,35 @@ _POLICIES: dict[str, ArticleQualityFindingPolicy] = {
         "repair_recommended",
         "A planned concrete detail is absent from an otherwise represented story.",
     ),
+    # article-fidelity W3/W4
+    "PLURAL_SOURCE_INFLATION": ArticleQualityFindingPolicy(
+        "speaker_count",
+        "repair",
+        "unit",
+        "repair_recommended",
+        "A plural subject (residents, locals) rests on the messages of one speaker.",
+    ),
+    "UNSUPPORTED_SPEAKER_GENDER": ArticleQualityFindingPolicy(
+        "speaker_gender",
+        "repair",
+        "unit",
+        "repair_recommended",
+        "A female-gender noun is used for a speaker whose own text does not show female gender.",
+    ),
+    "QUOTE_STARTS_AFTER_MASK": ArticleQualityFindingPolicy(
+        "quote_fragment",
+        "repair",
+        "unit",
+        "repair_recommended",
+        "A direct quote begins right after a masked word in the source and is a sentence fragment.",
+    ),
+    "PROFANITY_IN_ARTICLE": ArticleQualityFindingPolicy(
+        "profanity",
+        "repair",
+        "unit",
+        "repair_recommended",
+        "Profanity or a masked swear word appears in the article text.",
+    ),
 }
 
 ARTICLE_QUALITY_FINDING_POLICIES: Mapping[str, ArticleQualityFindingPolicy] = MappingProxyType(

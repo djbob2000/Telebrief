@@ -56,3 +56,7 @@ class PublicationEvidence:
     # Publication-window membership is provenance, not an event date or proof
     # that a service state persisted until publication.
     reporting_window_role: ReportingWindowRole = "unknown"
+    # Internal opaque speaker keys (hashes of the platform author); never written
+    # to the writer dossier, which receives per-article aliases only.
+    speaker_key: str = ""
+    reply_parent_speaker_key: str = ""

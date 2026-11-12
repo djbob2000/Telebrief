@@ -38,6 +38,7 @@ from src.publication.article_semantic_support import (
     assess_semantic_support,
     prepare_semantic_context,
 )
+from src.publication.article_speaker import speaker_validation_issues
 
 _INTERNAL_HANDLE_PATTERN = re.compile(
     r"\[(?:story:\d+:evidence:\d+:frag:\d+|story:\d+|evidence:\d+:frag:\d+|op:[^\]]+|SUPPORT\s+[^\]]+)\]",
@@ -1701,6 +1702,9 @@ def validate_article_draft(
                     )
                 )
                 break
+
+    # Speaker count (article-fidelity W3.3): another speaker needs another author.
+    issues.extend(speaker_validation_issues(draft, context))
 
     is_valid = not any(iss.blocking for iss in issues)
 

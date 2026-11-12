@@ -117,6 +117,9 @@ class ArticleSupport:
     reply_parent_context_text: str = ""
     reply_parent_item_id: int | None = None
     service_subject_hint: ServiceSubjectHint | None = None
+    # Internal speaker keys (see article_speaker.speaker_key_for); "" when unknown.
+    speaker_key: str = ""
+    reply_parent_speaker_key: str = ""
 
 
 def article_support_theme_hints(support: ArticleSupport) -> tuple[str, ...]:
@@ -515,6 +518,8 @@ def build_article_editorial_context(
                 reply_parent_context_text=evi.reply_parent_context_text,
                 reply_parent_item_id=evi.reply_parent_item_id,
                 service_subject_hint=evi.service_subject_hint,
+                speaker_key=evi.speaker_key,
+                reply_parent_speaker_key=evi.reply_parent_speaker_key,
             ),
         )
 
