@@ -54,6 +54,12 @@ _CONCEPT_PREFIXES: dict[str, tuple[str, ...]] = {
         )
     ),
     "fuel": tuple(_norm(p) for p in ("топлив", "бензин", "дизел", "палив")),
+    # article-fidelity W2.3: a building type or schedule is a concrete, checkable
+    # claim. Synonyms share one concept («девятиэтажки» supports «многоэтажки»).
+    "building": tuple(
+        _norm(p) for p in ("многоэтаж", "пятиэтаж", "девятиэтаж", "высотк", "общежит")
+    ),
+    "schedule": tuple(_norm(p) for p in ("график", "расписан")),
 }
 
 _CRITICAL_CONCEPTS = frozenset(
@@ -66,6 +72,8 @@ _CRITICAL_CONCEPTS = frozenset(
         "concept:transport",
         "concept:fuel",
         "concept:uav",
+        "concept:building",
+        "concept:schedule",
     }
 )
 
@@ -104,4 +112,7 @@ def canonical_semantic_concepts(text: str) -> frozenset[str]:
     concepts = {canonicalize_semantic_token(tok) for tok in _TOKEN_RE.findall(lowered)}
     if re.search(r"\b(?:понад|більше|более|свыше)\s+(?:ста|сто|сотн(?:ю|я|і)?)\b", lowered):
         concepts.add("quantity:>100")
+    # A two-word building type: «частный дом», not «частный сектор» (a district).
+    if re.search(r"\bчастн\w*\s+дом(?:а|е|у|ом|ах|ов)?\b", lowered):
+        concepts.add("concept:building")
     return frozenset(concepts)
