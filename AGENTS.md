@@ -267,6 +267,8 @@ Raw source text and provenance must remain available internally even when writer
 
 For article writer material, omit an individual support if conservative contact/directory projection leaves it with no citable text. When suppressing a Story because projection left it with no citable material, do so only when every non-question `PUBLISH` support for that Story projects to empty text; keep a mixed Story whenever at least one support remains. This is a material-availability check, not an `ARTICLE_WORTHY` or corroboration gate. Preserve the original support and provenance internally.
 
+**Previously published material.** A support whose fragments were all cited by the previous successful daily article is `previously_published`. It is withheld from writer material and kept internally for provenance. A Story left with no other citable material is dropped from the article material with reason `previously_published`. This is a material-availability check, not an eligibility gate, and the digest is unaffected (§4.4).
+
 ## 0.6 Evidence Boundary
 
 Publication freedom does not permit fabrication.
@@ -301,6 +303,7 @@ Quotation marks mean exact primary-source wording.
 - Keep the words in every retained direct quote immutable during targeted editing; remove a quote into indirect speech rather than rewriting its contents.
 - Avoid "chat rolls": never dump consecutive direct-speech spans joined only by list punctuation (for example, «...», «...», «...»). Synthesize multiple community reports into smooth narrative prose with geography and timelines, reserving 1–2 authentic direct quotes per section (and at most one per paragraph) for vivid human reactions with natural attribution lead-ins. Quotation marks are never used for irony, evaluation or emphasis.
 - A quote-count heuristic that finds more than two quote spans requests local repair; it does not by itself establish a chat roll or block publication. The structural chat-roll finding requires at least two well-paired direct-speech spans separated only by list punctuation, with no intervening prose. Supported organization and place names in typographic quotes are not direct speech and do not count toward that structural finding. Such names are declined when the Russian case reads naturally; when declension distorts the source spelling or makes the phrase clumsy, the name stays in its source form after a neutral noun (for example, «рядом с заведением «<название>»»).
+- Quote candidates never start inside or right after a masked word («Б... Дь», «х*й»). Such a candidate is cut to the whole words after the mask (`QUOTE_STARTS_AFTER_MASK`, repair). A candidate with profanity is dropped, and profanity is never printed in article prose (`PROFANITY_IN_ARTICLE`, repair).
 
 ### Claim Atoms
 
@@ -310,6 +313,12 @@ Claim Atoms are validation metadata, not sentence templates.
 - Reader-facing prose may be smoother and more journalistic.
 - Do not force the article prose to mimic raw source syntax.
 - Do not hide unsupported reader-facing facts by omitting them from Claim Atoms; high-risk novelty in the published text must still be validated.
+
+### Speaker identity
+
+- A speaker is the platform author of a message. The Telegram `sender_id` is stored in `source_items.author_external_id`. A display name is used as identity only inside the same source, and only for messages that carry no id.
+- The writer dossier receives only opaque per-article aliases: `speaker` (S1, S2…), `reply_to_speaker` (the reply parent's alias) and `speaker_gender` (`f`, `m` or `unknown`, taken only from the speaker's own text). Names and ids never reach the dossier.
+- Several messages do not prove several people. «Другой житель» or «ещё один житель» needs a different speaker (`SPEAKER_MULTIPLICITY_MISMATCH`, blocking). A plural «жители советуют» needs at least two speakers (`PLURAL_SOURCE_INFLATION`, repair). A gendered noun or verb needs the speaker's own self-description (`UNSUPPORTED_SPEAKER_GENDER`, repair).
 
 ## 0.7 Article failure semantics and targeted editorial editing
 
@@ -327,6 +336,8 @@ The Event-First writer dossier has a 999,999-character ceiling, including the co
 
 Before the existing editor, run one closed deterministic preparation step: normalize already-supported community attribution, add explicitly unknown district framing when the source only says “private sector”, and add typography around evidence-supported organization/shop names while retaining the exact spelling and inflection. The same step rewrites the closed chat-kitchen forms ("в чатах", "в городском чате", "участник чата", "перекличка", "в комментариях") into neutral wording (`src/publication/article_kitchen.py`); unknown inflections remain for the validator to block. Preparation must not invent source roles, locations or service states, rewrite retained direct quotes, or prune paragraphs. Preserve unsupported quotations in the parsed candidate so the validator and editor can see them. Shop/provider name quotes are typography, not spoken quotations.
 
+Edition terminology: a city profile declares `stable_context.geography.terminology` as variant → canonical stem pairs. Article preparation and the digest sanitizer replace a variant with its canonical stem outside direct quotes and keep the ending. The writer receives the canonical spelling of a variant that appears in a support as `canonical_terms`. A direct quote is never rewritten (`src/domain/edition_terminology.py`).
+
 Assess the prepared draft against the actual context, projection, profile content, rules and caller-owned frozen source identity. Reuse an assessment only when the entire structured draft and these inputs match. After editing, finalization is a gate on the exact assessed candidate: no quote stripping, deduplication, paragraph deletion, source-fragment substitution or late title/lead rewriting. Event-First rendering preserves the assessed wording. If a later editor pass fails, retain the latest exact assessed checkpoint for the gate; a timeout or explicit cancellation still terminates generation.
 
 When the writer draft contains isolated factual or stylistic validation issues (such as non-allowlisted quotes, unverified proper names, over-specified causes, or a localized thematic mismatch), the existing targeted copy-editor (`ArticleEditor`, enabled via `article_editor_enabled: true`) may patch specific units or propose bounded structural operations; it does not rewrite the entire draft. `MOVE` transfers one unchanged paragraph into an existing section, preserving its text, claims, supports, origin, and provenance. `SPLIT` is expressed as `RECOMPOSE`: explicitly authorized paragraphs may be replaced with one or more paragraphs in an existing section, or in a `CREATE_SECTION` only when no supported existing destination fits. Rewritten prose is regrounded from its actual text against only the explicitly authorized eligible supports; the editor cannot supply Claim Atoms or support IDs. Structural operations may touch only pass-authorized units and destinations. Their positional IDs are immutable for that pass and bound to the full base-draft fingerprint; a later editor call receives a fresh registry.
@@ -341,7 +352,7 @@ Ordinary colloquial author prose is a nonblocking register repair; actual disclo
 
 Reader-quality findings use one explicit policy registry for finding class, severity, repair scope, and publication effect. This registry does not replace or weaken the Evidence Boundary validator; factual findings remain governed by `article_validator`. Unknown reader-quality codes are policy/configuration errors, not safe findings.
 
-Only Evidence Boundary safety failures or findings that demonstrate materially misleading or unreadable published prose may block publication. A raw quote/address count, a run of one-sentence paragraphs from distinct Stories, cosmetic heading or provider-name typography, or incomplete-quantity grammar cue cannot block by itself. Compound structural checks may block when they establish a multi-place service roster without narrative relation or a section dominated by source-backed routine directory material. A report that says only “private sector” remains publishable when it is honestly attributed and its unspecified district is clarified. An asserted wrong area remains a geographic safety blocker. A street is asserted to lie in an area when the prose frames it by that area: directly («На Горе на улице …»), by apposition or a colon, or as one of several streets under that area. A street that is a separate item in a list of different areas («на Горе, в Лисках и на улице …») or opens its own contrasted clause («на Горе света нет, а на улице … дали») is not assigned to the neighbouring area. The finding names the place and the area so that the editor fixes that mention instead of rewriting the paragraph.
+Only Evidence Boundary safety failures or findings that demonstrate materially misleading or unreadable published prose may block publication. A raw quote/address count, a run of one-sentence paragraphs from distinct Stories, cosmetic heading or provider-name typography, or incomplete-quantity grammar cue cannot block by itself. Compound structural checks may block when they establish a multi-place service roster without narrative relation or a section dominated by source-backed routine directory material. A report that says only “private sector” remains publishable when it is honestly attributed and its unspecified district is clarified. The clarification is the wording «(район не уточняется)», inserted once, at the first visible mention of «частный сектор» in the unit. A mention that exists only inside a direct quote gets one sentence «Район не уточняется.» at the end of the paragraph. An asserted wrong area remains a geographic safety blocker. A street is asserted to lie in an area when the prose frames it by that area: directly («На Горе на улице …»), by apposition or a colon, or as one of several streets under that area. A street that is a separate item in a list of different areas («на Горе, в Лисках и на улице …») or opens its own contrasted clause («на Горе света нет, а на улице … дали») is not assigned to the neighbouring area. The finding names the place and the area so that the editor fixes that mention instead of rewriting the paragraph.
 
 Evidence Boundary is fail-closed for unverified assertions: the published article must never contain ungrounded facts. Spelling variants that do not change the fact are matched, not blocked: case, ё/е, Ukrainian/Russian letter pairs (і/и, ї/и, ґ/г) and apostrophes inside a word (Мар'їна = Марїна) are folded on both sides of the check. Unknown names, numbers and quote wording still block.
 
@@ -527,6 +538,8 @@ Important invariant:
 
 Do not regress to a threshold that drops messages such as a short outage or service-status report before Gate sees it.
 
+**Message-level classified rule.** A message that is a rental or sale classified as a whole is one unit: an offer verb at its start plus a price with currency, a phone number, «риелтор», or a join or booking link. Every fragment of such a message is a non-candidate, so an ad paragraph cannot become a civic report. A civic message keeps its per-fragment classification.
+
 ## 2.2 Story clustering
 
 `src/processing/event_clustering.py`
@@ -569,6 +582,12 @@ Residents write in remarks that only make sense in sequence, so each Gate batch 
 The timeline may settle one thing only: which service a remark leaves unnamed. A short status remark that is not a question and names no service of its own («Колония нету») keeps the service its reply chain names or, for a remark with no reply link, the service named right before it, when exactly one service is being discussed. The result stays a community report without `service_state`, so it never becomes an operational state.
 
 For a KEEP Story, Gate also returns the timeline lines that report the same concrete incident: one event at one time and reports of its effects, not ordinary availability talk. The code keeps a proposed line only when it or the Story names a concrete event, both sit in one stretch of the chat, and the line names no different known place. These are stored as `same_incident` rows in `story_relations`: editorial navigation, under the same limits as `SAME_SITUATION` in §0.2. They do not merge Story, fact or source identities.
+
+### Ordinal durations, hedges and context-only locations
+
+- An ordinal form counts a day or week already in progress. «4 неделю» is «идёт четвёртая неделя», never a total such as «четыре недели». The Gate prompt requires this.
+- Hedges and hearsay markers («похоже», «кажется», «вроде», «по словам соседей») stay in the fact and in its headline. They are never upgraded to an established status.
+- A `service_state.location` that only the chat timeline or a reply parent names is cleared. The item stays `PUBLISH` without that location.
 
 ### Canonical service state representation
 
@@ -705,6 +724,10 @@ may still be testing old persisted semantics unless the underlying active Storie
 
 When evaluating semantic changes, make sure the test corpus was produced by the current Gate/Analysis versions.
 
+## 4.4 Reporting window
+
+For `daily_article` and the digest types, the window starts at `max(source_cutoff_at − lookback, source_cutoff_at of the previous succeeded run of the same edition and publication type)`. It never exceeds the lookback. The window is frozen in `publication_runs.metadata["publication_window"]` when the run is sealed, and a replay reuses it. The article's `PublicationWindow.lookback_start` uses the same start. Rolling weekly articles and calendar period reviews keep their own windows (§0.12).
+
 ---
 
 # 5. Digest Architecture
@@ -790,6 +813,9 @@ Important metadata includes:
 - timestamps;
 - temporal role;
 - framing.
+- speaker alias, reply-parent alias and speaker gender (§0.6);
+- send time of the source message (`sent_at`), used for temporal framing;
+- canonical spellings of profile terms (`canonical_terms`) and an advisory `context_theme_hint` (§6.3).
 
 Preserve raw/primary source text for validation and audit even if writer-facing context is sanitized.
 
@@ -828,6 +854,12 @@ Hard rejection remains the job of Evidence Boundary violations.
 
 Keep one canonical composition group per Story. Evaluate a thematic mismatch from the supports cited by the actual paragraph, not from the Story's overall topic. Unknown themes alone do not establish an error. A mixed-theme bridge is recognized only when the prose and one cited projected support that carries both themes express the same causal or temporal connection; contrast phrasing alone is not enough. Such composition findings use the existing non-blocking repair/readiness policy and cannot create an eligibility gate.
 
+**Advisory context theme.** When a support has no service theme of its own, the theme of its reply parent (else of its Story) is offered as `context_theme_hint`. It is navigation only, never evidence or a service state.
+
+**Area entities in headings.** `HEADING_AREA_MISMATCH` stays blocking and covers area entities as well as places, for example «Коса» or «Центр» under a «Гора» heading.
+
+**Repair findings.** `UNFRAMED_CONFLICTING_ACCOUNTS` (two accounts of the same place and subject with opposite structured `service_state`, from different speakers, without a framed contrast), `REDUNDANT_PARAGRAPH` (a paragraph restates the previous one with the same supports), `ORDINAL_DURATION_INFLATED` (an ordinal day or week rewritten as a total) and `HEDGE_DROPPED` (a source hedge or hearsay marker missing from the sentence that relies on it). None of them blocks publication.
+
 ## 6.4 Adaptive article size
 
 Do not enforce one fixed long-read length.
@@ -863,6 +895,16 @@ Structural editing must preserve the same boundary. A `MOVE` keeps the paragraph
 Low lexical overlap alone must not be treated as proof that a faithful paraphrase is false.
 
 Lexical/morphological diagnostics may remain useful for debugging and benchmarking.
+
+**Concrete values.** A clock time, date, number or duration in a paragraph must be owned by a cited PUBLISH, non-question support whose own text carries that value, and whose service family and place agree with the clause (`CONCRETE_VALUE_MISBOUND`, blocking, eligible for the one-sentence backstop of §0.7). A resident question supports only prose framed as a question. When ownership, service or place cannot be decided, the binding is a `CONCRETE_VALUE_NOT_EVALUATED` diagnostic. It never blocks and is never reported as verified. Building types (многоэтажки and similar) and schedule terms («график», «расписание») are critical semantic concepts.
+
+**Temporal framing.**
+
+- `HISTORICAL_PRESENTED_AS_CURRENT` (blocking, backstop-eligible): a paragraph sentence supported only by `HISTORICAL_CONTEXT` supports that uses a present-time marker («сегодня», «сейчас», «только что», «уже N дней» without a date, «к вечеру» of the article day).
+- `RELATIVE_TIME_MISDATED` (blocking, backstop-eligible): «сегодня» or «вчера» that does not match the edition-local day the cited source was sent (`sent_at`).
+- `RELATIVE_TIME_COPIED` (repair): elapsed time copied from the chat («пять минут назад»).
+
+Quotations are excluded from these checks.
 
 ### Cross-language evidence
 
