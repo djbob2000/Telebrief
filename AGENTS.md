@@ -856,7 +856,7 @@ Keep one canonical composition group per Story. Evaluate a thematic mismatch fro
 
 **Advisory context theme.** When a support has no service theme of its own, the theme of its reply parent (else of its Story) is offered as `context_theme_hint`. It is navigation only, never evidence or a service state.
 
-**Area entities in headings.** `HEADING_AREA_MISMATCH` stays blocking and covers area entities as well as places, for example «Коса» or «Центр» under a «Гора» heading.
+**Places and areas in headings.** `HEADING_AREA_MISMATCH` stays blocking and covers a place named in the paragraph that lies in another area than the heading (a street under the wrong district). An area that the heading leaves out, for example «Коса» or «Центр» under a «Гора» heading, is `HEADING_AREA_SCOPE` (repair, sent to the editor). An area named in a contrast with a heading area («на Горе света нет, тогда как в Центре …») is not flagged.
 
 **Repair findings.** `UNFRAMED_CONFLICTING_ACCOUNTS` (two accounts of the same place and subject with opposite structured `service_state`, from different speakers, without a framed contrast), `REDUNDANT_PARAGRAPH` (a paragraph restates the previous one with the same supports), `ORDINAL_DURATION_INFLATED` (an ordinal day or week rewritten as a total) and `HEDGE_DROPPED` (a source hedge or hearsay marker missing from the sentence that relies on it). None of them blocks publication.
 
@@ -896,7 +896,7 @@ Low lexical overlap alone must not be treated as proof that a faithful paraphras
 
 Lexical/morphological diagnostics may remain useful for debugging and benchmarking.
 
-**Concrete values.** A clock time, date, number or duration in a paragraph must be owned by a cited PUBLISH, non-question support whose own text carries that value, and whose service family and place agree with the clause (`CONCRETE_VALUE_MISBOUND`, blocking, eligible for the one-sentence backstop of §0.7). A resident question supports only prose framed as a question. When ownership, service or place cannot be decided, the binding is a `CONCRETE_VALUE_NOT_EVALUATED` diagnostic. It never blocks and is never reported as verified. Building types (многоэтажки and similar) and schedule terms («график», «расписание») are critical semantic concepts.
+**Concrete values.** A clock time, date, number or duration in a paragraph must be owned by a cited PUBLISH, non-question support whose own text carries that value, and whose service family and place agree with the clause (`CONCRETE_VALUE_MISBOUND`, blocking, eligible for the one-sentence backstop of §0.7). A resident question supports only prose framed as a question. When ownership, service or place cannot be decided, the binding is a `CONCRETE_VALUE_NOT_EVALUATED` diagnostic. It never blocks and is never reported as verified. Building types are critical semantic concepts, split into apartment blocks («многоэтажки», «пятиэтажки», «высотки»), dormitories («общежитие») and private houses («частный сектор», «частные дома»). Private houses are not critical on their own, so a faithful paraphrase between «частный сектор» and «частные дома» passes. Schedule terms («график», «расписание») are critical too.
 
 **Temporal framing.**
 

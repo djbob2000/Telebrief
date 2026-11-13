@@ -2618,12 +2618,17 @@ def _heading_area_entities(heading: str, resolver: Any) -> list[Any]:
 def _heading_area_mismatch_places(
     section: Any,
     resolver: Any,
+    *,
+    kind: Literal["place", "area"] = "place",
 ) -> tuple[tuple[int, ...], tuple[str, ...]]:
     """Return section paragraphs whose places the profile puts outside the heading areas.
 
-    A place is left alone when its own sentence names an area that covers it,
-    so an explicit contrast ("на Горе, на улице ...") under a narrower heading
-    is not a finding.
+    ``kind="place"`` checks streets and other places (HEADING_AREA_MISMATCH): a
+    place is left alone when its own sentence names an area that covers it, so an
+    explicit contrast ("на Горе, на улице ...") under a narrower heading is not a
+    finding. ``kind="area"`` checks areas named in the prose (HEADING_AREA_SCOPE):
+    an area is left alone when its own sentence also names an area of the heading,
+    because that is a localized contrast («на Горе света нет, тогда как в Центре …»).
     """
     required = ("city_part_ids", "is_city_part_umbrella", "geographic_area_group_keys")
     if not all(callable(getattr(resolver, name, None)) for name in required):
@@ -2646,14 +2651,12 @@ def _heading_area_mismatch_places(
         sentence_spans = _safe_sentence_spans(text)
         paragraph_flagged = False
         for entity in entities:
-            # Article-fidelity W5.2: an area named in the paragraph ("на Косе", "в Центре")
-            # is checked like a place; the profile assigns it to its own city part.
-            if entity.kind not in ("place", "area"):
+            if entity.kind != kind:
                 continue
-            if entity.kind == "area" and entity.confidence != "high":
+            if kind == "area" and entity.confidence != "high":
                 continue
             if (
-                entity.kind == "place"
+                kind == "place"
                 and entity.confidence != "high"
                 and not resolver.city_part_ids(entity)
             ):
@@ -2664,10 +2667,7 @@ def _heading_area_mismatch_places(
             if not spans:
                 continue
             labelled = False
-            # A street or other place may be framed by an area named in its own sentence.
-            # A named area is a claim about where the events are, so a sibling area in the
-            # same sentence never frames it (article-fidelity W5.2).
-            for start, end in spans if entity.kind == "place" else ():
+            for start, end in spans:
                 sentence = next(
                     (
                         (sentence_start, sentence_end)
@@ -2680,7 +2680,14 @@ def _heading_area_mismatch_places(
                     labelled = True
                     break
                 for area in paragraph_areas:
-                    if area is entity or _place_outside_area(entity, area, resolver):
+                    if area is entity:
+                        continue
+                    if kind == "place":
+                        # The place's own sentence names an area that covers it.
+                        if _place_outside_area(entity, area, resolver):
+                            continue
+                    elif all(_place_outside_area(area, head, resolver) for head in heading_areas):
+                        # The area's sentence must name an area of the heading (a contrast).
                         continue
                     if any(
                         sentence[0] <= area_start and area_end <= sentence[1]
@@ -3313,8 +3320,19 @@ def diagnose_article_quality(
     if place_resolver is not None:
         paragraph_offset = 0
         for section_index, section in enumerate(draft.sections, start=1):
-            flagged, place_labels = _heading_area_mismatch_places(section, place_resolver)
-            if flagged:
+            # A street under a heading area it does not belong to is an asserted wrong area
+            # (blocking). An area named in the prose but missing from the heading is a heading
+            # repair (article-fidelity W5.2): the prose names the area itself.
+            heading_checks: tuple[tuple[Literal["place", "area"], str, QualitySeverity], ...] = (
+                ("place", "HEADING_AREA_MISMATCH", "blocking"),
+                ("area", "HEADING_AREA_SCOPE", "repair"),
+            )
+            for check_kind, heading_code, heading_severity in heading_checks:
+                flagged, place_labels = _heading_area_mismatch_places(
+                    section, place_resolver, kind=check_kind
+                )
+                if not flagged:
+                    continue
                 section_support_ids = [
                     *section.heading_support_ids,
                     *(sid for claim in section.heading_claims for sid in claim.cited_support_ids),
@@ -3330,7 +3348,7 @@ def diagnose_article_quality(
                 )
                 findings.append(
                     ArticleReaderQualityFinding(
-                        code="HEADING_AREA_MISMATCH",
+                        code=heading_code,
                         unit_id=f"H{section_index:03d}",
                         message=(
                             "Заголовок главы называет районы, к которым по профилю города не "
@@ -3342,7 +3360,7 @@ def diagnose_article_quality(
                         support_ids=_citable_support_ids(
                             tuple(section_support_ids), context, material_projection
                         ),
-                        severity="repair",
+                        severity=heading_severity,
                     )
                 )
             paragraph_offset += len(section.paragraphs)

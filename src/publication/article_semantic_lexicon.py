@@ -56,9 +56,12 @@ _CONCEPT_PREFIXES: dict[str, tuple[str, ...]] = {
     "fuel": tuple(_norm(p) for p in ("топлив", "бензин", "дизел", "палив")),
     # article-fidelity W2.3: a building type or schedule is a concrete, checkable
     # claim. Synonyms share one concept («девятиэтажки» supports «многоэтажки»).
-    "building": tuple(
-        _norm(p) for p in ("многоэтаж", "пятиэтаж", "девятиэтаж", "высотк", "общежит")
+    # Apartment blocks and dormitories are different building types; private houses
+    # (with «частный сектор») are the phrase concept below.
+    "apartment_block": tuple(
+        _norm(p) for p in ("многоэтаж", "пятиэтаж", "девятиэтаж", "высотк", "многоквартирн")
     ),
+    "dormitory": tuple(_norm(p) for p in ("общежит",)),
     "schedule": tuple(_norm(p) for p in ("график", "расписан")),
 }
 
@@ -72,7 +75,8 @@ _CRITICAL_CONCEPTS = frozenset(
         "concept:transport",
         "concept:fuel",
         "concept:uav",
-        "concept:building",
+        "concept:apartment_block",
+        "concept:dormitory",
         "concept:schedule",
     }
 )
@@ -112,7 +116,9 @@ def canonical_semantic_concepts(text: str) -> frozenset[str]:
     concepts = {canonicalize_semantic_token(tok) for tok in _TOKEN_RE.findall(lowered)}
     if re.search(r"\b(?:понад|більше|более|свыше)\s+(?:ста|сто|сотн(?:ю|я|і)?)\b", lowered):
         concepts.add("quantity:>100")
-    # A two-word building type: «частный дом», not «частный сектор» (a district).
-    if re.search(r"\bчастн\w*\s+дом(?:а|е|у|ом|ах|ов)?\b", lowered):
-        concepts.add("concept:building")
+    # Private houses: «частный дом» and «частный сектор» describe the same housing, so a
+    # faithful paraphrase between them matches. The concept is not critical on its own:
+    # «частный сектор» is common chat wording with many spellings («в частном»).
+    if re.search(r"\bчастн\w*\s+(?:дом|сектор)\w*", lowered):
+        concepts.add("concept:private_house")
     return frozenset(concepts)

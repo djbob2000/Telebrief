@@ -96,7 +96,7 @@ PASSING_PRIVATE = (
 def test_building_type_absent_from_the_source_is_a_critical_term() -> None:
     assessment = assess_claim_against_supports(CAUGHT_HIGHRISE, [PRIVATE_SECTOR_641253])
     assert not assessment.supported
-    assert "concept:building" in assessment.blocking_critical_terms
+    assert "concept:apartment_block" in assessment.blocking_critical_terms
 
 
 def test_validator_blocks_the_highrise_contrast_unsupported_by_the_source() -> None:
@@ -116,11 +116,25 @@ def test_the_same_claim_without_the_highrise_clause_passes() -> None:
 
 
 def test_synonym_building_types_share_one_concept() -> None:
-    assert "concept:building" in canonical_semantic_concepts("в девятиэтажках")
-    assert "concept:building" in canonical_semantic_concepts("пятиэтажки на Морозова")
-    assert "concept:building" in canonical_semantic_concepts("в многоэтажке")
-    # «частный сектор» is a district, not a building type.
-    assert "concept:building" not in canonical_semantic_concepts("частный сектор")
+    assert "concept:apartment_block" in canonical_semantic_concepts("в девятиэтажках")
+    assert "concept:apartment_block" in canonical_semantic_concepts("пятиэтажки на Морозова")
+    assert "concept:apartment_block" in canonical_semantic_concepts("в многоэтажке")
+    # «частный сектор» and «частные дома» are one housing type, not apartment blocks.
+    assert "concept:apartment_block" not in canonical_semantic_concepts("частный сектор")
+    assert "concept:private_house" in canonical_semantic_concepts("в частном секторе")
+    assert "concept:private_house" in canonical_semantic_concepts("в частных домах")
+
+
+def test_dormitory_is_a_separate_building_type() -> None:
+    concepts = canonical_semantic_concepts("в общежитии на Морозова")
+    assert "concept:dormitory" in concepts
+    assert "concept:apartment_block" not in concepts
+
+
+def test_private_houses_paraphrase_of_private_sector_passes() -> None:
+    claim = "По сообщению жителя, в частных домах нет света четвёртую неделю."
+    assessment = assess_claim_against_supports(claim, [PRIVATE_SECTOR_641253])
+    assert assessment.blocking_critical_terms == ()
 
 
 def test_schedule_term_is_backed_by_a_schedule_source() -> None:

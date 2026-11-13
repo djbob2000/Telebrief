@@ -214,11 +214,11 @@ def test_heating_support_in_a_utilities_section_is_not_a_finding(resolver):
 # W5.2 — an area named in the heading against the areas named in its paragraphs.
 
 
-def _heading_hits(heading: str, *paragraphs: str):
+def _heading_hits(heading: str, *paragraphs: str, kind: str = "place"):
     section = SimpleNamespace(
         heading=heading, paragraphs=[SimpleNamespace(text=p) for p in paragraphs]
     )
-    return aq._heading_area_mismatch_places(section, _resolver())
+    return aq._heading_area_mismatch_places(section, _resolver(), kind=kind)
 
 
 _RESOLVER_CACHE: list = []
@@ -232,7 +232,7 @@ def _resolver():
 
 def test_lower_town_area_under_upland_heading_is_caught():
     flagged, labels = _heading_hits(
-        HEADING_UPLAND, "На косе, по словам жителя, света нет с 1 августа."
+        HEADING_UPLAND, "На косе, по словам жителя, света нет с 1 августа.", kind="area"
     )
     assert flagged == (0,)
     assert labels
@@ -242,6 +242,7 @@ def test_centre_and_lower_town_under_upland_heading_are_caught():
     flagged, _ = _heading_hits(
         HEADING_UPLAND,
         "В нижней части города, в Центре, на начале улицы Шевченко света нет 11 дней",
+        kind="area",
     )
     assert flagged == (0,)
 
@@ -268,6 +269,60 @@ def test_area_inside_the_heading_part_passes_for_a_neighbourhood_on_upland():
 
 def test_heading_area_mismatch_stays_blocking_in_the_registry():
     assert ARTICLE_QUALITY_FINDING_POLICIES["HEADING_AREA_MISMATCH"].severity == "blocking"
+
+
+def test_area_scope_under_a_heading_is_a_repair_not_a_block():
+    assert ARTICLE_QUALITY_FINDING_POLICIES["HEADING_AREA_SCOPE"].severity == "repair"
+
+
+def test_area_contrast_sentence_under_a_heading_is_not_flagged():
+    """«На Горе света нет, тогда как в Центре …» is a contrast, not a mislocated paragraph."""
+    flagged, _ = _heading_hits(
+        HEADING_UPLAND,
+        "На Горе света нет, тогда как в Центре на улице Шевченко свет дали.",
+        kind="area",
+    )
+    assert flagged == ()
+
+
+def test_heading_area_findings_build_through_the_full_diagnosis_path():
+    """Run the real finding constructor: a severity mismatch with the policy would raise here."""
+    from src.publication.article_coverage import build_article_coverage_plan
+    from src.publication.article_models import (
+        ArticleParagraph,
+        ArticleSection,
+        StructuredArticleDraft,
+    )
+
+    support = _support("h1", "На косе, по словам жителя, света нет с 1 августа.")
+    context = _context(support)
+    draft = StructuredArticleDraft(
+        title="Бердянск",
+        title_support_ids=("h1",),
+        lead="Лид.",
+        lead_support_ids=("h1",),
+        sections=(
+            ArticleSection(
+                heading=HEADING_UPLAND,
+                paragraphs=(
+                    ArticleParagraph(
+                        text="На косе, по словам жителя, света нет с 1 августа.",
+                        cited_support_ids=("h1",),
+                    ),
+                ),
+            ),
+        ),
+    )
+    report = aq.diagnose_article_quality(
+        draft,
+        build_article_coverage_plan((), context),
+        context,
+        place_resolver=_resolver(),
+    )
+    codes = {finding.code: finding for finding in report.findings}
+    assert "HEADING_AREA_SCOPE" in codes
+    assert codes["HEADING_AREA_SCOPE"].severity == "repair"
+    assert "HEADING_AREA_MISMATCH" not in codes
 
 
 # W5.3 — conflicting accounts visible from structured service_state.

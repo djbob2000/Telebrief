@@ -118,7 +118,14 @@ _POLICIES: dict[str, ArticleQualityFindingPolicy] = {
         "blocking",
         "unit",
         "block_publication",
-        "A section heading names areas that the profile shows do not contain its places or areas.",
+        "A section heading names areas that the profile shows do not contain its places.",
+    ),
+    "HEADING_AREA_SCOPE": ArticleQualityFindingPolicy(
+        "geography_consistency",
+        "repair",
+        "unit",
+        "repair_recommended",
+        "Prose names an area that the section heading leaves out, outside a contrast with a heading area.",
     ),
     "NON_PLACE_NAME_AS_PLACE": ArticleQualityFindingPolicy(
         "geography_consistency",
