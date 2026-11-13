@@ -318,6 +318,108 @@ def test_unstructured_service_claim_can_use_direct_parent_question_for_referent(
     assert claim.source_fragment_ids == (34531,)
 
 
+_NO_POWER_FOR_THREE_DAYS = (
+    "По сообщению жителя, в микрорайоне Стекловолокно за три с половиной месяца свет включали "
+    "только на три дня."
+)
+_NO_POWER_FRAGMENTS = {
+    642112: "Нам за три с половиной месяца на три дня включили и всё, в комнате+12ни света, ни отопления ни газа",
+    642117: "Стекловолокно",
+}
+_NO_POWER_PARENTS = {642112: "сколько вы без света ?", 642117: "Это где такое??"}
+
+
+def test_place_answer_adds_its_place_when_other_fragment_states_the_service() -> None:
+    payload = EventPayload(
+        evidence_items=(
+            EvidenceItemPayload(
+                text=_NO_POWER_FOR_THREE_DAYS,
+                kind="community_report",
+                publication_use="PUBLISH",
+                source_fragment_ids=(642112, 642117),
+            ),
+        )
+    )
+
+    normalized, audit = normalize_service_state_evidence(
+        payload,
+        _NO_POWER_FRAGMENTS,
+        reply_parent_context_by_fragment_id=_NO_POWER_PARENTS,
+    )
+
+    claim = normalized.evidence_items[0]
+    assert claim.publication_use == "PUBLISH"
+    assert claim.source_fragment_ids == (642112, 642117)
+    assert audit.rejection_reasons == ()
+
+
+def test_place_answer_alone_cannot_ground_the_service() -> None:
+    payload = EventPayload(
+        evidence_items=(
+            EvidenceItemPayload(
+                text=_NO_POWER_FOR_THREE_DAYS,
+                kind="community_report",
+                publication_use="PUBLISH",
+                source_fragment_ids=(642117,),
+            ),
+        )
+    )
+
+    normalized, audit = normalize_service_state_evidence(
+        payload,
+        _NO_POWER_FRAGMENTS,
+        reply_parent_context_by_fragment_id=_NO_POWER_PARENTS,
+    )
+
+    assert normalized.evidence_items[0].publication_use == "CONTEXT"
+    assert audit.rejection_reasons == ("ungrounded_service_family",)
+
+
+def test_place_answer_with_a_state_word_does_not_inherit_the_claim() -> None:
+    payload = EventPayload(
+        evidence_items=(
+            EvidenceItemPayload(
+                text="На Орджоникидзе нет света и воды.",
+                kind="community_report",
+                publication_use="PUBLISH",
+                source_fragment_ids=(516425, 595312),
+            ),
+        )
+    )
+
+    normalized, _ = normalize_service_state_evidence(
+        payload,
+        {516425: "Орджоникидзе не", 595312: "Орджоникидзе нет"},
+        reply_parent_context_by_fragment_id={516425: "У всех нет воды ?", 595312: "Где нет света?"},
+    )
+
+    assert normalized.evidence_items[0].publication_use == "CONTEXT"
+
+
+def test_place_answer_needs_a_question_about_the_place_in_its_parent() -> None:
+    payload = EventPayload(
+        evidence_items=(
+            EvidenceItemPayload(
+                text=_NO_POWER_FOR_THREE_DAYS,
+                kind="community_report",
+                publication_use="PUBLISH",
+                source_fragment_ids=(642112, 642117),
+            ),
+        )
+    )
+
+    normalized, _ = normalize_service_state_evidence(
+        payload,
+        _NO_POWER_FRAGMENTS,
+        reply_parent_context_by_fragment_id={
+            642112: "сколько вы без света ?",
+            642117: "Да, без света",
+        },
+    )
+
+    assert normalized.evidence_items[0].publication_use == "CONTEXT"
+
+
 def test_unstructured_service_reply_preserves_recent_availability_report() -> None:
     payload = EventPayload(
         evidence_items=(

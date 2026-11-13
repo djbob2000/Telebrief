@@ -521,6 +521,27 @@ def normalize_service_state_evidence(
     return normalized_payload, audit
 
 
+_PLACE_QUESTION_RE = re.compile(r"\b(?:где|какой\s+район|в\s+каком\s+районе)\b", re.IGNORECASE)
+_PLACE_ANSWER_MAX_WORDS = 4
+
+
+def _is_place_answer(source_text: str, parent_text: str) -> bool:
+    """Return True for a short reply that only names where its parent asked.
+
+    "Стекловолокно" answers "Это где такое??". It can add the place to a claim
+    whose service other cited fragments state, but it never grounds a service.
+    A state word, a service word or a question disqualifies it.
+    """
+    return (
+        "?" in parent_text
+        and _PLACE_QUESTION_RE.search(parent_text) is not None
+        and "?" not in source_text
+        and 0 < len(source_text.split()) <= _PLACE_ANSWER_MAX_WORDS
+        and not _detect_service_families(source_text)
+        and _ELLIPTICAL_AVAILABILITY_RE.search(source_text) is None
+    )
+
+
 def _normalize_unstructured_service_claim(
     item: EvidenceItemPayload,
     *,
@@ -539,12 +560,33 @@ def _normalize_unstructured_service_claim(
     if not item.source_fragment_ids:
         return replace(item, publication_use="CONTEXT", service_state=None), "missing_raw_grounding"
 
+    # A place answer may add its place only when the other cited fragments already
+    # state every claimed service family; otherwise it must not carry the claim.
+    place_answer_ids = frozenset(
+        fragment_id
+        for fragment_id in item.source_fragment_ids
+        if fragment_id in fragment_texts
+        and _is_place_answer(
+            fragment_texts[fragment_id],
+            (reply_parent_context_by_fragment_id or {}).get(fragment_id, ""),
+        )
+    )
+    stated_families: set[str] = set().union(
+        *(
+            _detect_service_families(fragment_texts[fragment_id])
+            for fragment_id in item.source_fragment_ids
+            if fragment_id in fragment_texts and fragment_id not in place_answer_ids
+        )
+    )
+
     for fragment_id in item.source_fragment_ids:
         source_text = fragment_texts.get(fragment_id)
         if source_text is None:
             return replace(
                 item, publication_use="CONTEXT", service_state=None
             ), "missing_raw_grounding"
+        if fragment_id in place_answer_ids and claimed_families <= stated_families:
+            continue
 
         relation_conflict = _source_claim_relation_conflict(
             source_text,
