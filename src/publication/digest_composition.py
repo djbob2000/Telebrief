@@ -16,7 +16,15 @@ from src.publication.digest_presentation import (
     validate_digest_fact_ids,
 )
 
-COMPOSITION_POLICY_VERSION = "digest_composition_v9-same-situation-navigation"
+COMPOSITION_POLICY_VERSION = "digest_composition_v10-synthesis-cost-recency"
+
+# The writer synthesizes related facts into shared items, so the visible text
+# is much shorter than the sum of per-fact estimates. Production runs 385–398
+# rendered 0.48–0.58 of their estimate (about 2000 of 3900 characters), which
+# left half of the single-post budget unused and deferred most Stories. This
+# factor keeps a margin above the highest observed ratio; the writer still
+# fits Telegram's ceiling and the size-only repair call remains the backstop.
+_SYNTHESIS_COST_PERCENT = 65
 
 
 class DigestFactRelationKind(str, Enum):
@@ -1096,6 +1104,17 @@ def _priority(card: Any, fact: DigestFactRecord | None) -> int:
     return importance + urgency + current
 
 
+def _synthesized_cost(raw_cost: int) -> int:
+    # Integer ceiling of raw_cost * _SYNTHESIS_COST_PERCENT / 100.
+    return -(-raw_cost * _SYNTHESIS_COST_PERCENT // 100)
+
+
+def _record_recency(record: DigestFactRecord) -> float | None:
+    # Effective time may be a future schedule, so only source time counts.
+    moments = [t for t in (record.source_publication_time, record.observed_time) if t]
+    return max(moments).timestamp() if moments else None
+
+
 def _is_essential(card: Any, unit_priority: int) -> bool:
     raw = getattr(card, "importance", "medium")
     if isinstance(raw, (int, float)) and not isinstance(raw, bool):
@@ -1211,7 +1230,7 @@ def build_digest_composition(
         # Include full source-backed fact text plus a 54-character per-fact
         # allowance for attribution/labels/separators and a 24-character unit
         # allowance for item formatting. Never clip long facts in estimates.
-        content_cost = sum(len(r.text) + 54 for r in members) + 24
+        content_cost = _synthesized_cost(sum(len(r.text) + 54 for r in members) + 24)
         uid = _stable_id("composition", fact_ids or story_ids)
         rels = tuple(
             r for r in relations if r.left_fact_id in fact_ids and r.right_fact_id in fact_ids
@@ -1238,7 +1257,7 @@ def build_digest_composition(
         priority = _priority(card, None) if card is not None else 15
         # This is a story-level budget unit, not a new factual record: it uses
         # only the existing summary/supports and does not fabricate a claim.
-        summary_cost = len(summary) + 54 + 24 if summary else 0
+        summary_cost = _synthesized_cost(len(summary) + 54 + 24) if summary else 0
         all_units.append(
             DigestCompositionUnit(
                 _stable_id("story", (sid,)),
@@ -1308,9 +1327,24 @@ def build_digest_composition(
     for index, unit in enumerate(ranked):
         packages.setdefault(root(index), []).append(unit)
     package_list = list(packages.values())
+    # Many reports share one priority (run 398: 60 power/water Stories at 57).
+    # Among equals, the newest report goes first, so the digest reflects the
+    # situation at the cutoff instead of whichever ids sort lowest.
+    record_recency = {record.fact_id: _record_recency(record) for record in records}
+
+    def newest_first(package: list[DigestCompositionUnit]) -> float:
+        moments = [
+            moment
+            for unit in package
+            for fact_id in unit.fact_ids
+            if (moment := record_recency.get(fact_id)) is not None
+        ]
+        return -max(moments) if moments else float("inf")
+
     package_list.sort(
         key=lambda package: (
             -max(u.priority for u in package),
+            newest_first(package),
             min((u.rubric_id for u in package), default=""),
             min((u.unit_id for u in package), default=""),
         )
@@ -1392,6 +1426,7 @@ def build_digest_composition(
         key=lambda package: (
             -max(u.priority for u in package),
             id(package) not in first_package_ids,
+            newest_first(package),
         ),
     )
     for package in remaining:

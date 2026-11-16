@@ -144,7 +144,7 @@ def test_core_service_facts_are_admitted_before_secondary_rubric_breadth() -> No
     )
     candidates = [*power_reports, water_report, course, shop]
 
-    result = _compose(candidates, max_chars=800, reserved_chars=200)
+    result = _compose(candidates, max_chars=590, reserved_chars=200)
 
     core_story_ids = {card.id for card, _ in (*power_reports, water_report)}
     secondary_story_ids = {course[0].id, shop[0].id}
@@ -155,7 +155,7 @@ def test_core_service_facts_are_admitted_before_secondary_rubric_breadth() -> No
     water_unit = next(unit for unit in result.units if "story:water" in unit.story_ids)
     assert water_unit.support_ids == ("source:story:water",)
     assert water_unit.fact_ids == ("fact:story:water",)
-    assert result.estimated_visible_character_count <= 800
+    assert result.estimated_visible_character_count <= 590
 
 
 def test_useful_single_source_nonutility_fact_is_admitted_when_budget_has_room() -> None:
@@ -273,7 +273,7 @@ def test_russian_lookalikes_do_not_starve_grounded_service_facts(
         epistemic_kind="community_report",
     )
 
-    result = _compose([secondary, service], max_chars=270, reserved_chars=100)
+    result = _compose([secondary, service], max_chars=220, reserved_chars=100)
 
     assert "story:grounded-service" in result.admitted_story_ids
     assert secondary_id not in result.admitted_story_ids
@@ -426,3 +426,40 @@ def test_repeated_power_reports_do_not_outrank_higher_priority_safety_story() ->
 
     assert "story:explosion" in result.admitted_story_ids
     assert {c.id for c, _ in power_reports} & result.admitted_story_ids
+
+
+def test_equal_priority_reports_are_admitted_newest_first() -> None:
+    import datetime as dt
+    from dataclasses import replace
+
+    base = dt.datetime(2026, 11, 15, 7, 0, tzinfo=dt.UTC)
+    streets = ("Азмол", "Колония", "Лиски", "Горбенко", "Морозова", "Франко")
+    reports = []
+    for hour, street in enumerate(streets):
+        card, fact = _candidate(
+            f"story:power-{hour}",
+            "infrastructure",
+            "electricity",
+            f"Жители сообщают, что на улице {street} нет света.",
+        )
+        published = base + dt.timedelta(hours=2 * hour)
+        reports.append((card, replace(fact, source_published_at=published.isoformat())))
+
+    result = _compose(reports, max_chars=400, reserved_chars=70)
+
+    admitted = sorted(int(sid.rsplit("-", 1)[1]) for sid in result.admitted_story_ids)
+    assert admitted, "budget must admit at least one report"
+    assert len(admitted) < len(streets), "budget must defer some reports"
+    # The admitted set is exactly the newest reports, whatever their ids hash to.
+    assert admitted == list(range(len(streets) - len(admitted), len(streets)))
+
+
+def test_unit_cost_is_scaled_for_writer_synthesis() -> None:
+    text = "На улице Морозова свет включают через день."
+    result = _compose(
+        [_candidate("story:x", "infrastructure", "electricity", text)], max_chars=4096
+    )
+
+    raw = len(text) + 54 + 24
+    assert result.units[0].estimated_character_cost == -(-raw * 65 // 100)
+    assert result.units[0].estimated_character_cost < raw
