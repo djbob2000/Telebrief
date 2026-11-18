@@ -340,3 +340,69 @@ def test_lead_without_current_evidence_is_offered_current_body_supports():
 
     assert units[0]["unit_id"] == "LEAD"
     assert units[0]["support_ids"] == ["h", "c"]
+
+
+def test_trim_keeps_writer_claim_atoms_of_the_kept_sentences():
+    # Run 403 (18 Nov 2026): rebuilding atoms from whole prose sentences turned an
+    # untouched, valid sentence into a new UNSUPPORTED_CLAIM_ATOM blocker.
+    kept_sentence = "Жители Горы с самого утра сидят без света, и объяснений никто не услышал."
+    removed_sentence = "Другой житель добавил, что без электричества осталась и Слободка."
+    gora = ArticleClaimAtom(text="На Горе нет света с утра", cited_support_ids=("s1",))
+    slobodka = ArticleClaimAtom(text="На Слободке нет электричества", cited_support_ids=("s2",))
+    draft = StructuredArticleDraft(
+        title="Заголовок",
+        title_support_ids=("s1",),
+        lead="Лид.",
+        lead_support_ids=("s1",),
+        sections=(
+            ArticleSection(
+                heading="Раздел",
+                heading_support_ids=("s1",),
+                paragraphs=(
+                    ArticleParagraph(
+                        text=f"{kept_sentence} {removed_sentence}",
+                        cited_support_ids=("s1", "s2"),
+                        claims=(gora, slobodka),
+                    ),
+                ),
+            ),
+        ),
+    )
+    result = _result(_issue("SPEAKER_MULTIPLICITY_MISMATCH", "P001", removed_sentence))
+
+    outcome = _trim_unsupported_sentences(draft, result)
+
+    assert outcome is not None
+    paragraph = outcome[0].sections[0].paragraphs[0]
+    assert paragraph.text == kept_sentence
+    assert paragraph.cited_support_ids == ("s1", "s2")
+    assert paragraph.claims == (gora,)
+
+
+def test_trim_gives_a_kept_sentence_without_atoms_its_own_text_as_atom():
+    draft = _draft("Свет в нагорной части дали утром. Мост на улице Ленина закрыт до пятницы.")
+    draft = replace(
+        draft,
+        sections=(
+            replace(
+                draft.sections[0],
+                paragraphs=(
+                    replace(
+                        draft.sections[0].paragraphs[0],
+                        claims=(
+                            ArticleClaimAtom(
+                                text="Мост на Ленина закрыт до пятницы", cited_support_ids=("s1",)
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+    result = _result(_issue("MISSING_CLAIM_SUPPORT", "P001", "Мост закрыт до пятницы"))
+
+    outcome = _trim_unsupported_sentences(draft, result)
+
+    assert outcome is not None
+    claims = outcome[0].sections[0].paragraphs[0].claims
+    assert [claim.text for claim in claims] == ["Свет в нагорной части дали утром."]

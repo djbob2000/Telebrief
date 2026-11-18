@@ -347,6 +347,57 @@ def _trim_phantom_heading(heading: str, body_text: str) -> str | None:
     return f"{pre.strip()}: {joined}"
 
 
+def _kept_sentence_for_claim(
+    claim_text: str, sentences: Sequence[str], flagged: set[int]
+) -> int | None:
+    """The kept sentence a claim atom belongs to, or None when it may describe a removed one.
+
+    The atom goes with the kept sentence it overlaps most, and only when that overlap is
+    strictly larger than its overlap with every removed sentence; ties are dropped.
+    """
+    tokens = _claim_probe_tokens(claim_text)
+    best_kept: int | None = None
+    best_kept_overlap = 0
+    best_flagged_overlap = 0
+    for index, sentence in enumerate(sentences):
+        overlap = len(tokens & _claim_probe_tokens(sentence))
+        if index in flagged:
+            best_flagged_overlap = max(best_flagged_overlap, overlap)
+        elif overlap > best_kept_overlap:
+            best_kept, best_kept_overlap = index, overlap
+    return best_kept if best_kept_overlap > best_flagged_overlap else None
+
+
+def _claims_for_kept_sentences(
+    paragraph: ArticleParagraph,
+    sentences: Sequence[str],
+    flagged: set[int],
+) -> tuple[ArticleClaimAtom, ...]:
+    """Keep the writer's own claim atoms for the sentences that stay.
+
+    Claim Atoms are short, source-close validation metadata; a whole prose sentence
+    is not. Rebuilding atoms from sentences turned editorial connectives in untouched
+    sentences into new UNSUPPORTED_CLAIM_ATOM blockers. An original atom stays only
+    when it clearly belongs to a kept sentence; an atom that may describe a removed
+    sentence, or that matches no sentence, is dropped. A kept sentence left without
+    any atom gets itself as its atom, so no prose escapes validation.
+    """
+    claims: list[ArticleClaimAtom] = []
+    covered: set[int] = set()
+    for claim in paragraph.claims:
+        index = _kept_sentence_for_claim(claim.text, sentences, flagged)
+        if index is None:
+            continue
+        claims.append(claim)
+        covered.add(index)
+    for index, sentence in enumerate(sentences):
+        if index not in flagged and index not in covered:
+            claims.append(
+                ArticleClaimAtom(text=sentence, cited_support_ids=paragraph.cited_support_ids)
+            )
+    return tuple(claims)
+
+
 def _trim_unsupported_sentences(
     draft: StructuredArticleDraft,
     validation: ArticleValidationResult,
@@ -402,12 +453,7 @@ def _trim_unsupported_sentences(
                 ArticleParagraph(
                     text=" ".join(kept),
                     cited_support_ids=paragraph.cited_support_ids,
-                    claims=tuple(
-                        ArticleClaimAtom(
-                            text=sentence, cited_support_ids=paragraph.cited_support_ids
-                        )
-                        for sentence in kept
-                    ),
+                    claims=_claims_for_kept_sentences(paragraph, sentences, flagged),
                     generation_origin=paragraph.generation_origin,
                 )
             )
