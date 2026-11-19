@@ -143,3 +143,26 @@ def test_validator_accepts_the_canonical_spelling_for_a_variant_source():
     official = _official_area_source_texts([_support("ждут окончания перефрезки")], "berdyansk")
     assert official == ["ждут окончания переврезки"]
     assert _official_area_source_texts([_support("ждут окончания переврезки")], "berdyansk") == []
+
+
+def test_provider_name_is_corrected_in_prose_and_in_typographic_quotes():
+    # Article of 18 Nov 2026 printed the provider name with the residents' misspelling.
+    text = "У провайдеров «Онэт» и «Мир Телеком» снижена скорость; у Онэта не знают сроков."
+    assert standardize_edition_terminology(text, "berdyansk") == (
+        "У провайдеров «Онет» и «Мир Телеком» снижена скорость; у Онета не знают сроков."
+    )
+
+
+def test_quoted_speech_mentioning_the_variant_stays_exact():
+    text = "Житель написал: «в Онэт не знают, когда починят»."
+    assert standardize_edition_terminology(text, "berdyansk") == text
+
+
+def test_quoted_canonical_name_is_supported_by_a_variant_source():
+    from src.publication.article_claims import find_unsupported_claims
+
+    sources = ["В Онэт не знают когда интернет восстановится"]
+    assert find_unsupported_claims("У провайдера «Онет» снижена скорость.", sources) == ()
+    assert find_unsupported_claims("У провайдера «Онета» снижена скорость.", sources) == ()
+    unknown = find_unsupported_claims("У провайдера «Онит» снижена скорость.", sources)
+    assert [claim.raw for claim in unknown] == ["«Онит»"]

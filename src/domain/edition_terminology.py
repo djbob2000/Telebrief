@@ -23,6 +23,8 @@ _SLUG_RE = re.compile(r"[A-Za-z0-9_-]+")
 _TERM_RE = re.compile(r"[^\W\d_]{3,}", re.UNICODE)
 # Same direct-quote delimiters as the area slang standardizer.
 _QUOTED_SPAN_RE = re.compile(r"(«[^«»]*»|\"[^\"]*\"|“[^”]*”|„[^“”]*[“”])")
+# A word of a quoted name: capitalised or starting with a digit («7Телеком»).
+_NAME_WORD_RE = re.compile(r"^(?:[A-ZА-ЯЁЇІЄҐ][\w'’-]*|\d[\w-]*)$")
 
 
 @dataclass(frozen=True)
@@ -95,14 +97,27 @@ def _replace_term(term: EditionTerm, text: str) -> str:
     return term.pattern.sub(substitute, text)
 
 
+def _is_quoted_name(span: str) -> bool:
+    """Whether a quoted span is a short proper name («Онэт», «Мир Телеком»), not speech."""
+    words = span[1:-1].split()
+    return 1 <= len(words) <= 3 and all(_NAME_WORD_RE.match(word) for word in words)
+
+
 def apply_edition_terminology(text: str, terms: tuple[EditionTerm, ...]) -> str:
-    """Replace declared variants outside direct quotes, keeping case and endings."""
+    """Replace declared variants outside direct quotes, keeping case and endings.
+
+    A quoted short proper name, such as a provider or shop name in typographic
+    quotes, is typography rather than direct speech, so it is rewritten too.
+    """
     if not text or not terms:
         return text
     parts = _QUOTED_SPAN_RE.split(text)
-    for index in range(0, len(parts), 2):
+    for index, part in enumerate(parts):
+        if index % 2 and not _is_quoted_name(part):
+            continue
         for term in terms:
-            parts[index] = _replace_term(term, parts[index])
+            part = _replace_term(term, part)
+        parts[index] = part
     return "".join(parts)
 
 
@@ -120,3 +135,30 @@ def canonical_term_fields(edition_slug: str, text: str) -> list[str]:
         for term in load_edition_terminology(edition_slug)
         if term.pattern.search(text)
     ]
+
+
+@lru_cache(maxsize=1)
+def _profile_terms() -> tuple[EditionTerm, ...]:
+    """Terminology of every checked-in city profile."""
+    terms: list[EditionTerm] = []
+    for path in sorted(Path("data/city_profiles").glob("*.yaml")):
+        terms.extend(load_edition_terminology(path.stem))
+    return tuple(terms)
+
+
+def terminology_variant_spellings(text: str) -> tuple[str, ...]:
+    """Spell a canonical term back as each declared variant, keeping its ending.
+
+    Reader text uses the canonical spelling while sources keep the variant, so a
+    claim check that compares a quoted name («Онет») with its sources also tries
+    the variant spelling («Онэт»). This is a spelling fold like ё/е, not a new
+    source of support. Returns an empty tuple when no canonical stem occurs.
+    """
+    if not text:
+        return ()
+    spellings: list[str] = []
+    for term in _profile_terms():
+        reverse = _compile_term(term.canonical, term.variant)
+        if reverse.pattern.search(text):
+            spellings.append(_replace_term(reverse, text))
+    return tuple(dict.fromkeys(spellings))

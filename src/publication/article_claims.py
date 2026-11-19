@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Literal
 
+from src.domain.edition_terminology import terminology_variant_spellings
 from src.publication.article_semantic_lexicon import (
     canonical_semantic_concepts,
     canonicalize_semantic_token,
@@ -808,6 +809,17 @@ def _token_matches_any_support(tok: str, norm_supports: Sequence[str]) -> bool:
     return False
 
 
+def _quoted_term_in_supports(term: str, norm_supports: Sequence[str]) -> bool:
+    term_stemmed = _stemmed_text(term)
+    term_stem = _stem(term)
+    return any(
+        term in sup
+        or (term_stem and term_stem in sup)
+        or (term_stemmed and term_stemmed in _stemmed_text(sup))
+        for sup in norm_supports
+    )
+
+
 def find_unsupported_claims(
     text: str,
     support_texts: Sequence[str],
@@ -933,13 +945,10 @@ def find_unsupported_claims(
                         unsupported.append(claim)
 
         elif claim.kind == "quoted_term":
-            term_stemmed = _stemmed_text(claim.normalized)
-            term_stem = _stem(claim.normalized)
+            # A profile's canonical spelling («Онет») matches a source variant («Онэт»).
             if not any(
-                norm in sup
-                or (term_stem and term_stem in sup)
-                or (term_stemmed and term_stemmed in _stemmed_text(sup))
-                for sup in norm_supports
+                _quoted_term_in_supports(spelling, norm_supports)
+                for spelling in (norm, *terminology_variant_spellings(norm))
             ):
                 unsupported.append(claim)
 
