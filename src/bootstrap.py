@@ -10,6 +10,7 @@ otherwise demand DATABASE_URL on every startup.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from psycopg_pool import AsyncConnectionPool
@@ -18,6 +19,12 @@ from src.config_loader import DatabaseConfig
 from src.db.pool import close_pool, open_pool
 from src.db.schema_version import require_schema_compatible
 from src.db.uow import DatabaseUnitOfWork
+from src.llm_usage import (
+    LLMUsageRecord,
+    LLMUsageRecorder,
+    close_llm_usage_recorder,
+    install_llm_usage_recorder,
+)
 
 if TYPE_CHECKING:
     import procrastinate
@@ -39,9 +46,9 @@ if TYPE_CHECKING:
 # telegram_entities delivery payloads land version 39, edition situation
 # memory lands version 40, vector retention lands version 41, and the
 # storyline chronicle lands version 42, and the live refresh slot barrier
-# lands version 43.
+# lands version 43, and per-call LLM usage events land version 46.
 SCHEMA_VERSION_MINIMUM = 7
-SCHEMA_VERSION_MAXIMUM = 45
+SCHEMA_VERSION_MAXIMUM = 46
 
 
 __all__ = ["ApplicationInfrastructure", "build_infrastructure"]
@@ -59,15 +66,24 @@ class ApplicationInfrastructure:
         self.pool = pool
         self.uow = uow
         self.procrastinate_app = procrastinate_app
+        self.llm_usage_recorder: LLMUsageRecorder | None = None
+
+    async def _write_llm_usage(self, records: Sequence[LLMUsageRecord]) -> None:
+        from src.repositories.llm_usage import insert_llm_usage_events
+
+        async with self.uow.transaction() as conn:
+            await insert_llm_usage_events(conn, records)
 
     async def open(self) -> None:
-        """Open the Procrastinate application.
+        """Open the Procrastinate application and start LLM usage accounting.
 
         The pool must already be open (the schema gate in build_infrastructure
         runs over it); open() completes the final step of the startup sequence
         and stays the symmetric counterpart of close().
         """
         await self.procrastinate_app.open_async()
+        self.llm_usage_recorder = LLMUsageRecorder(self._write_llm_usage)
+        install_llm_usage_recorder(self.llm_usage_recorder)
 
     async def close(self) -> None:
         """Close Procrastinate first, then the pool.
@@ -79,6 +95,10 @@ class ApplicationInfrastructure:
         resources for no wall-clock gain.)
         """
         errors: list[BaseException] = []
+        recorder, self.llm_usage_recorder = self.llm_usage_recorder, None
+        if recorder is not None:
+            # Written before the pool closes; a failed write is logged, never raised.
+            await close_llm_usage_recorder(recorder)
         try:
             await self.procrastinate_app.close_async()
         except BaseException as exc:

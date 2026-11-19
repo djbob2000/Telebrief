@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Mapping, Sequence
 
 from src.editorial_models import StoryCard
+from src.llm_telemetry import llm_call_context
 from src.publication.article_claims import (
     ConcreteClaim,
     extract_concrete_claims,
@@ -4796,7 +4797,8 @@ class DigestNarrativeWriter:
             self._reasoning_effort,
             headroom_tokens=self._reasoning_headroom_tokens,
         )
-        raw_response = await self._provider.chat_completion(**chat_kwargs)
+        with llm_call_context(stage="digest_writer"):
+            raw_response = await self._provider.chat_completion(**chat_kwargs)
         cleaned = (raw_response or "").strip()
         if cleaned.startswith("```"):
             lines = cleaned.splitlines()
@@ -5016,10 +5018,11 @@ class DigestNarrativeWriter:
         )
 
         logger.info("Digest Pass 1: Generating full-text journalistic draft...")
-        raw_response = await self._provider.chat_completion(
-            messages=[{"role": "user", "content": prompt}],
-            model=model,
-        )
+        with llm_call_context(stage="digest_writer"):
+            raw_response = await self._provider.chat_completion(
+                messages=[{"role": "user", "content": prompt}],
+                model=model,
+            )
         clean_draft = _clean_markdown_fence(raw_response)
 
         # Pass 2: Conditional AI Editorial Condensation
@@ -5037,10 +5040,11 @@ class DigestNarrativeWriter:
                 target_chars=target_chars,
                 draft_text=clean_draft,
             )
-            raw_condensed = await self._provider.chat_completion(
-                messages=[{"role": "user", "content": condense_prompt}],
-                model=model,
-            )
+            with llm_call_context(stage="digest_condense"):
+                raw_condensed = await self._provider.chat_completion(
+                    messages=[{"role": "user", "content": condense_prompt}],
+                    model=model,
+                )
             clean_draft = _clean_markdown_fence(raw_condensed)
 
         # Final deterministic safety net
@@ -5412,7 +5416,8 @@ class DigestNarrativeWriter:
             headroom_tokens=self._reasoning_headroom_tokens,
         )
 
-        raw_response = await self._provider.chat_completion(**chat_kwargs)
+        with llm_call_context(stage="digest_writer"):
+            raw_response = await self._provider.chat_completion(**chat_kwargs)
 
         cleaned = (raw_response or "").strip()
         if cleaned.startswith("```"):

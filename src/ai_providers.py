@@ -22,6 +22,7 @@ from openai import BadRequestError as OpenAIBadRequestError
 from openai import InternalServerError as OpenAIInternalServerError
 
 from src.llm_telemetry import get_llm_call_context
+from src.llm_usage import record_llm_usage, usage_record_from_response
 
 GOOGLE_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 GOOGLE_MAX_OUTPUT_TOKENS = 65_536
@@ -1210,6 +1211,13 @@ class OpenAIProvider(AIProvider):
         )
         if not isinstance(reasoning_tokens, (int, float)):
             reasoning_tokens = None
+        usage_record = usage_record_from_response(
+            response,
+            provider=provider_label,
+            model=model,
+            elapsed_seconds=_elapsed,
+            finish_reason=finish_reason,
+        )
         self.last_metadata = {
             "actual_provider": provider_label,
             "actual_model": model,
@@ -1219,6 +1227,8 @@ class OpenAIProvider(AIProvider):
             "completion_tokens": getattr(usage, "completion_tokens", None) if usage else None,
             "total_tokens": getattr(usage, "total_tokens", None) if usage else None,
             "reasoning_tokens": reasoning_tokens,
+            "cached_tokens": usage_record.cached_tokens,
+            "cost_usd": usage_record.cost_usd,
         }
         self.logger.info(
             "← %s response: elapsed=%.1fs finish_reason=%s prompt_tokens=%s completion_tokens=%s",
@@ -1231,7 +1241,7 @@ class OpenAIProvider(AIProvider):
         call_context = get_llm_call_context()
         if call_context is not None:
             self.logger.info(
-                "llm_usage stage=%s prompt_hash=%s response_id=%s model=%s max_tokens=%s "
+                "llm_call stage=%s prompt_hash=%s response_id=%s model=%s max_tokens=%s "
                 "reasoning_effort=%s story_count=%s prompt_tokens=%s completion_tokens=%s "
                 "reasoning_tokens=%s finish_reason=%s",
                 call_context.stage,
@@ -1246,6 +1256,10 @@ class OpenAIProvider(AIProvider):
                 reasoning_tokens,
                 finish_reason or "?",
             )
+        try:
+            record_llm_usage(usage_record)
+        except Exception:  # noqa: BLE001 - accounting must never fail a model call
+            self.logger.warning("could not record LLM usage", exc_info=True)
         return result
 
     async def _handle_bad_request(

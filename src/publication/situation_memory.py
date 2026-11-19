@@ -623,8 +623,12 @@ async def update_situation_memory(
             kwargs, reasoning_effort, headroom_tokens=reasoning_headroom_tokens
         )
 
+        from src.llm_telemetry import llm_call_context
+
         try:
-            parsed = robust_extract_json(await provider.chat_completion(**kwargs))
+            with llm_call_context(stage="situation_memory"):
+                raw = await provider.chat_completion(**kwargs)
+            parsed = robust_extract_json(raw)
         except Exception as exc:  # noqa: BLE001 - memory is advisory; keep the last snapshot
             log.warning("situation memory update failed (%s: %s)", type(exc).__name__, exc)
             continue

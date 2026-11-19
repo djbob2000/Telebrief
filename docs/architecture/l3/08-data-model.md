@@ -26,6 +26,7 @@ group: "Платформа"
 | Прогон публикации | `publication_runs`, `publication_candidates`, `publication_selection_decisions`, `publication_inputs`, `publication_generation_attempts`, `publications` | [Дайджест](#l3-digest-detail), [Статья](#l3-article-detail) |
 | Доставка | `delivery_destinations`, `publication_delivery_payloads`, `publication_deliveries`, `publication_delivery_attempts` | ниже |
 | Долговременная память | `storylines`, `story_storyline_links`, `chronicle_entries`, `chronicle_periods`, `edition_situation_memory_snapshots`, `story_semantic_vectors` | [Хроника](#l3-period-review-detail), [Обслуживание](#l3-maintenance-detail) |
+| Учёт расходов на модели | `llm_usage_events` | [Модели](#l3-repositories) |
 | Очередь задач | `procrastinate_jobs`, `procrastinate_events`, `procrastinate_periodic_defers` и др. | Схема Procrastinate |
 | Прежние пути | `messages`, `legacy_imported_messages`, `claims`, `claim_*`, `story_claims` | [Риски](#l3-risks) |
 
@@ -89,6 +90,6 @@ erDiagram
 
 ### Implementation References:
 
-- **Telebrief:** `migrations/0002_domain_foundation.sql`, `0003_collection_bookkeeping.sql`, `0006_embeddings_stories.sql`, `0008_publications.sql`, `0028_publication_refresh_readiness.sql`, `0030_unified_publication_intents.sql`, `0040_edition_situation_memory.sql`, `0041_vector_retention.sql`, `0042_storyline_chronicle.sql`; `src/db/`, `src/repositories/`, `src/publication/repository.py`, `src/publication/readiness_repository.py`.
+- **Telebrief:** `migrations/0002_domain_foundation.sql`, `0003_collection_bookkeeping.sql`, `0006_embeddings_stories.sql`, `0008_publications.sql`, `0028_publication_refresh_readiness.sql`, `0030_unified_publication_intents.sql`, `0040_edition_situation_memory.sql`, `0041_vector_retention.sql`, `0042_storyline_chronicle.sql`, `0046_llm_usage_events.sql`; `src/db/`, `src/repositories/`, `src/publication/repository.py`, `src/publication/readiness_repository.py`.
 
 [↑ Основные компоненты (Уровень 1)](#l1-components)

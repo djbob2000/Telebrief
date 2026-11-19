@@ -46,6 +46,7 @@ from src.editorial_fallback import (
 from src.editorial_input import EditorialInputBuilder
 from src.editorial_models import EditorialAnalysis, PreparedBundle
 from src.editorial_writer import ArticleDraft, EditorialWriter
+from src.llm_telemetry import llm_call_context
 from src.publication.article_claims import clear_text_caches
 from src.publication.article_context import ArticleEditorialContext
 from src.publication.article_coverage_diagnostics import (
@@ -1687,15 +1688,16 @@ class ArticleGenerator:
                     try:
                         if not isinstance(self.provider, ProviderCascade):
                             raise RuntimeError("Event-First writer provider is not a cascade")
-                        return await self.provider.chat_completion_with_acceptance(
-                            messages=messages,
-                            model=self.model,
-                            temperature=article_temp,
-                            max_tokens=writer_max_tokens,
-                            reasoning_effort=writer_reasoning_effort,
-                            response_acceptor=accept_writer_response,
-                            max_semantic_rejections=1,
-                        )
+                        with llm_call_context(stage="article_writer"):
+                            return await self.provider.chat_completion_with_acceptance(
+                                messages=messages,
+                                model=self.model,
+                                temperature=article_temp,
+                                max_tokens=writer_max_tokens,
+                                reasoning_effort=writer_reasoning_effort,
+                                response_acceptor=accept_writer_response,
+                                max_semantic_rejections=1,
+                            )
                     finally:
                         self.last_generation_provider_attempts["writer"] = counts.to_metadata()
 

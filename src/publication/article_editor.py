@@ -14,6 +14,7 @@ from types import MappingProxyType
 from typing import Any, Callable, Literal, Mapping, Sequence, cast
 
 from src.ai_providers import AIProvider, capture_provider_attempts
+from src.llm_telemetry import llm_call_context
 from src.publication.article_context import ArticleEditorialContext, _support_framing
 from src.publication.article_coverage import ArticleCoveragePlan
 from src.publication.article_finalization import (
@@ -1201,17 +1202,18 @@ class ArticleEditor:
                 )
                 with capture_provider_attempts(self.provider) as counts:
                     try:
-                        response = await self.provider.chat_completion(
-                            messages=[
-                                {"role": "system", "content": system_prompt},
-                                {"role": "user", "content": user_prompt},
-                            ],
-                            model=self.model,
-                            temperature=self.temperature,
-                            max_tokens=self.max_output_tokens,
-                            reasoning_effort=resolved_reasoning,
-                            response_format={"type": "json_object"},
-                        )
+                        with llm_call_context(stage="article_editor"):
+                            response = await self.provider.chat_completion(
+                                messages=[
+                                    {"role": "system", "content": system_prompt},
+                                    {"role": "user", "content": user_prompt},
+                                ],
+                                model=self.model,
+                                temperature=self.temperature,
+                                max_tokens=self.max_output_tokens,
+                                reasoning_effort=resolved_reasoning,
+                                response_format={"type": "json_object"},
+                            )
                     finally:
                         self.last_provider_attempts.append(counts.to_metadata())
                 operation_error: str | None = None

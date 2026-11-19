@@ -9,6 +9,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from src.ai_providers import AIProvider, apply_reasoning_settings
+from src.llm_telemetry import llm_call_context
 from src.publication.digest_fact_labels import FACT_LABEL_INSTRUCTION, fact_labels_for_plan
 from src.publication.digest_narrative import (
     DIGEST_ITEM_BODY_MAX_CHARS,
@@ -705,7 +706,8 @@ class DigestEditor:
         ):
             raise DigestEditorContextBudgetError("DIGEST_EDITOR_CONTEXT_BUDGET")
         try:
-            raw_response = (await provider.chat_completion(**chat_kwargs) or "").strip()
+            with llm_call_context(stage="digest_editor"):
+                raw_response = (await provider.chat_completion(**chat_kwargs) or "").strip()
             json_match = _JSON_BLOCK_RE.search(raw_response)
             if json_match:
                 parsed = json.loads(json_match.group(1))
@@ -1326,7 +1328,8 @@ class DigestEditor:
         )
 
         try:
-            raw_response = await self._provider.chat_completion(**chat_kwargs)
+            with llm_call_context(stage="digest_editor"):
+                raw_response = await self._provider.chat_completion(**chat_kwargs)
             text_resp = (raw_response or "").strip()
             json_match = _JSON_BLOCK_RE.search(text_resp)
             if json_match:

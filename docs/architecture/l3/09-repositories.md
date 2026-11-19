@@ -86,6 +86,8 @@ group: "Платформа"
 
 `validate_model_allowed` (`src/ai_providers.py`) отклоняет генеративную модель, не объявленную в переменных `ENV_MODEL_VARS`, до сетевого запроса; суффикс вроде `:floor` при сравнении отбрасывается. Модель эмбеддингов этой проверкой не покрыта, а при пустом списке переменных проверка ничего не ограничивает ([Риски](#l3-risks)). Значения в `.env.example` — пример и могут отличаться от рабочих.
 
+**Учёт расходов.** Каждый завершённый запрос через `OpenAIProvider` (OpenRouter и OpenAI) записывается в `llm_usage_events`: стадия, модель, процесс-источник (`origin`, имя запущенного скрипта, например `worker.py` или `preview_article.py`), токены входа, кэша, выхода и reasoning и стоимость из `usage.cost` ответа OpenRouter. Стадию задаёт `llm_call_context` (`src/llm_telemetry.py`) в месте вызова: `event_triage`, `event_analysis`, `publication_selection`, `digest_writer`, `digest_condense`, `digest_editor`, `article_writer`, `article_editor`, `chronicle_week`, `chronicle_rollup`, `situation_memory`, `image_prompt`; вызовы без контекста (прежние пути) пишутся как `untagged`. `LLMUsageRecorder` (`src/llm_usage.py`) копит записи в памяти и пишет их одной транзакцией раз в 5 секунд; `ApplicationInfrastructure` ставит его при `open()` и дописывает остаток при `close()`. Ошибка записи только логируется и не влияет на вызов модели; строка лога `llm_usage` остаётся в любом случае. Не учитываются эмбеддинги, прямые запросы генерации картинок и провайдеры Google, Ollama и Anthropic. Отчёт: `scripts/llm_cost_report.py`.
+
 ### Где настройки
 
 Значения меняются в `config.yaml` (монтируется в контейнеры только для чтения) и `.env`; комментарии в `config.yaml` объясняют выбор значений. Документ называет ключ там, где описано его действие:

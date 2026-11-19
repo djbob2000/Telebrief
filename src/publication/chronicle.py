@@ -806,10 +806,14 @@ async def _call_model(
 
 
 async def _call_with_retry(log: logging.Logger, label: str, *args: Any, **kwargs: Any) -> Any:
+    from src.llm_telemetry import llm_call_context
+
     failures: list[str] = []
+    stage = "chronicle_week" if label.startswith("week ") else "chronicle_rollup"
     for attempt in (1, 2):
         try:
-            return await _call_model(*args, **kwargs)
+            with llm_call_context(stage=stage):
+                return await _call_model(*args, **kwargs)
         except Exception as exc:  # noqa: BLE001 - recorded, then the period fails closed
             failures.append(type(exc).__name__)
             log.warning(

@@ -17,6 +17,7 @@ import yaml
 
 from src.ai_providers import GoogleProvider, OpenAIProvider, validate_model_allowed
 from src.config_loader import Config
+from src.llm_telemetry import llm_call_context
 
 # Prompting references: https://ai.google.dev/gemini-api/docs/image-generation
 # Describe a coherent scene, specify photographic intent, and lock edit invariants.
@@ -388,15 +389,16 @@ class NewsImageGenerator:
         # Try prompt providers cascade
         for label, provider, model in self.prompt_providers:
             try:
-                response = await provider.chat_completion(
-                    messages=[
-                        {"role": "system", "content": system_instruction},
-                        {"role": "user", "content": user_content},
-                    ],
-                    model=model,
-                    max_tokens=8192,
-                    reasoning_effort="high",
-                )
+                with llm_call_context(stage="image_prompt"):
+                    response = await provider.chat_completion(
+                        messages=[
+                            {"role": "system", "content": system_instruction},
+                            {"role": "user", "content": user_content},
+                        ],
+                        model=model,
+                        max_tokens=8192,
+                        reasoning_effort="high",
+                    )
                 clean_prompt = response.strip().strip('"').strip("'")
                 if clean_prompt:
                     self.logger.info("Generated visual prompt for article using slot %s", label)
