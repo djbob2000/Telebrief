@@ -65,6 +65,21 @@ def singleton_recovery_fields(
 # provider timeout and exhausting the assignment on a runaway generation.
 SINGLETON_RECOVERY_MAX_OUTPUT_TOKENS = 8_192
 
+# Invalid reasons that a deterministic check, not the batch, produced: the story
+# alone gets the same input and the same check, so it is not re-sent alone and
+# goes straight to the ordinary retry backoff (none of 14 such calls recovered
+# on 2026-11-19).
+SINGLETON_UNRECOVERABLE_REASONS = frozenset({"unsupported_publish_extraction"})
+
+
+def singleton_recoverable_story_ids(result: StoryGateBatchResult) -> set[int]:
+    """Stories worth re-sending alone: missing ones, and invalid ones a batch can explain."""
+    return set(result.missing_story_ids) | {
+        story_id
+        for story_id in result.invalid_story_ids
+        if result.invalid_reasons.get(story_id) not in SINGLETON_UNRECOVERABLE_REASONS
+    }
+
 
 @dataclass(frozen=True)
 class ClaimedAuthorityTarget:
@@ -363,9 +378,7 @@ class EventAuthorityService:
                 result_by_id = {gate.story_id: gate for gate in result.results}
                 fence_lost = set(result.fence_lost_story_ids)
                 deferred = set(result.deferred_story_ids) - fence_lost
-                recoverable = (
-                    set(result.missing_story_ids) | set(result.invalid_story_ids)
-                ) - fence_lost
+                recoverable = singleton_recoverable_story_ids(result) - fence_lost
 
                 singleton_failures: dict[int, StoryGateBatchResult] = {}
                 recoverable_targets = [

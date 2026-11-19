@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
-from src.processing.event_authority import singleton_recovery_fields
+from src.processing.event_authority import (
+    singleton_recoverable_story_ids,
+    singleton_recovery_fields,
+)
 from src.processing.event_triage import StoryGateBatchResult
 
 
@@ -56,3 +59,15 @@ def test_recovered_singleton_is_reported():
     )
     assert fields["singleton_recovered"] is True
     assert fields["singleton_error_kind"] is None
+
+
+def test_rejected_extraction_is_not_re_sent_alone():
+    # A deterministic check rejected 8; alone it gets the same input and the same check.
+    result = _batch(
+        deferred_story_ids=(7, 8, 9),
+        missing_story_ids=(7,),
+        invalid_story_ids=(8, 9),
+        batch_error_kind="invalid_response",
+        invalid_reasons={8: "unsupported_publish_extraction", 9: "invalid_scope"},
+    )
+    assert singleton_recoverable_story_ids(result) == {7, 9}

@@ -1325,6 +1325,9 @@ class StoryTriageService:
 
         invalid_ids: list[int] = []
         invalid_reasons: dict[int, str] = {}
+        # Which checks turned a story's PUBLISH evidence into CONTEXT; logged
+        # for an invalid story so the cause is visible without the model answer.
+        rejection_details: dict[int, list[str]] = {}
         new_valid_results: list[StoryGateResult] = []
 
         def mark_invalid(story_id: int, reason: str) -> None:
@@ -1530,11 +1533,17 @@ class StoryTriageService:
                         edition_name=scope_config.name,
                         conversation_service_family_by_fragment_id=conversation_service_families,
                     )
-                    rejected_publish_extraction = any(
-                        pre_service_normalization.evidence_items[index].publication_use == "PUBLISH"
+                    publish_rejections = [
+                        reason
+                        for index, reason in zip(
+                            service_audit.rejected_evidence_indexes,
+                            service_audit.rejection_reasons,
+                            strict=True,
+                        )
+                        if pre_service_normalization.evidence_items[index].publication_use
+                        == "PUBLISH"
                         and brief_payload.evidence_items[index].publication_use != "PUBLISH"
-                        for index in service_audit.rejected_evidence_indexes
-                    )
+                    ]
                     brief_payload, withheld_context_detail = withhold_context_only_evidence(
                         brief_payload,
                         own_texts=story_own_texts,
@@ -1542,9 +1551,11 @@ class StoryTriageService:
                         scope=scope_config,
                         geo_context=geo_context,
                     )
-                    rejected_publish_extraction = (
-                        rejected_publish_extraction or withheld_context_detail
-                    )
+                    if withheld_context_detail:
+                        publish_rejections.append("context_only_detail")
+                    rejected_publish_extraction = bool(publish_rejections)
+                    if publish_rejections:
+                        rejection_details[s.story_id] = sorted(set(publish_rejections))
                     # Before the headline check: a place only the timeline or a reply
                     # parent names is cleared; the item stays PUBLISH.
                     brief_payload, _ = clear_context_only_service_locations(
@@ -1794,6 +1805,11 @@ class StoryTriageService:
                             "invalid_reasons": {
                                 str(story_id): invalid_reasons.get(story_id, "validation_failed")
                                 for story_id in invalid_story_ids
+                            },
+                            "rejection_details": {
+                                str(story_id): rejection_details[story_id]
+                                for story_id in invalid_story_ids
+                                if story_id in rejection_details
                             },
                             "prompt_hash": prompt_hash,
                             "error_kind": run_error_kind,

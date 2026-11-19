@@ -6,6 +6,10 @@ Single public taxonomy for service detection across processing and publication.
 from __future__ import annotations
 
 import re
+from functools import lru_cache
+from pathlib import Path
+
+import yaml
 
 SERVICE_FAMILY_STEMS: dict[str, frozenset[str]] = {
     "power": frozenset(
@@ -20,6 +24,10 @@ SERVICE_FAMILY_STEMS: dict[str, frozenset[str]] = {
             "трансформатор",
             "рэс",
             "горсвет",
+            # Residents report a power cut by its workarounds: a generator or
+            # a voltage stabilizer only exists to power something.
+            "генератор",
+            "стабилизатор",
             "power",
             "electric",
             "electricity",
@@ -469,7 +477,53 @@ def detect_service_families(text: str) -> frozenset[str]:
     # being used to write, a narrow connectivity cue rather than generic use.
     if re.search(r"\bчерез\s+него\s+пишу\b", text, re.IGNORECASE):
         detected.add("telecom")
+    # A provider named in a city profile («Юпитер у всех не работает»).
+    if matches_any_stem(tokens, profile_telecom_provider_names()):
+        detected.add("telecom")
+    # «Центр потух», «всё погасло» report the light going out, unless the
+    # remark names the service that went out («Юпитер погас»).
+    if not detected & SUPPLY_FAMILIES and _LIGHTS_OUT_RE.search(text):
+        detected.add("power")
     return frozenset(detected)
+
+
+# «погасить» (pay off a debt) is not a light going out, so only the past forms match.
+_LIGHTS_OUT_RE = re.compile(r"(?<!\w)(?:потух\w*|погас(?:л[аио])?)(?!\w)", re.IGNORECASE)
+
+
+@lru_cache(maxsize=1)
+def profile_telecom_provider_names() -> frozenset[str]:
+    """One-word internet and telecom provider names from every city profile.
+
+    Read from ``operational_context.connectivity``: each list there holds
+    entries with a ``name`` and ``aliases``. A multi-word alias is skipped,
+    since its separate words («Group», «Интернет») are not provider names.
+    The module holds no city data; a missing or malformed profile adds nothing.
+    """
+    names: set[str] = set()
+    for path in sorted(Path("data/city_profiles").glob("*.yaml")):
+        try:
+            with open(path, encoding="utf-8") as handle:
+                profile = yaml.safe_load(handle) or {}
+        except (OSError, yaml.YAMLError):
+            continue
+        context = profile.get("operational_context") if isinstance(profile, dict) else None
+        connectivity = context.get("connectivity") if isinstance(context, dict) else None
+        if not isinstance(connectivity, dict):
+            continue
+        for entries in connectivity.values():
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                aliases = entry.get("aliases")
+                candidates = [entry.get("name"), *(aliases if isinstance(aliases, list) else [])]
+                for candidate in candidates:
+                    tokens = semantic_tokens(str(candidate or ""))
+                    if len(tokens) == 1 and len(tokens[0]) >= 3:
+                        names.add(tokens[0])
+    return frozenset(names)
 
 
 def map_family_to_rubric(family: str) -> str | None:

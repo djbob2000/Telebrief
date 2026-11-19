@@ -131,6 +131,37 @@ async def test_failed_service_extraction_defers_instead_of_dropping_as_noise(mon
 
 
 @pytest.mark.asyncio
+async def test_rejected_extraction_logs_which_check_rejected_it(monkeypatch, caplog):
+    caplog.set_level("WARNING", logger="src.processing.event_triage")
+    await run_gate(
+        monkeypatch,
+        "В Бердянске на Павлова свет есть.",
+        [evidence("На Павлова нет воды.")],
+    )
+    [record] = [r for r in caplog.records if r.getMessage() == "event_first_gate_invalid_response"]
+    details = record.__dict__["rejection_details"]
+    assert list(details) == ["10"]
+    assert details["10"]  # the names of the checks, never source or model text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("source", "fact"),
+    [
+        ("В Бердянске Центр точно потух.", "В Центре нет света."),
+        ("Бердянск, Центр: сидим на генераторах, стабилизатор не помог.", "В Центре нет света."),
+        ("В Бердянске Юпитер у всех не работает.", "У абонентов Юпитера не работает интернет."),
+    ],
+)
+async def test_short_outage_remark_keeps_its_report(monkeypatch, source, fact):
+    # Residents name an outage by its sign or by the provider, not by the word «свет».
+    result, conn = await run_gate(monkeypatch, source, [evidence(fact)])
+    assert result.invalid_story_ids == ()
+    assert result.results[0].retention == "KEEP"
+    assert len(conn.decisions) == 1
+
+
+@pytest.mark.asyncio
 async def test_genuine_question_remains_noise_without_extraction_recovery(monkeypatch):
     result, _ = await run_gate(
         monkeypatch,
