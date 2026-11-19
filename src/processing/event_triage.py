@@ -310,9 +310,7 @@ For every Story return three judgments in the same result:
 2. retention: KEEP or DROP;
 3. enrichment: NONE, BRIEF, or ANALYZE.
 
-Scope is evaluated first. Source membership alone does not make an event local.
-An event in another city/region is OUT_OF_SCOPE unless the excerpts explicitly state a concrete consequence inside the configured focus area.
-Same-region, national importance, front-line direction names, and broad strategic relevance are not DIRECT_IMPACT by themselves.
+Scope is evaluated first, under the GEOGRAPHIC SCOPE RULES in the request.
 Mentions of places, districts, neighborhoods, or streets listed in the configured Focus Places or GEOGRAPHIC CONTEXT establish LOCAL scope, unless the same message explicitly places them in another city or region. District and neighborhood names repeat across cities.
 OUT_OF_SCOPE or UNCERTAIN is normalized to DROP+NONE without requiring a brief.
 
@@ -341,10 +339,8 @@ For LOCAL or DIRECT_IMPACT content:
 - Use community_report for useful community facts that are not themselves service availability/access states.
 - A sales offer, discount, product listing, seller phone number, or promotional price is EXCLUDE.
 - A resident describing the price they paid or the cost of coping with an outage is not a sales offer. Preserve the supported amount as community_report when it explains local lived experience; one price or price range does not establish a price increase.
-- Do not convert EXCLUDE commercial details into useful_details merely to preserve them.
 - Resident questions, resident answers, service availability, outage reports, and operational workarounds are not noise merely because they are conversational. Preserve current local actionable information about everyday civilian access to services.
 - Use resident_question for a resident asking whether/where/when/how something works when the excerpt itself does not provide the answer.
-- resident_question is CONTEXT, not PUBLISH.
 - A question alone MUST NOT create a service state.
 - If another fragment answers the question, represent the answer separately as service_access/community_report/official_statement as appropriate.
 - Do not infer trends such as "повышенный спрос" or "участились вопросы" from one question.
@@ -358,7 +354,7 @@ For LOCAL or DIRECT_IMPACT content:
 
 CONTEXT VS EVIDENCE & REPLY INHERITANCE:
 - source_fragment_ids must identify the exact source fragments whose own text directly supports the material claims in that evidence item. Never cite a reply fragment for a separate claim stated only by its parent.
-- Reply-parent text is supplied separately as unnumbered context, not as part of the reply's source text and not as citable support. It may clarify the referent, service, or local place in a clearly dependent reply (for example, "Да, минут десять назад").
+- Reply-parent text is supplied separately as unnumbered parent context, not as part of the reply's source text and not as citable support. It may clarify the referent, service, or local place in a clearly dependent reply (for example, "Да, минут десять назад").
 - A direct short answer may support the answer it gives. It does not support separate status, duration, cause, or other details stated only by the parent. If a parent-only fact has its own separately listed source fragment, cite that fragment; otherwise do not turn the parent-only fact into a PUBLISH claim for the reply.
 - Chronologically adjacent messages without an explicit reply link are CONTEXT_ONLY for interpreting tone and flow, and must NEVER serve as factual grounding for a claim. The only thing they may settle is which service a remark leaves unnamed, under the CHAT TIMELINE rule below.
 - An unanchored conversational remark with no local place mentions and no explicit reply-parent anchor is UNCERTAIN scope (normalizes to DROP), unless the CHAT TIMELINE rule below establishes where it happens.
@@ -376,8 +372,7 @@ CHAT TIMELINE:
 EVIDENCE SOURCE OWNERSHIP:
 - Every factual clause in an evidence item's text must be supported by its cited source_fragment_ids. Cite multiple IDs only when their own source texts support the corresponding parts of the item.
 - Do not copy an independent parent statement into a reply's evidence text. A reply may inherit only the missing referent/location needed to understand its own direct answer; it may not inherit the parent's event, status, duration, number, cause, or chronology.
-- When only the unnumbered parent context contains a claim, keep that claim out of the reply's PUBLISH evidence. Preserve other directly supported useful content in the Story.
-- Do not mark a useful direct reply CONTEXT solely because it uses a pronoun when the explicit parent makes the referent unambiguous. If the reply's own text gives a concrete local place and current status or duration (for example, parent: "no lights in the center for three days"; reply: "at the Third Beach it has been absent for three months"), retain it as KEEP/BRIEF and PUBLISH as a community_report. Resolve only the pronoun naturally from the parent, cite only the reply fragment, and preserve only the reply's own place, status, and duration. Do not copy the parent's place, status, duration, number, cause, or chronology. Use CONTEXT when the referent is genuinely ambiguous or the reply has no publishable detail of its own.
+- Do not mark a useful direct reply CONTEXT solely because it uses a pronoun when the explicit parent makes the referent unambiguous. If the reply's own text gives a concrete local place and current status or duration, retain it as KEEP/BRIEF and PUBLISH as a community_report. Resolve only the pronoun naturally from the parent, cite only the reply fragment, and preserve only the reply's own place, status, and duration. Do not copy the parent's place, status, duration, number, cause, or chronology. Use CONTEXT when the referent is genuinely ambiguous or the reply has no publishable detail of its own.
 - For this concrete exchange — parent: "В центре в другой половине, света уже нет 3 суток"; reply: "На 3 пляже его уже нету третий месяц" — output a PUBLISH community_report such as "По сообщению жителя, на 3-м пляже света нет уже третий месяц." The parent supplies only the referent "свет"; the reply supplies the place, current absence, and duration. Do not call the object unknown or use CONTEXT solely because the child wrote "его".
 - Preserve polarity from the primary reply. Parent: "На восьмухе свет не появился?"; reply: "По Павлова вроде как был так и остался и ещё где то появился" reports continued availability on Pavlova, with the author's uncertainty. It does not report a continuing outage. The question's negative wording is not the reply's status.
 - Preserve the role of a duration, not just its number. "Слободка 1 раз кажется тоже со светом побыла 3 дня" means an episode of availability lasting three days, reported tentatively. It does not mean one switch-on within a three-day observation period. Do not infer present availability from this past episode.
@@ -400,7 +395,7 @@ SERVICE-STATE CONTRACT:
 - If a workaround causes an explicitly stated service outcome, keep the coping action as separate evidence and attach service_state only to the evidence sentence that states the water/internet/banking/transport/etc. outcome.
 - For UNAVAILABLE, DEGRADED, or RESTRICTED, expected_now MUST be true and the excerpts must establish that the service is expected to operate now or explicitly describe a current failure/restriction.
 - Do not infer expected_now from the calendar or general season knowledge.
-- For SCHEDULED, basis must be scheduled_change, effective_from is required, and excerpts must cite an authoritative schedule, planned work, or utility announcement. NEVER assign SCHEDULED to chat gossip, jokes, or rumors.
+- For SCHEDULED, basis must be scheduled_change and effective_from is required.
 - Valid basis values: normal_operation, direct_failure, degraded_access, explicit_restriction, scheduled_change.
 - LOCAL or DIRECT_IMPACT MUST cite one or more exact scope_basis_fragment_ids from the Story excerpts that establish the local occurrence or concrete local consequence.
 
@@ -1050,8 +1045,7 @@ class StoryTriageService:
         prompt_lines = [
             contract_text,
             "",
-            f"Minimum confidence for a hard DROP: {min_ignore_confidence:g}. "
-            "Below this threshold, supply a faithful brief; keep background-only evidence CONTEXT.",
+            f"Minimum confidence for a hard DROP: {min_ignore_confidence:g}.",
             hint_text,
         ]
         rendered_timeline = timeline.render(s.story_id for s in uncached_stories)
