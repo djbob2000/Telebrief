@@ -663,6 +663,49 @@ class StoryGateResult:
         return "ANALYZE" if self.retention == "KEEP" else "IGNORE"
 
 
+# A dropped story that grew only by reposts of messages it already held keeps
+# its drop without a new Gate call. Shorter fragments are re-checked: a remark
+# such as «Свет дали» repeats as a genuinely new observation.
+GATE_REPEAT_REUSE_MIN_WORDS = 6
+
+
+def _gate_result_from_cache_row(row: tuple[Any, ...]) -> StoryGateResult | None:
+    """Build a Gate result from a stored decision row, or None when unusable.
+
+    Columns: story_id, scope_class, scope confidence, scope reason, retention,
+    enrichment, exclusion_reason, confidence, reason, brief_payload.
+    """
+    retention = str(row[4])
+    raw_brief = row[9]
+    try:
+        brief_payload = parse_event_payload(raw_brief) if raw_brief else None
+    except (TypeError, ValueError):
+        # A malformed legacy cache must be re-evaluated by Gate rather than
+        # becoming an apparently satisfied authority target.
+        return None
+
+    if retention == "KEEP" and (
+        brief_payload is None
+        or brief_payload.publishability not in {"news", "brief"}
+        or not any(item.publication_use == "PUBLISH" for item in brief_payload.evidence_items)
+    ):
+        return None
+
+    return StoryGateResult(
+        story_id=int(row[0]),
+        scope=str(row[1]),  # type: ignore[arg-type]
+        scope_confidence=float(row[2]),
+        scope_reason=str(row[3]),
+        retention=retention,  # type: ignore[arg-type]
+        enrichment=str(row[5]),  # type: ignore[arg-type]
+        exclusion_reason=row[6],
+        confidence=float(row[7]),
+        reason=str(row[8]),
+        brief_payload=brief_payload,
+        scope_basis_fragment_ids=(),
+    )
+
+
 _TRIAGE_ERROR_MESSAGE_LIMIT = 300
 _SECRET_TOKEN = re.compile(r"sk-[A-Za-z0-9_-]{8,}|Bearer\s+\S+", re.IGNORECASE)
 
@@ -792,12 +835,54 @@ class StoryTriageService:
             # for scope reasoning. A publication cutoff therefore requires a
             # fresh exact Gate snapshot; otherwise an older cache could have
             # incorporated a post-cutoff source item assigned before the target.
-            cached_results = (
-                {}
-                if source_cutoff_at is not None
-                else await self._lookup_cached_decisions(read_conn, effective_stories, scope_hash)
-            )
-            uncached_stories = [s for s in effective_stories if s.story_id not in cached_results]
+            fence_lost_ids: set[int] = set()
+            cached_results: dict[int, StoryGateResult] = {}
+            if source_cutoff_at is None:
+                cached_results = await self._lookup_cached_decisions(
+                    read_conn, effective_stories, scope_hash
+                )
+                # A drop whose story grew only by reposts is stored again for
+                # the new assignment, so authority sees the target satisfied.
+                repeat_decisions = await self._lookup_repeat_decisions(
+                    read_conn,
+                    [s for s in effective_stories if s.story_id not in cached_results],
+                    scope_hash=scope_hash,
+                    edition_id=edition_id,
+                )
+                if repeat_decisions:
+                    async with _get_conn() as write_conn:
+                        for story in effective_stories:
+                            repeat = repeat_decisions.get(story.story_id)
+                            if repeat is None:
+                                continue
+                            repeat_result, source_run_id = repeat
+                            if decision_fence is not None and not await decision_fence(
+                                write_conn, story.story_id, story.latest_assignment_id
+                            ):
+                                fence_lost_ids.add(story.story_id)
+                                continue
+                            await self._persist_decision(
+                                write_conn,
+                                run_id=source_run_id,
+                                result=repeat_result,
+                                edition_id=edition_id,
+                                assignment_id=story.latest_assignment_id,
+                                scope_hash=scope_hash,
+                            )
+                            cached_results[story.story_id] = repeat_result
+                    self.logger.info(
+                        "gate_repeat_reuse",
+                        extra={
+                            "edition_id": edition_id,
+                            "story_ids": sorted(repeat_decisions),
+                            "fence_lost_story_ids": sorted(fence_lost_ids),
+                        },
+                    )
+            uncached_stories = [
+                s
+                for s in effective_stories
+                if s.story_id not in cached_results and s.story_id not in fence_lost_ids
+            ]
 
             valid_results: list[StoryGateResult] = [
                 cached_results[s.story_id]
@@ -805,14 +890,13 @@ class StoryTriageService:
                 if s.story_id in cached_results
             ]
             deferred_ids: list[int] = []
-            fence_lost_ids: set[int] = set()
 
             if not uncached_stories:
                 if before_decision_persist is not None:
                     async with _get_conn() as write_conn:
                         for story in effective_stories:
-                            cached = cached_results[story.story_id]
-                            if cached.retention != "KEEP":
+                            cached = cached_results.get(story.story_id)
+                            if cached is None or cached.retention != "KEEP":
                                 continue
                             assignment_id = (
                                 assignment_id_by_story.get(
@@ -1755,75 +1839,13 @@ class StoryTriageService:
                         continue
                     if before_decision_persist is not None:
                         await before_decision_persist(write_conn, res, assignment_id)
-                    # Scope decision
-                    await write_conn.execute(
-                        """
-                        INSERT INTO story_edition_scope_decisions (
-                            triage_run_id,
-                            story_id,
-                            edition_id,
-                            latest_assignment_id,
-                            scope_version,
-                            scope_config_hash,
-                            scope_class,
-                            confidence,
-                            reason
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (
-                            story_id,
-                            latest_assignment_id,
-                            scope_version,
-                            scope_config_hash
-                        ) DO NOTHING
-                        """,
-                        (
-                            run_id,
-                            res.story_id,
-                            edition_id,
-                            assignment_id,
-                            SCOPE_VERSION,
-                            scope_hash,
-                            res.scope,
-                            res.scope_confidence,
-                            res.scope_reason,
-                        ),
-                    )
-
-                    # Gate V2 decision
-                    brief_json = (
-                        json.dumps(res.brief_payload.to_dict()) if res.brief_payload else None
-                    )
-                    await write_conn.execute(
-                        """
-                        INSERT INTO story_event_triage_decisions (
-                            run_id, story_id, latest_assignment_id, triage_version,
-                            scope_config_hash, decision, retention, enrichment,
-                            exclusion_reason, confidence, reason, brief_payload
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (story_id, latest_assignment_id, triage_version, scope_config_hash)
-                        DO UPDATE SET
-                            decision = EXCLUDED.decision,
-                            retention = EXCLUDED.retention,
-                            enrichment = EXCLUDED.enrichment,
-                            exclusion_reason = EXCLUDED.exclusion_reason,
-                            confidence = EXCLUDED.confidence,
-                            reason = EXCLUDED.reason,
-                            brief_payload = EXCLUDED.brief_payload
-                        """,
-                        (
-                            run_id,
-                            res.story_id,
-                            assignment_id,
-                            TRIAGE_VERSION,
-                            scope_hash,
-                            res.decision,
-                            res.retention,
-                            res.enrichment,
-                            res.exclusion_reason,
-                            res.confidence,
-                            res.reason,
-                            brief_json,
-                        ),
+                    await self._persist_decision(
+                        write_conn,
+                        run_id=run_id,
+                        result=res,
+                        edition_id=edition_id,
+                        assignment_id=assignment_id,
+                        scope_hash=scope_hash,
                     )
                     if res.retention == "KEEP":
                         await self._record_incident_links(write_conn, res)
@@ -2018,47 +2040,203 @@ class StoryTriageService:
 
         cached: dict[int, StoryGateResult] = {}
         async for row in cursor:
-            sid = int(row[0])
-            scope_cls = str(row[1])
-            scope_conf = float(row[2])
-            scope_reason = str(row[3])
-            retention = str(row[4])
-            enrichment = str(row[5])
-            ex_reason = row[6]
-            conf = float(row[7])
-            reason = str(row[8])
-            raw_brief = row[9]
-            try:
-                brief_payload = parse_event_payload(raw_brief) if raw_brief else None
-            except (TypeError, ValueError):
-                # A malformed legacy cache must be re-evaluated by Gate rather
-                # than becoming an apparently satisfied authority target.
-                continue
-
-            if retention == "KEEP" and (
-                brief_payload is None
-                or brief_payload.publishability not in {"news", "brief"}
-                or not any(
-                    item.publication_use == "PUBLISH" for item in brief_payload.evidence_items
-                )
-            ):
-                continue
-
-            cached[sid] = StoryGateResult(
-                story_id=sid,
-                scope=scope_cls,  # type: ignore[arg-type]
-                scope_confidence=scope_conf,
-                scope_reason=scope_reason,
-                retention=retention,  # type: ignore[arg-type]
-                enrichment=enrichment,  # type: ignore[arg-type]
-                exclusion_reason=ex_reason,
-                confidence=conf,
-                reason=reason,
-                brief_payload=brief_payload,
-                scope_basis_fragment_ids=(),
-            )
+            result = _gate_result_from_cache_row(row)
+            if result is not None:
+                cached[result.story_id] = result
 
         return cached
+
+    async def _lookup_repeat_decisions(
+        self,
+        conn: psycopg.AsyncConnection,
+        stories: list[StoryClusterState],
+        *,
+        scope_hash: str,
+        edition_id: int,
+    ) -> dict[int, tuple[StoryGateResult, int]]:
+        """Find drop decisions that still hold because only reposts arrived.
+
+        A story qualifies when its latest earlier decision (same Gate version,
+        scope config and scope version) is a DROP and every fragment assigned
+        since that decision repeats a fragment the story already held then:
+        the same fragment text, the same whole source message (so Gate's
+        same-message context is unchanged) and the same reply parent, compared
+        after case and whitespace folding. A shared sentence inside a different
+        message, such as a utility notice's closing line, is not a repeat.
+        Each repeated fragment must have at least ``GATE_REPEAT_REUSE_MIN_WORDS``
+        words: a short remark such as «Свет дали» can be a new observation, so
+        it is re-checked. Returns the earlier decision and the Gate run that
+        produced it.
+        """
+        if not stories:
+            return {}
+
+        cursor = await conn.execute(
+            """
+            WITH requested(story_id, assignment_id) AS (
+                SELECT * FROM unnest(%s::bigint[], %s::bigint[])
+            ), target AS (
+                SELECT r.story_id, r.assignment_id, sf.assigned_at
+                FROM requested r
+                JOIN story_fragments sf
+                  ON sf.id = r.assignment_id
+                 AND sf.story_id = r.story_id
+            ), previous AS (
+                SELECT DISTINCT ON (t.story_id)
+                       t.story_id, t.assignment_id, t.assigned_at,
+                       psf.id AS prev_assignment_id, psf.assigned_at AS prev_assigned_at,
+                       sesd.scope_class, sesd.confidence AS scope_confidence,
+                       sesd.reason AS scope_reason, setd.retention, setd.enrichment,
+                       setd.exclusion_reason, setd.confidence, setd.reason,
+                       setd.brief_payload, setd.run_id
+                FROM target t
+                JOIN story_event_triage_decisions setd
+                  ON setd.story_id = t.story_id
+                JOIN story_fragments psf
+                  ON psf.id = setd.latest_assignment_id
+                 AND psf.story_id = t.story_id
+                JOIN story_edition_scope_decisions sesd
+                  ON sesd.story_id = setd.story_id
+                 AND sesd.latest_assignment_id = setd.latest_assignment_id
+                 AND sesd.scope_config_hash = setd.scope_config_hash
+                WHERE setd.triage_version = %s
+                  AND setd.scope_config_hash = %s
+                  AND sesd.edition_id = %s
+                  AND sesd.scope_version = %s
+                  AND (psf.assigned_at, psf.id) < (t.assigned_at, t.assignment_id)
+                ORDER BY t.story_id, psf.assigned_at DESC, psf.id DESC
+            )
+            SELECT p.story_id, p.scope_class, p.scope_confidence, p.scope_reason,
+                   p.retention, p.enrichment, p.exclusion_reason,
+                   p.confidence, p.reason, p.brief_payload, p.run_id
+            FROM previous p
+            WHERE p.retention = 'DROP'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM story_fragments nsf
+                  JOIN source_fragments nf ON nf.id = nsf.fragment_id
+                  JOIN source_item_revisions nrv ON nrv.id = nf.source_item_revision_id
+                  JOIN source_items ni ON ni.id = nrv.source_item_id
+                  WHERE nsf.story_id = p.story_id
+                    AND (nsf.assigned_at, nsf.id) > (p.prev_assigned_at, p.prev_assignment_id)
+                    AND (nsf.assigned_at, nsf.id) <= (p.assigned_at, p.assignment_id)
+                    AND (
+                        cardinality(regexp_split_to_array(btrim(nf.text_content), '\\s+')) < %s
+                        OR NOT EXISTS (
+                            SELECT 1
+                            FROM story_fragments osf
+                            JOIN source_fragments ofr ON ofr.id = osf.fragment_id
+                            JOIN source_item_revisions orv ON orv.id = ofr.source_item_revision_id
+                            JOIN source_items oi ON oi.id = orv.source_item_id
+                            WHERE osf.story_id = p.story_id
+                              AND (osf.assigned_at, osf.id)
+                                  <= (p.prev_assigned_at, p.prev_assignment_id)
+                              AND lower(regexp_replace(btrim(ofr.text_content), '\\s+', ' ', 'g'))
+                                  = lower(regexp_replace(btrim(nf.text_content), '\\s+', ' ', 'g'))
+                              AND lower(regexp_replace(
+                                      btrim(COALESCE(orv.text_content, '')), '\\s+', ' ', 'g'))
+                                  = lower(regexp_replace(
+                                      btrim(COALESCE(nrv.text_content, '')), '\\s+', ' ', 'g'))
+                              AND oi.parent_item_id IS NOT DISTINCT FROM ni.parent_item_id
+                        )
+                    )
+              )
+            """,
+            (
+                [s.story_id for s in stories],
+                [s.latest_assignment_id for s in stories],
+                TRIAGE_VERSION,
+                scope_hash,
+                edition_id,
+                SCOPE_VERSION,
+                GATE_REPEAT_REUSE_MIN_WORDS,
+            ),
+        )
+
+        reusable: dict[int, tuple[StoryGateResult, int]] = {}
+        async for row in cursor:
+            result = _gate_result_from_cache_row(row)
+            if result is not None and result.retention == "DROP":
+                reusable[result.story_id] = (result, int(row[10]))
+        return reusable
+
+    async def _persist_decision(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        run_id: int,
+        result: StoryGateResult,
+        edition_id: int,
+        assignment_id: int,
+        scope_hash: str,
+    ) -> None:
+        """Write the scope and Gate rows of one decision for one assignment."""
+        await conn.execute(
+            """
+            INSERT INTO story_edition_scope_decisions (
+                triage_run_id,
+                story_id,
+                edition_id,
+                latest_assignment_id,
+                scope_version,
+                scope_config_hash,
+                scope_class,
+                confidence,
+                reason
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (
+                story_id,
+                latest_assignment_id,
+                scope_version,
+                scope_config_hash
+            ) DO NOTHING
+            """,
+            (
+                run_id,
+                result.story_id,
+                edition_id,
+                assignment_id,
+                SCOPE_VERSION,
+                scope_hash,
+                result.scope,
+                result.scope_confidence,
+                result.scope_reason,
+            ),
+        )
+
+        brief_json = json.dumps(result.brief_payload.to_dict()) if result.brief_payload else None
+        await conn.execute(
+            """
+            INSERT INTO story_event_triage_decisions (
+                run_id, story_id, latest_assignment_id, triage_version,
+                scope_config_hash, decision, retention, enrichment,
+                exclusion_reason, confidence, reason, brief_payload
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (story_id, latest_assignment_id, triage_version, scope_config_hash)
+            DO UPDATE SET
+                decision = EXCLUDED.decision,
+                retention = EXCLUDED.retention,
+                enrichment = EXCLUDED.enrichment,
+                exclusion_reason = EXCLUDED.exclusion_reason,
+                confidence = EXCLUDED.confidence,
+                reason = EXCLUDED.reason,
+                brief_payload = EXCLUDED.brief_payload
+            """,
+            (
+                run_id,
+                result.story_id,
+                assignment_id,
+                TRIAGE_VERSION,
+                scope_hash,
+                result.decision,
+                result.retention,
+                result.enrichment,
+                result.exclusion_reason,
+                result.confidence,
+                result.reason,
+                brief_json,
+            ),
+        )
 
     async def _load_recent_subject_hints(
         self,
