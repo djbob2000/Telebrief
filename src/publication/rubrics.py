@@ -17,6 +17,7 @@ from src.domain.service_taxonomy import (
     map_family_to_rubric,
 )
 from src.editorial_models import StoryCard
+from src.llm_telemetry import llm_call_context
 
 logger = logging.getLogger(__name__)
 
@@ -362,12 +363,13 @@ class DigestRubricClassifier:
                 card_texts = [story_classification_text(c) for c in unresolved_cards]
                 all_texts = rubric_texts + card_texts
 
-                all_vectors = await self.provider.embed_many(
-                    all_texts,
-                    model=self.model,
-                    dimensions=self.dimensions,
-                    purpose="story_document",
-                )
+                with llm_call_context(stage="rubric_embedding"):
+                    all_vectors = await self.provider.embed_many(
+                        all_texts,
+                        model=self.model,
+                        dimensions=self.dimensions,
+                        purpose="story_document",
+                    )
 
                 num_rubrics = len(rubric_texts)
                 rubric_vectors = all_vectors[:num_rubrics]
@@ -381,12 +383,13 @@ class DigestRubricClassifier:
             else:
                 # Warm path: embed only unresolved cards
                 card_texts = [story_classification_text(c) for c in unresolved_cards]
-                card_vectors = await self.provider.embed_many(
-                    card_texts,
-                    model=self.model,
-                    dimensions=self.dimensions,
-                    purpose="story_document",
-                )
+                with llm_call_context(stage="rubric_embedding"):
+                    card_vectors = await self.provider.embed_many(
+                        card_texts,
+                        model=self.model,
+                        dimensions=self.dimensions,
+                        purpose="story_document",
+                    )
                 cached_dict = self._rubric_vector_cache.get(cache_key, {})
 
             # 3. Match each card vector to highest similarity rubric

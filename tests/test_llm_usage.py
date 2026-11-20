@@ -4,15 +4,20 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import datetime as dt
 import logging
 from decimal import Decimal
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 import src.llm_usage as llm_usage
-from src.ai_providers import OpenAIProvider
+from src import image_generator
+from src.ai_providers import GoogleProvider, OpenAIProvider
+from src.embedding_providers import OpenRouterEmbeddingProvider
+from src.image_generator import NewsImageGenerator
 from src.llm_telemetry import llm_call_context
 from src.llm_usage import (
     UNTAGGED_STAGE,
@@ -233,3 +238,305 @@ def test_cost_report_formats_shares_and_unpriced_calls():
         [("2026-11-18", "event_triage", Decimal("1.5")), ("2026-11-19", "untagged", 1)]
     )
     assert "2026-11-18" in daily and "1.5000" in daily
+
+
+NON_CHAT_STAGES = ("image_generation", "embedding", "rubric_embedding", "claim_embedding")
+
+
+def test_cost_report_shows_every_non_chat_stage():
+    from scripts.llm_cost_report import format_daily_stages, format_summary, usage_row
+
+    rows = [usage_row((stage, 3, 100, 0, 0, 0, Decimal("0.5"), 0)) for stage in NON_CHAT_STAGES]
+
+    summary = format_summary(rows, "stage")
+    daily = format_daily_stages(
+        [("2026-11-19", stage, Decimal("0.5")) for stage in NON_CHAT_STAGES]
+    )
+
+    for stage in NON_CHAT_STAGES:
+        assert stage in summary
+        assert stage in daily
+
+
+# --- Non-chat paid calls: embeddings, cover images and native Google responses ---
+
+_REQUEST = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+EMBEDDING_MODEL = "qwen/qwen3-embedding-8b:floor"
+COVER_JPEG = b"\xff\xd8\xff\xe0cover-jpeg"
+COVER_B64 = base64.b64encode(COVER_JPEG).decode()
+IMAGE_ONLY_404 = (
+    '{"error":{"message":"meta/muse-image is an image generation model and cannot be used '
+    'with the chat/completions endpoint. Use the /api/v1/images endpoint instead.","code":404}}'
+)
+
+
+async def _recorded(action, *, writer=None):
+    """Run ``action`` with a recorder installed; return its result and the rows written."""
+    written: list[LLMUsageRecord] = []
+
+    async def default_writer(records):
+        written.extend(records)
+
+    recorder = LLMUsageRecorder(writer or default_writer, flush_delay=3600)
+    install_llm_usage_recorder(recorder)
+    try:
+        result = await action()
+    finally:
+        await close_llm_usage_recorder(recorder)
+    return result, written
+
+
+async def _broken_writer(records):
+    raise RuntimeError("db down")
+
+
+class _Embeddings:
+    def __init__(self, response):
+        self._response = response
+
+    async def create(self, **kwargs):
+        return self._response
+
+
+def _embedding_provider() -> OpenRouterEmbeddingProvider:
+    usage = SimpleNamespace(prompt_tokens=40, total_tokens=40, model_extra={"cost": 0.0002})
+    data = [SimpleNamespace(index=i, embedding=[0.1, 0.2]) for i in range(2)]
+    provider = OpenRouterEmbeddingProvider(
+        api_key="test-key", logger=logging.getLogger("test_llm_usage")
+    )
+    provider.client = SimpleNamespace(
+        embeddings=_Embeddings(SimpleNamespace(data=data, usage=usage))
+    )
+    return provider
+
+
+@pytest.mark.asyncio
+async def test_embedding_batch_is_recorded_under_embedding_stage():
+    provider = _embedding_provider()
+
+    async def action():
+        with llm_call_context(stage="embedding"):
+            return await provider.embed_many(
+                ["first fragment", "second fragment"],
+                purpose="story_document",
+                model=EMBEDDING_MODEL,
+                dimensions=2,
+            )
+
+    vectors, written = await _recorded(action)
+
+    assert vectors == [[0.1, 0.2], [0.1, 0.2]]
+    [record] = written
+    assert record.stage == "embedding"
+    assert record.provider == "OpenRouter"
+    assert record.model == EMBEDDING_MODEL
+    assert record.prompt_tokens == 40
+    assert record.completion_tokens is None
+    assert record.cost_usd == pytest.approx(0.0002)
+    assert record.elapsed_ms is not None
+
+
+@pytest.mark.asyncio
+async def test_embedding_batch_succeeds_when_usage_write_fails():
+    provider = _embedding_provider()
+
+    async def action():
+        with llm_call_context(stage="embedding"):
+            return await provider.embed_many(
+                ["first fragment", "second fragment"],
+                purpose="story_document",
+                model=EMBEDDING_MODEL,
+                dimensions=2,
+            )
+
+    vectors, written = await _recorded(action, writer=_broken_writer)
+
+    assert vectors == [[0.1, 0.2], [0.1, 0.2]]
+    assert written == []
+
+
+def _http_routes(monkeypatch, routes: dict[str, httpx.Response]) -> list[str]:
+    """Answer every httpx post whose URL contains a route key with that canned response."""
+    calls: list[str] = []
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return None
+
+        async def post(self, url, json, headers=None):
+            calls.append(url)
+            return routes[next(key for key in routes if key in url)]
+
+    monkeypatch.setattr(image_generator.httpx, "AsyncClient", FakeClient)
+    return calls
+
+
+def _json_reply(status: int, body: dict) -> httpx.Response:
+    return httpx.Response(status, json=body, request=_REQUEST)
+
+
+def _cover_generator(*, openrouter_key: str) -> NewsImageGenerator:
+    config = SimpleNamespace(
+        openrouter_api_key=openrouter_key,
+        openrouter_base_url="https://openrouter.ai/api/v1",
+        openrouter_model="",
+        openrouter_image_model="meta/muse-image",
+        google_api_keys=[] if openrouter_key else ["g1"],
+        settings=SimpleNamespace(ai_model="m"),
+    )
+    return NewsImageGenerator(config, logging.getLogger("test"))  # type: ignore[arg-type]
+
+
+def _chat_cover_reply() -> httpx.Response:
+    body = {
+        "id": "gen-cover-1",
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "images": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{COVER_B64}"},
+                        }
+                    ],
+                }
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 20,
+            "completion_tokens": 1290,
+            "total_tokens": 1310,
+            "cost": 0.0412,
+        },
+    }
+    return _json_reply(200, body)
+
+
+@pytest.mark.asyncio
+async def test_cover_image_chat_call_is_recorded_with_cost(monkeypatch, tmp_path):
+    _http_routes(monkeypatch, {"chat/completions": _chat_cover_reply()})
+    generator = _cover_generator(openrouter_key="test-key")
+
+    path, written = await _recorded(
+        lambda: generator.generate_image("a street", output_dir=tmp_path)
+    )
+
+    assert path is not None and path.read_bytes() == COVER_JPEG
+    [record] = written
+    assert record.stage == "image_generation"
+    assert record.provider == "OpenRouter"
+    assert record.model == "meta/muse-image"
+    assert record.response_id == "gen-cover-1"
+    assert record.completion_tokens == 1290
+    assert record.cost_usd == pytest.approx(0.0412)
+
+
+@pytest.mark.asyncio
+async def test_image_only_model_records_only_the_images_api_call(monkeypatch, tmp_path):
+    images_body = {
+        "created": 1700000000,
+        "data": [{"b64_json": COVER_B64}],
+        "usage": {"prompt_tokens": 20, "completion_tokens": 0, "total_tokens": 20, "cost": 0.04},
+    }
+    calls = _http_routes(
+        monkeypatch,
+        {
+            "chat/completions": httpx.Response(404, text=IMAGE_ONLY_404, request=_REQUEST),
+            "/images": _json_reply(200, images_body),
+        },
+    )
+    generator = _cover_generator(openrouter_key="test-key")
+
+    path, written = await _recorded(
+        lambda: generator.generate_image("a street", output_dir=tmp_path)
+    )
+
+    assert path is not None and path.read_bytes() == COVER_JPEG
+    assert [url.rsplit("/", 1)[1] for url in calls] == ["completions", "images"]
+    [record] = written  # the rejected chat attempt is not billed, so it is not a row
+    assert record.stage == "image_generation"
+    assert record.model == "meta/muse-image"
+    assert record.cost_usd == pytest.approx(0.04)
+
+
+@pytest.mark.asyncio
+async def test_cover_image_succeeds_when_usage_write_fails(monkeypatch, tmp_path):
+    _http_routes(monkeypatch, {"chat/completions": _chat_cover_reply()})
+    generator = _cover_generator(openrouter_key="test-key")
+
+    path, written = await _recorded(
+        lambda: generator.generate_image("a street", output_dir=tmp_path),
+        writer=_broken_writer,
+    )
+
+    assert path is not None and path.read_bytes() == COVER_JPEG
+    assert written == []
+
+
+@pytest.mark.asyncio
+async def test_native_gemini_cover_is_recorded_with_tokens_and_no_cost(monkeypatch, tmp_path):
+    monkeypatch.setenv("GEMINI_IMAGE_MODEL", "google/gemini-3.1-flash-lite-image:floor")
+    body = {
+        "candidates": [{"content": {"parts": [{"inlineData": {"data": COVER_B64}}]}}],
+        "usageMetadata": {
+            "promptTokenCount": 15,
+            "candidatesTokenCount": 1290,
+            "totalTokenCount": 1305,
+        },
+    }
+    _http_routes(monkeypatch, {"generateContent": _json_reply(200, body)})
+    generator = _cover_generator(openrouter_key="")
+
+    path, written = await _recorded(
+        lambda: generator.generate_image("a street", output_dir=tmp_path)
+    )
+
+    assert path is not None and path.read_bytes() == COVER_JPEG
+    [record] = written
+    assert record.stage == "image_generation"
+    assert record.provider == "Google Gemini"
+    assert record.model == "google/gemini-3.1-flash-lite-image:floor"
+    assert record.prompt_tokens == 15
+    assert record.completion_tokens == 1290
+    assert record.cost_usd is None
+
+
+class _GoogleCompletions:
+    async def create(self, **kwargs):
+        usage = SimpleNamespace(prompt_tokens=7, completion_tokens=3, total_tokens=10)
+        return SimpleNamespace(
+            id="g-1",
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"), finish_reason="stop")],
+            usage=usage,
+        )
+
+
+@pytest.mark.asyncio
+async def test_google_chat_call_is_recorded_without_reported_cost(monkeypatch):
+    monkeypatch.setattr("src.ai_providers.validate_model_allowed", lambda model: None)
+    provider = GoogleProvider(api_key="test-key", logger=logging.getLogger("test_llm_usage"))
+    provider.client = SimpleNamespace(chat=SimpleNamespace(completions=_GoogleCompletions()))
+
+    async def action():
+        with llm_call_context(stage="image_prompt"):
+            return await provider.chat_completion(
+                messages=[{"role": "user", "content": "hi"}],
+                model="gemini-3.7-flash",
+            )
+
+    text, written = await _recorded(action)
+
+    assert text == "ok"
+    [record] = written
+    assert record.stage == "image_prompt"
+    assert record.provider == "Google Gemini"
+    assert record.model == "gemini-3.7-flash"
+    assert record.prompt_tokens == 7
+    assert record.cost_usd is None

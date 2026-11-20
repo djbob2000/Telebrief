@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from src.db.uow import DatabaseUnitOfWork
 from src.editorial_models import EditorialAnalysis
 from src.embedding_providers import EmbeddingProvider
+from src.llm_telemetry import llm_call_context
 from src.repositories.archive import ArchiveMatchCandidate, ArchiveRepository
 
 logger = logging.getLogger(__name__)
@@ -79,12 +80,13 @@ class HistoricalContextRetriever:
         for card in analysis.cards:
             query_text = f"{card.topic}\n{card.summary}"
             try:
-                query_vector = await self.embedding_provider.embed(
-                    query_text,
-                    purpose="claim_query",
-                    model=self.model,
-                    dimensions=self.dimensions,
-                )
+                with llm_call_context(stage="claim_embedding"):
+                    query_vector = await self.embedding_provider.embed(
+                        query_text,
+                        purpose="claim_query",
+                        model=self.model,
+                        dimensions=self.dimensions,
+                    )
                 async with self.uow.transaction() as conn:
                     candidates = await self.repository.search_similar(
                         conn,

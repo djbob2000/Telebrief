@@ -92,11 +92,12 @@ def usage_record_from_response(
     elapsed_seconds: float | None,
     finish_reason: str | None,
 ) -> LLMUsageRecord:
-    """Build a record from a chat-completion response and the current call context.
+    """Build a record from a provider response and the current call context.
 
-    OpenRouter returns ``usage.cost`` (USD credits) and
-    ``usage.prompt_tokens_details.cached_tokens`` on every chat completion; other
-    providers leave those fields empty.
+    Works for chat completions, embeddings and image responses alike: OpenRouter
+    returns ``usage.cost`` (USD credits) on each of them, and
+    ``usage.prompt_tokens_details.cached_tokens`` on chat completions; other
+    providers leave those fields empty, so their rows carry tokens and no cost.
     """
     usage = _field(response, "usage")
     context = get_llm_call_context()
@@ -190,6 +191,32 @@ async def close_llm_usage_recorder(recorder: LLMUsageRecorder) -> None:
     if _recorder is recorder:
         _recorder = None
     await recorder.close()
+
+
+def record_call_usage(
+    response: Any,
+    *,
+    provider: str,
+    model: str,
+    elapsed_seconds: float | None,
+) -> None:
+    """Record a non-chat response (embedding, image, native Gemini) under the current stage.
+
+    Same contract as the chat path: the usage is logged and buffered, and nothing
+    here may raise into the model call, whatever the response looks like.
+    """
+    try:
+        record_llm_usage(
+            usage_record_from_response(
+                response,
+                provider=provider,
+                model=model,
+                elapsed_seconds=elapsed_seconds,
+                finish_reason=None,
+            )
+        )
+    except Exception:  # noqa: BLE001 - accounting must never fail a model call
+        logger.warning("could not record LLM usage", exc_info=True)
 
 
 def record_llm_usage(record: LLMUsageRecord) -> None:

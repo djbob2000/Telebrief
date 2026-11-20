@@ -21,7 +21,7 @@ nav: "Инструкции для оператора"
 | Резервная копия базы и восстановление | `docs/operations/database-backup.md`, `scripts/backup_to_mega.sh` |
 | Миграции схемы | `scripts/migrate.py` (запускается сервисом `telebrief-migrate` перед стартом) |
 | Превью дайджеста и статьи без доставки | `scripts/preview_digest.py`, `scripts/preview_article.py` |
-| Расходы на модели по стадиям, моделям, процессам и дням (только чтение) | `scripts/llm_cost_report.py --days 7 [--by stage\|model\|origin\|day]` |
+| Расходы на модели по стадиям (включая `embedding` и `image_generation`), моделям, процессам и дням (только чтение) | `scripts/llm_cost_report.py --days 7 [--by stage\|model\|origin\|day]` |
 
 </div>
 

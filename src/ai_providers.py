@@ -22,7 +22,7 @@ from openai import BadRequestError as OpenAIBadRequestError
 from openai import InternalServerError as OpenAIInternalServerError
 
 from src.llm_telemetry import get_llm_call_context
-from src.llm_usage import record_llm_usage, usage_record_from_response
+from src.llm_usage import record_call_usage, record_llm_usage, usage_record_from_response
 
 GOOGLE_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 GOOGLE_MAX_OUTPUT_TOKENS = 65_536
@@ -1426,6 +1426,12 @@ class GoogleProvider(AIProvider):
         _record_provider_transport_attempt()
         response = await self.client.chat.completions.create(**create_kwargs)
         _elapsed = time.monotonic() - _t0
+        record_call_usage(
+            response,
+            provider="Google Gemini",
+            model=normalized_model,
+            elapsed_seconds=_elapsed,
+        )
         result = _extract_chat_completion_text(response, self.logger, "Google Gemini")
         usage = response.usage
         self.logger.info(
@@ -1578,6 +1584,18 @@ class AnthropicProvider(AIProvider):
 
         stop_reason = data.get("stop_reason")
         usage = data.get("usage") or {}
+        record_call_usage(
+            {
+                "id": data.get("id"),
+                "usage": {
+                    "prompt_tokens": usage.get("input_tokens"),
+                    "completion_tokens": usage.get("output_tokens"),
+                },
+            },
+            provider="Anthropic",
+            model=model,
+            elapsed_seconds=None,
+        )
         self.logger.debug(
             "Anthropic response: stop_reason=%s input_tokens=%s output_tokens=%s",
             stop_reason,

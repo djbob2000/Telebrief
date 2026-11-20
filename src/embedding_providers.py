@@ -24,12 +24,14 @@ The key is never logged: it lives only in the client configuration.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Sequence
 from typing import Any, Literal, Protocol
 
 from openai import AsyncOpenAI
 
 from src.ai_providers import GOOGLE_BASE_URL, OPENROUTER_BASE_URL
+from src.llm_usage import record_call_usage
 
 __all__ = [
     "EMBEDDING_PURPOSES",
@@ -132,6 +134,7 @@ class GoogleGeminiEmbeddingProvider:
     ) -> list[float]:
         """One input -> one vector of exactly ``dimensions`` floats."""
         _require_purpose(purpose)
+        started = time.monotonic()
         try:
             response = await self.client.embeddings.create(
                 model=model,
@@ -142,6 +145,12 @@ class GoogleGeminiEmbeddingProvider:
             raise EmbeddingProviderError(
                 f"{self.provider_label} embedding request failed for model {model!r}: {type(exc).__name__}"
             ) from exc
+        record_call_usage(
+            response,
+            provider=self.provider_label,
+            model=model,
+            elapsed_seconds=time.monotonic() - started,
+        )
         data = getattr(response, "data", None)
         if not data:
             raise EmbeddingProviderError(
@@ -161,6 +170,7 @@ class GoogleGeminiEmbeddingProvider:
         if not texts:
             return []
         _require_purpose(purpose)
+        started = time.monotonic()
         try:
             response = await self.client.embeddings.create(
                 model=model,
@@ -171,6 +181,12 @@ class GoogleGeminiEmbeddingProvider:
             raise EmbeddingProviderError(
                 f"{self.provider_label} batch embedding request failed for model {model!r}: {type(exc).__name__}"
             ) from exc
+        record_call_usage(
+            response,
+            provider=self.provider_label,
+            model=model,
+            elapsed_seconds=time.monotonic() - started,
+        )
         data = getattr(response, "data", None)
         if not data or len(data) != len(texts):
             raise EmbeddingProviderError(
@@ -217,6 +233,7 @@ class OpenRouterEmbeddingProvider:
     ) -> list[float]:
         """One input -> one vector of exactly ``dimensions`` floats."""
         _require_purpose(purpose)
+        started = time.monotonic()
         try:
             response = await self.client.embeddings.create(
                 model=model,
@@ -227,6 +244,12 @@ class OpenRouterEmbeddingProvider:
             raise EmbeddingProviderError(
                 f"{self.provider_label} embedding request failed for model {model!r}: {type(exc).__name__}"
             ) from exc
+        record_call_usage(
+            response,
+            provider=self.provider_label,
+            model=model,
+            elapsed_seconds=time.monotonic() - started,
+        )
         data = getattr(response, "data", None)
         if not data:
             raise EmbeddingProviderError(
@@ -246,6 +269,7 @@ class OpenRouterEmbeddingProvider:
         if not texts:
             return []
         _require_purpose(purpose)
+        started = time.monotonic()
         try:
             response = await self.client.embeddings.create(
                 model=model,
@@ -256,6 +280,12 @@ class OpenRouterEmbeddingProvider:
             raise EmbeddingProviderError(
                 f"{self.provider_label} batch embedding request failed for model {model!r}: {type(exc).__name__}"
             ) from exc
+        record_call_usage(
+            response,
+            provider=self.provider_label,
+            model=model,
+            elapsed_seconds=time.monotonic() - started,
+        )
         data = getattr(response, "data", None)
         if not data or len(data) != len(texts):
             raise EmbeddingProviderError(
@@ -302,6 +332,7 @@ class OpenAIEmbeddingProvider:
     ) -> list[float]:
         """One input -> one vector of exactly ``dimensions`` floats."""
         _require_purpose(purpose)
+        started = time.monotonic()
         try:
             response = await self.client.embeddings.create(
                 model=model,
@@ -312,6 +343,12 @@ class OpenAIEmbeddingProvider:
             raise EmbeddingProviderError(
                 f"{self.provider_label} embedding request failed for model {model!r}: {type(exc).__name__}"
             ) from exc
+        record_call_usage(
+            response,
+            provider=self.provider_label,
+            model=model,
+            elapsed_seconds=time.monotonic() - started,
+        )
         data = getattr(response, "data", None)
         if not data:
             raise EmbeddingProviderError(
@@ -331,6 +368,7 @@ class OpenAIEmbeddingProvider:
         if not texts:
             return []
         _require_purpose(purpose)
+        started = time.monotonic()
         try:
             response = await self.client.embeddings.create(
                 model=model,
@@ -341,6 +379,12 @@ class OpenAIEmbeddingProvider:
             raise EmbeddingProviderError(
                 f"{self.provider_label} batch embedding request failed for model {model!r}: {type(exc).__name__}"
             ) from exc
+        record_call_usage(
+            response,
+            provider=self.provider_label,
+            model=model,
+            elapsed_seconds=time.monotonic() - started,
+        )
         data = getattr(response, "data", None)
         if not data or len(data) != len(texts):
             raise EmbeddingProviderError(

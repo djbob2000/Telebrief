@@ -14,6 +14,7 @@ import psycopg
 
 from src.domain.event_pipeline import SourceFragment
 from src.embedding_providers import EmbeddingProvider
+from src.llm_telemetry import llm_call_context
 from src.repositories.embeddings import FragmentEmbeddingRepository
 
 logger = logging.getLogger(__name__)
@@ -150,12 +151,13 @@ class FragmentEmbeddingService:
                     input_chars=total_chars,
                 )
                 try:
-                    vectors = await provider.embed_many(
-                        batch_texts,
-                        purpose="story_document",
-                        model=model,
-                        dimensions=dimensions,
-                    )
+                    with llm_call_context(stage="embedding"):
+                        vectors = await provider.embed_many(
+                            batch_texts,
+                            purpose="story_document",
+                            model=model,
+                            dimensions=dimensions,
+                        )
                     await self.repo.record_batch_completion(conn, batch_id, status="succeeded")
                 except Exception as exc:
                     await self.repo.record_batch_completion(

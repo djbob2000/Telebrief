@@ -18,6 +18,7 @@ from procrastinate.types import JSONValue
 from src.config_loader import load_config
 from src.embedding_providers import create_embedding_provider
 from src.jobs.app import procrastinate_app
+from src.llm_telemetry import llm_call_context
 from src.processing.cluster_index import ClusterIndex, ClusterIndexCache
 from src.processing.conversation import (
     ThinFragmentRouting,
@@ -314,12 +315,14 @@ async def _process_event_revisions(
 
     async def _embed_batch(batch: EmbeddingBatch) -> list[list[float]]:
         try:
-            return await emb_provider.embed_many(
-                list(batch.texts),
-                purpose="story_document",
-                model=emb_cfg.model,
-                dimensions=emb_cfg.dimensions,
-            )
+            with llm_call_context(stage="embedding"):
+                vectors = await emb_provider.embed_many(
+                    list(batch.texts),
+                    purpose="story_document",
+                    model=emb_cfg.model,
+                    dimensions=emb_cfg.dimensions,
+                )
+            return vectors
         except Exception as exc:
             async with runtime.uow.transaction() as conn:
                 await emb_service.record_batch_completion(

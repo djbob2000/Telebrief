@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import time
 from collections.abc import Sequence
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -18,6 +19,7 @@ import yaml
 from src.ai_providers import GoogleProvider, OpenAIProvider, validate_model_allowed
 from src.config_loader import Config
 from src.llm_telemetry import llm_call_context
+from src.llm_usage import record_call_usage
 
 # Prompting references: https://ai.google.dev/gemini-api/docs/image-generation
 # Describe a coherent scene, specify photographic intent, and lock edit invariants.
@@ -214,6 +216,29 @@ def _extract_images_api_bytes(data: dict) -> Optional[bytes]:
         if isinstance(b64_str, str) and b64_str:
             return base64.b64decode(b64_str)
     return None
+
+
+def _gemini_usage_body(data: dict) -> dict[str, Any]:
+    """Map a native Gemini response's usageMetadata onto the OpenAI-style usage fields."""
+    meta = data.get("usageMetadata") or {}
+    return {
+        "usage": {
+            "prompt_tokens": meta.get("promptTokenCount"),
+            "completion_tokens": meta.get("candidatesTokenCount"),
+            "total_tokens": meta.get("totalTokenCount"),
+        }
+    }
+
+
+def _record_image_usage(body: Any, *, provider: str, model: str, started: float) -> None:
+    """Record one successful image response under the image_generation stage."""
+    with llm_call_context(stage="image_generation"):
+        record_call_usage(
+            body,
+            provider=provider,
+            model=model,
+            elapsed_seconds=time.monotonic() - started,
+        )
 
 
 def _requires_images_api(status_code: int, body: str) -> bool:
@@ -478,10 +503,12 @@ class NewsImageGenerator:
                     "Trying OpenRouter image slot with model %s", self.openrouter_image_model
                 )
                 async with httpx.AsyncClient(timeout=90.0) as client:
+                    started = time.monotonic()
                     resp = await client.post(
                         openrouter_url, json=openrouter_payload, headers=headers
                     )
                     if _requires_images_api(resp.status_code, resp.text):
+                        started = time.monotonic()
                         resp = await client.post(
                             f"{self.openrouter_base_url.rstrip('/')}/images",
                             json=_images_api_payload(
@@ -489,11 +516,16 @@ class NewsImageGenerator:
                             ),
                             headers=headers,
                         )
-                        images_api_bytes = (
-                            _extract_images_api_bytes(resp.json())
-                            if resp.status_code == 200
-                            else None
-                        )
+                        images_api_bytes = None
+                        if resp.status_code == 200:
+                            images_api_body = resp.json()
+                            _record_image_usage(
+                                images_api_body,
+                                provider="OpenRouter",
+                                model=self.openrouter_image_model,
+                                started=started,
+                            )
+                            images_api_bytes = _extract_images_api_bytes(images_api_body)
                         if images_api_bytes:
                             target_file.write_bytes(images_api_bytes)
                             self.logger.info(
@@ -515,7 +547,14 @@ class NewsImageGenerator:
                             resp.text[:200],
                         )
                     else:
-                        openrouter_bytes = _extract_openrouter_image_bytes(resp.json())
+                        chat_body = resp.json()
+                        _record_image_usage(
+                            chat_body,
+                            provider="OpenRouter",
+                            model=self.openrouter_image_model,
+                            started=started,
+                        )
+                        openrouter_bytes = _extract_openrouter_image_bytes(chat_body)
                         if openrouter_bytes:
                             target_file.write_bytes(openrouter_bytes)
                             self.logger.info(
@@ -565,6 +604,7 @@ class NewsImageGenerator:
             }
             try:
                 async with httpx.AsyncClient(timeout=45.0) as client:
+                    started = time.monotonic()
                     resp = await client.post(url, json=payload)
                     if resp.status_code != 200:
                         self.logger.warning(
@@ -576,6 +616,12 @@ class NewsImageGenerator:
                         continue
 
                     data = resp.json()
+                    _record_image_usage(
+                        _gemini_usage_body(data),
+                        provider="Google Gemini",
+                        model=configured_image_model,
+                        started=started,
+                    )
                     candidates = data.get("candidates", [])
                     if not candidates:
                         self.logger.warning("Google image slot %d returned no candidates", idx)
