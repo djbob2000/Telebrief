@@ -59,6 +59,12 @@ jobs:
           --health-retries 5
     env:
       DATABASE_URL: postgresql://telebrief:password@localhost:5432/telebrief_test
+      # Several tests load config.yaml, which refuses to start without these.
+      # The suite makes no network calls, so placeholders are enough.
+      TELEGRAM_API_ID: "1"
+      TELEGRAM_API_HASH: ci-placeholder
+      TELEGRAM_BOT_TOKEN: ci-placeholder
+      OPENROUTER_API_KEY: ci-placeholder
 
     steps:
     - name: Checkout code
@@ -126,13 +132,14 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install ruff==0.17.4 safety==3.7.0
+        pip install ruff==0.17.4 pip-audit==2.10.1
 
     - name: Run security checks (Ruff security rules)
       run: ruff check --select S src/
 
-    - name: Run Safety (dependency security check)
-      run: safety check --json
+    - name: Audit app dependencies (pip-audit)
+      # Audits what the Docker image installs, not this job's own tools.
+      run: pip-audit -r requirements.txt --progress-spinner off
 
   website-build:
     name: Website Build Check
