@@ -153,7 +153,9 @@ services:
         max-file: "3"
 
   postgres:
-    image: pgvector/pgvector:pg18
+    # PostgreSQL 19 lives in its own volume (pgdata19). The PostgreSQL 18 data
+    # stays in the old postgres_data volume as the rollback copy.
+    image: pgvector/pgvector:pg19
     container_name: telebrief-postgres
     restart: unless-stopped
     environment:
@@ -161,7 +163,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-telebrief}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
     volumes:
-      - postgres_data:/var/lib/postgresql
+      - pgdata19:/var/lib/postgresql
     # This VM also runs Coolify and builds other sites, so keep PostgreSQL's
     # resident and per-query memory conservative until host metrics justify more.
     command:
@@ -195,5 +197,5 @@ services:
       retries: 5
 
 volumes:
-  postgres_data:
+  pgdata19:
   telebrief_auth:

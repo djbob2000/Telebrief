@@ -11,7 +11,7 @@ group: "Платформа"
 Компоненты простыми словами — в [Основных компонентах](#l1-components); соответствие названий документа и кода — в [глоссарии](#l1-names).
 
 ::: tldr
-**TL;DR для разработчика.** Один Python-репозиторий `Telebrief` (Python 3.14, async), один образ Docker на пять процессов Compose, PostgreSQL 18 с pgvector как единственное хранилище и очередь задач (Procrastinate). Модели — через OpenRouter; генеративные — строго из списка в `.env`. Эта документация лежит в `docs/` того же репозитория, собирается в один `index.html` и в образ не входит.
+**TL;DR для разработчика.** Один Python-репозиторий `Telebrief` (Python 3.14, async), один образ Docker на пять процессов Compose, PostgreSQL 19 с pgvector как единственное хранилище и очередь задач (Procrastinate). Модели — через OpenRouter; генеративные — строго из списка в `.env`. Эта документация лежит в `docs/` того же репозитория, собирается в один `index.html` и в образ не входит.
 :::
 
 ### Части репозитория
@@ -38,7 +38,7 @@ group: "Платформа"
 | Telegram-бот и канал | python-telegram-bot, Bot API | Команды владельца, публикация в канал, уведомления |
 | Длинные статьи | Telegra.ph API | Страница статьи, ссылка на неё — в канал |
 | LLM и эмбеддинги | `openai` SDK → OpenRouter | Gate, Rich Analysis, отбор, автор, редактор, эмбеддинги |
-| База данных | PostgreSQL 18 + pgvector (`pgvector/pgvector:pg18`), psycopg 3, psycopg-pool | Все данные, векторы фрагментов и сюжетов |
+| База данных | PostgreSQL 19 + pgvector (`pgvector/pgvector:pg19`), psycopg 3, psycopg-pool | Все данные, векторы фрагментов и сюжетов |
 | Очередь задач | Procrastinate (в той же PostgreSQL) | Сбор, обработка, Gate, публикация, обслуживание, периодические задачи |
 | Браузер | Playwright (Chromium) | Сбор Facebook; сейчас выключен |
 | MCP | `mcp`, uvicorn | MCP-сервер в процессе `telebrief-app` |

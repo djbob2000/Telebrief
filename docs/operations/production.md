@@ -54,7 +54,7 @@ Keep the existing Telegram destination: bot `@berdiansk_news_digest_bot` publish
 
 The Compose stack contains:
 
-- `postgres`: PostgreSQL 18 with pgvector;
+- `postgres`: PostgreSQL 19 with pgvector;
 - `telebrief-migrate`: one-shot `python scripts/migrate.py` after PostgreSQL is healthy;
 - `telebrief-app` and three workers: `telebrief-worker`, `telebrief-processing-worker`, and `telebrief-authority-worker`.
 
@@ -62,7 +62,7 @@ All app and worker services wait for the migration service to complete successfu
 
 | Data | Compose mount | Handling |
 | --- | --- | --- |
-| Database | `postgres_data` named volume | Production records and job state; back up before restore or destructive changes. |
+| Database | `pgdata19` named volume (PostgreSQL 19). The PostgreSQL 18 volume `postgres_data` is kept as the rollback copy. | Production records and job state; back up before restore or destructive changes. |
 | Telegram/Facebook auth | `telebrief_auth` named volume and `./sessions` | Sensitive authentication state; transfer only over a protected channel. |
 | Application files | `./data` and `./logs` | Persistent app data and logs. |
 | Runtime config | `./config.yaml` mounted read-only | Confirm the deployed revision and config before changing it. |

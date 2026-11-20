@@ -1,6 +1,6 @@
 # Database Backup and Disaster Recovery
 
-Telebrief uses PostgreSQL 18 with `pgvector` for multisource news, editorial drafts, archives, and task queues. This document explains how database backups work, how to configure automated off-site cloud uploads to **Mega.nz** via `rclone`, and how to perform a disaster recovery restore.
+Telebrief uses PostgreSQL 19 with `pgvector` for multisource news, editorial drafts, archives, and task queues. This document explains how database backups work, how to configure automated off-site cloud uploads to **Mega.nz** via `rclone`, and how to perform a disaster recovery restore.
 
 ---
 

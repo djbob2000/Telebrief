@@ -1582,7 +1582,7 @@ sequenceDiagram
 </tr>
 <tr>
 <td><code>postgres</code></td>
-<td><code>pgvector/pgvector:pg18</code></td>
+<td><code>pgvector/pgvector:pg19</code></td>
 <td>—</td>
 <td><code>max_connections=50</code></td>
 </tr>
@@ -2884,7 +2884,7 @@ erDiagram
 <h2>Репозитории и стек</h2>
 <p>Компоненты простыми словами — в <a href="#l1-components">Основных компонентах</a>; соответствие названий документа и кода — в <a href="#l1-names">глоссарии</a>.</p>
 <blockquote class="tldr">
-<p><strong>TL;DR для разработчика.</strong> Один Python-репозиторий <code>Telebrief</code> (Python 3.14, async), один образ Docker на пять процессов Compose, PostgreSQL 18 с pgvector как единственное хранилище и очередь задач (Procrastinate). Модели — через OpenRouter; генеративные — строго из списка в <code>.env</code>. Эта документация лежит в <code>docs/</code> того же репозитория, собирается в один <code>index.html</code> и в образ не входит.</p>
+<p><strong>TL;DR для разработчика.</strong> Один Python-репозиторий <code>Telebrief</code> (Python 3.14, async), один образ Docker на пять процессов Compose, PostgreSQL 19 с pgvector как единственное хранилище и очередь задач (Procrastinate). Модели — через OpenRouter; генеративные — строго из списка в <code>.env</code>. Эта документация лежит в <code>docs/</code> того же репозитория, собирается в один <code>index.html</code> и в образ не входит.</p>
 </blockquote>
 <h3>Части репозитория</h3>
 <div class="tw">
@@ -2958,7 +2958,7 @@ erDiagram
 </tr>
 <tr>
 <td>База данных</td>
-<td>PostgreSQL 18 + pgvector (<code>pgvector/pgvector:pg18</code>), psycopg 3, psycopg-pool</td>
+<td>PostgreSQL 19 + pgvector (<code>pgvector/pgvector:pg19</code>), psycopg 3, psycopg-pool</td>
 <td>Все данные, векторы фрагментов и сюжетов</td>
 </tr>
 <tr>

@@ -73,7 +73,7 @@ sequenceDiagram
 | `telebrief-processing-worker` | `python -m src.worker` | `processing`, `collection`, `enrichment`, `default` | 1 |
 | `telebrief-authority-worker` | `python -m src.worker` | `authority` | 2 |
 | `telebrief-migrate` | `python scripts/migrate.py` | — (один раз перед стартом) | — |
-| `postgres` | `pgvector/pgvector:pg18` | — | `max_connections=50` |
+| `postgres` | `pgvector/pgvector:pg19` | — | `max_connections=50` |
 
 </div>
 

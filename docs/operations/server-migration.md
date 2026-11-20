@@ -64,7 +64,7 @@ ssh -i "$OCI_SSH_KEY" -N \
 
 Текущий [`docker-compose.yml`](../../docker-compose.yml) собирает приложение из корневого `Dockerfile` через `build: .` и запускает:
 
-- `postgres` (`pgvector/pgvector:pg18`) с постоянным volume `postgres_data`;
+- `postgres` (`pgvector/pgvector:pg19`) с постоянным volume `pgdata19` (PostgreSQL 18 остаётся в volume `postgres_data` как копия для отката);
 - одноразовый `telebrief-migrate` с `python scripts/migrate.py`;
 - `telebrief-app` и три worker-сервиса: `telebrief-worker`, `telebrief-processing-worker`, `telebrief-authority-worker`;
 - постоянный `telebrief_auth`, а также bind mount `config.yaml`, `sessions/`, `data/` и `logs/`.

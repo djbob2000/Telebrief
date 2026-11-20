@@ -525,14 +525,14 @@ Keep `host` on `127.0.0.1`. Telebrief logs a warning at startup if you bind anyw
 
 ## 🚀 Multisource Production Deployment & Operations
 
-Telebrief runs as an asynchronous, event-driven multi-source ingestion and publication system backed by PostgreSQL 18 (+ pgvector) and Procrastinate.
+Telebrief runs as an asynchronous, event-driven multi-source ingestion and publication system backed by PostgreSQL 19 (+ pgvector) and Procrastinate.
 
 ### Architecture Overview
 
 ```text
 telebrief-app     -> Bot commands, MCP endpoints, and scheduler facade
 telebrief-worker  -> Procrastinate background queue (collection, enrichment, publication)
-postgres          -> PostgreSQL 18 with pgvector (domain storage, vectors, job queue)
+postgres          -> PostgreSQL 19 with pgvector (domain storage, vectors, job queue)
 ```
 
 ### 1. Database Migrations
