@@ -121,11 +121,75 @@ _CENTER_EXCLUSION_SUFFIXES_RE = re.compile(
 )
 
 
+# Adjective endings that turn a place name into a street or other adjective
+# (Севастопольская). "-ськом" is not here: it is the Ukrainian instrumental of a
+# city in "-ськ" («під Бердянськом»), never an adjective.
+_ADJECTIVE_ENDINGS = (
+    "ский",
+    "ская",
+    "ское",
+    "ские",
+    "ський",
+    "ська",
+    "ське",
+    "ські",
+    "ському",
+    "ского",
+    "ського",
+    "ской",
+)
+_ANCHOR_NOTE_RE = re.compile(r"\s*\([^)]*\)")
+_UK_TO_RU_FOLD = str.maketrans(
+    {"і": "и", "ї": "и", "ы": "и", "є": "е", "ґ": "г", "ь": None, "'": None}
+)
+_WORD_ENDING_CHARS = "аеиоуэюяй"
+_QUOTE_CHARS = '«»"„“”'
+
+
+def _anchor_core(anchor: str) -> str:
+    """Drop a parenthetical note: «Осипенко (село Бердянского района)» → «Осипенко»."""
+    return _ANCHOR_NOTE_RE.sub("", anchor).strip()
+
+
+def _fold_uk_ru(norm_text: str) -> str:
+    """Fold Ukrainian spelling onto Russian for matching (Бердянського → бердянского)."""
+    return norm_text.translate(_UK_TO_RU_FOLD)
+
+
+def _multi_word_anchor_re(core: str) -> re.Pattern[str] | None:
+    """Match every word of a multi-word anchor in any case («Бердянского района»).
+
+    Each word keeps its stem and may take a case ending of up to three letters
+    (-ого, -ому, -ими), so «Бердянская коса» does not match «бердянские косметологи».
+    """
+    words = [w.strip(_QUOTE_CHARS) for w in _fold_uk_ru(_norm_geo_text(core)).split()]
+    words = [w for w in words if w]
+    if len(words) < 2:
+        return None
+    stems = []
+    for word in words:
+        stem = word.rstrip(_WORD_ENDING_CHARS)
+        if len(stem) < 3 and not stem.isdigit():
+            stem = word
+        stems.append(re.escape(stem) + r"[а-я]{0,3}")
+    separator = rf"[{_QUOTE_CHARS}]?\s+[{_QUOTE_CHARS}]?"
+    return re.compile(r"(?<![а-я0-9])" + separator.join(stems) + r"(?![а-я])")
+
+
 def _contains_any_anchor(text: str, anchors: set[str] | tuple[str, ...] | list[str]) -> bool:
     norm_text = _norm_geo_text(text)
-    for anchor in anchors:
+    folded_text: str | None = None
+    for raw_anchor in anchors:
+        anchor = _anchor_core(raw_anchor) if raw_anchor else ""
         if not anchor:
             continue
+
+        multi_word_re = _multi_word_anchor_re(anchor)
+        if multi_word_re is not None:
+            if folded_text is None:
+                folded_text = _fold_uk_ru(norm_text)
+            if multi_word_re.search(folded_text):
+                return True
 
         anchor_lower = anchor.casefold()
         if anchor_lower == "центр":
@@ -155,40 +219,8 @@ def _contains_any_anchor(text: str, anchors: set[str] | tuple[str, ...] | list[s
                 word = m.group(0)
                 # Prevent matching street adjectives (e.g., Севастопольская) when looking for a city (Севастополь).
                 # But allow if the anchor itself is an adjective (e.g., Бердянская коса).
-                is_adj_anchor = anchor.endswith(
-                    (
-                        "ский",
-                        "ская",
-                        "ское",
-                        "ские",
-                        "ський",
-                        "ська",
-                        "ське",
-                        "ські",
-                        "ському",
-                        "ского",
-                        "ськом",
-                        "ського",
-                        "ской",
-                    )
-                )
-                is_adj_word = word.endswith(
-                    (
-                        "ский",
-                        "ская",
-                        "ское",
-                        "ские",
-                        "ський",
-                        "ська",
-                        "ське",
-                        "ські",
-                        "ському",
-                        "ского",
-                        "ськом",
-                        "ського",
-                        "ской",
-                    )
-                )
+                is_adj_anchor = anchor.endswith(_ADJECTIVE_ENDINGS)
+                is_adj_word = word.endswith(_ADJECTIVE_ENDINGS)
                 if not is_adj_anchor and is_adj_word:
                     continue
                 return True
@@ -199,40 +231,8 @@ def _contains_any_anchor(text: str, anchors: set[str] | tuple[str, ...] | list[s
             matches = list(re.finditer(rf"\b{escaped_norm}[а-яіїє]*\b", norm_text))
             for m in matches:
                 word = m.group(0)
-                is_adj_anchor = norm_anchor.endswith(
-                    (
-                        "ский",
-                        "ская",
-                        "ское",
-                        "ские",
-                        "ський",
-                        "ська",
-                        "ське",
-                        "ські",
-                        "ському",
-                        "ского",
-                        "ськом",
-                        "ського",
-                        "ской",
-                    )
-                )
-                is_adj_word = word.endswith(
-                    (
-                        "ский",
-                        "ская",
-                        "ское",
-                        "ские",
-                        "ський",
-                        "ська",
-                        "ське",
-                        "ські",
-                        "ському",
-                        "ского",
-                        "ськом",
-                        "ського",
-                        "ской",
-                    )
-                )
+                is_adj_anchor = norm_anchor.endswith(_ADJECTIVE_ENDINGS)
+                is_adj_word = word.endswith(_ADJECTIVE_ENDINGS)
                 if not is_adj_anchor and is_adj_word:
                     continue
                 return True
