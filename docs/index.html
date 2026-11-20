@@ -1829,6 +1829,11 @@ erDiagram
 <td>2</td>
 <td><code>event_pipeline.authority_shard_count</code></td>
 </tr>
+<tr>
+<td>Ответ Gate</td>
+<td>до 12 288 токенов; ответ на 10 сюжетов без reasoning укладывается примерно в 4 тыс. Предел ограничивает цену зациклившегося ответа: обрезанный ответ не разбирается, и сюжеты пачки уходят на повтор</td>
+<td><code>event_pipeline.triage_max_output_tokens</code></td>
+</tr>
 </tbody>
 </table>
 </div>

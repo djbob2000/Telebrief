@@ -130,6 +130,7 @@ erDiagram
 | Параллельность `processing` | не больше 2 | `MAX_SAFE_PROCESSING_CONCURRENCY` |
 | Параллельность `authority` | не больше 4 | `MAX_SAFE_AUTHORITY_CONCURRENCY` |
 | Шарды фонового Gate | 2 | `event_pipeline.authority_shard_count` |
+| Ответ Gate | до 12 288 токенов; ответ на 10 сюжетов без reasoning укладывается примерно в 4 тыс. Предел ограничивает цену зациклившегося ответа: обрезанный ответ не разбирается, и сюжеты пачки уходят на повтор | `event_pipeline.triage_max_output_tokens` |
 
 </div>
 
