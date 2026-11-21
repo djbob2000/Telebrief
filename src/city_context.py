@@ -687,6 +687,40 @@ def _match_untyped(
     return matches
 
 
+# A colloquial name that is also an ordinary word («крылышки») resolves only after
+# a locative preposition, as in «в «Крылышках»». The alias is a stem, so any ending
+# of the locative or genitive form matches.
+_LOCATIVE_CONTEXT_RE = r"(?<!\w)(?:в|во|на|у|возле|около)\s+[«\"„“']?\s*"
+
+
+def _match_locative_alias(
+    norm_alias: str,
+    place: dict[str, Any],
+    norm_text: str,
+    seen_spans: set[tuple[int, int]],
+) -> list[PlaceMatch]:
+    matches: list[PlaceMatch] = []
+    pat = _LOCATIVE_CONTEXT_RE + "(" + _make_vowel_pattern(norm_alias) + r"[а-яіїєґё]*)(?!\w)"
+    for m in re.finditer(pat, norm_text):
+        start, end = m.start(1), m.end(1)
+        if any(s_start <= start and end <= s_end for s_start, s_end in seen_spans):
+            continue
+        seen_spans.add((start, end))
+        matches.append(
+            PlaceMatch(
+                entity_id=place["entity_id"],
+                canonical_name=place["canonical_name"],
+                object_type=place["object_type"],
+                matched_text=norm_text[start:end],
+                start=start,
+                end=end,
+                explicit_object_type=False,
+                place_data=place,
+            )
+        )
+    return matches
+
+
 class CityContextResolver:
     """Deterministic entity resolver using checked-in city profile."""
 
@@ -901,14 +935,19 @@ class CityContextResolver:
             memberships = entry.get("area_memberships", [])
             colloquials = tuple(entry.get("colloquial_area_ids", []))
 
-            raw_aliases: list[str] = [
-                a.get("text", "") if isinstance(a, dict) else a
-                for a in entry.get("aliases", [])
-                if (a.get("text", "") if isinstance(a, dict) else a)
-            ]
+            raw_aliases: list[str] = []
+            context_aliases: list[str] = []
+            for alias in entry.get("aliases", []):
+                if isinstance(alias, dict):
+                    text = str(alias.get("text", "") or "")
+                    target = context_aliases if alias.get("context_required") else raw_aliases
+                else:
+                    text, target = str(alias or ""), raw_aliases
+                if text:
+                    target.append(text)
 
             name_root, expanded_aliases = _extract_expanded_aliases(canonical_name, raw_aliases)
-            tokens = _extract_place_tokens(expanded_aliases)
+            tokens = _extract_place_tokens([*expanded_aliases, *context_aliases])
 
             self._places.append(
                 {
@@ -919,6 +958,7 @@ class CityContextResolver:
                     "memberships": memberships,
                     "colloquial_area_ids": colloquials,
                     "aliases": expanded_aliases,
+                    "context_aliases": tuple(context_aliases),
                     "pre_tokens": tokens,
                 }
             )
@@ -1252,6 +1292,10 @@ class CityContextResolver:
             norm_alias = _normalize(alias)
             if norm_alias:
                 matches.extend(_match_untyped(norm_alias, place, norm_text, seen_spans))
+        for alias in place.get("context_aliases", ()):
+            norm_alias = _normalize(alias)
+            if norm_alias:
+                matches.extend(_match_locative_alias(norm_alias, place, norm_text, seen_spans))
         return matches
 
     def _extract_address_context(

@@ -4482,7 +4482,14 @@ stable_context:
       - entity_id: street:Правди
         canonical_name: Правди
         object_type: street
-        aliases: []
+        aliases:
+        # Resident nickname of the building at ул. Правды, 7 (Нагорная часть).
+        # Confirmed by the editor on 2026-11-21. Only a locative form («в «Крылышках»») resolves,
+        # because the word is also an ordinary noun. The street is the most specific level here.
+        - text: Крылышк
+          status: colloquial_building_name
+          context_required: true
+          source_ref: editor_confirmed_2026_11_21
         area_memberships:
         - area_set: municipal_neighborhood_committees_2021
           area_id: nahirna

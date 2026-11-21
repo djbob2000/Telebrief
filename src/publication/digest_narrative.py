@@ -20,6 +20,7 @@ from src.publication.digest_fact_labels import FACT_LABEL_INSTRUCTION, fact_labe
 from src.publication.digest_place_areas import non_place_fields, place_area_hints
 from src.publication.digest_presentation import (
     RequiredDigestFact,
+    _resolved_geographic_scopes,
     validate_digest_fact_ids,
 )
 from src.publication.digest_reporting_context import (
@@ -2218,6 +2219,19 @@ def _composition_visible_risk_validation(
     record_geography_by_fact = {
         fact_id: record_geography(record) for fact_id, record in records.items()
     }
+    locator_candidates = tuple(
+        (
+            str(getattr(records[fact_id], "text", "") or ""),
+            frozenset(record_geography_by_fact[fact_id][0]),
+            frozenset(
+                area
+                for area in record_geography_by_fact[fact_id][1]
+                if not area.startswith("unknown:")
+            ),
+        )
+        for fact_id in sorted(fact_ids)
+        if fact_id in records and fact_id in record_geography_by_fact
+    )
 
     def scoped_fact_ids(clause: str) -> tuple[set[str] | None, bool]:
         """Return exact location-matched facts, or None when no safe binding exists."""
@@ -2250,20 +2264,25 @@ def _composition_visible_risk_validation(
         not_evaluated.append(f"{code}:{plan_block.block_id}:{item.item_id or 'item'}")
 
     for visible_text in (item.headline, item.body):
+        # A house or entrance number may follow a semicolon in the same sentence,
+        # so the locator check reads whole sentences, not semicolon segments.
+        for full_sentence in re.split(
+            r"(?<=[.!?])\s+", _clock_field_validation_text(visible_text or "")
+        ):
+            violations.extend(
+                _locator_transfer_violations(
+                    _split_visible_clauses(full_sentence),
+                    resolver=resolver,
+                    candidates=locator_candidates,
+                )
+            )
         for sentence in re.split(
             r"(?<=[.!?;])\s+", _clock_field_validation_text(visible_text or "")
         ):
             # A comma list of places («в районе X — 24 часа, на улице Y — пятые
             # сутки») binds each value to its own place, not to whichever single
             # place the resolver happens to recognise in the whole list.
-            clauses = [
-                part
-                for contrast in re.split(
-                    r"(?i)(?:,\s*|\s+)(?:тогда как|в то время как|при этом|зато|но|а)\s+",
-                    sentence,
-                )
-                for part in re.split(r"(?i),\s+(?=(?:в|на|у|возле|около)\s)", contrast)
-            ]
+            clauses = _split_visible_clauses(sentence)
             for clause in clauses:
                 clause = clause.strip(" ,—-\t\n")
                 if not clause:
@@ -2356,6 +2375,156 @@ def _composition_visible_risk_validation(
                     )
 
     return violations, unsupported, list(dict.fromkeys(not_evaluated))
+
+
+# A house or entrance number is a location only together with its own street or
+# area. These patterns find the number; the binding check decides whether it has
+# one. Used by ``_locator_transfer_violations``.
+_HOUSE_LOCATOR_RES = (
+    re.compile(r"(?i)(?<!\w)(\d{1,4})\s*(?:-?\s*(?:й|го|м))?\s+дом(?:е|а|у|ом|ов)?(?!\w)"),
+    re.compile(r"(?i)(?<!\w)дом(?:е|а|у|ом)?\s*№?\s*(\d{1,4})(?!\w)"),
+    re.compile(r"(?i)(?<!\w)д\.\s*(\d{1,4})(?!\w)"),
+)
+_ENTRANCE_LOCATOR_RES = (
+    re.compile(r"(?i)(?<!\w)(\d{1,2})\s*-?\s*(?:й|м|го)?\s+подъезд\w*"),
+    re.compile(r"(?i)(?<!\w)подъезд\w*\s*№?\s*(\d{1,2})(?!\w)"),
+)
+_LOCATION_WORDING_RE = re.compile(
+    r"(?i)(?<!\w)(?:улиц\w*|ул\.|проспект\w*|переулк\w*|пер\.|бульвар\w*|"
+    r"микрорайон\w*|массив\w*|район\w*|квартал\w*)(?!\w)"
+)
+_CONTRAST_SPLIT_RE = re.compile(
+    r"(?i)(?:,\s*|\s+)(?:тогда как|в то время как|при этом|зато|но|а)\s+"
+)
+_LOCATIVE_SPLIT_RE = re.compile(r"(?i),\s+(?=(?:в|на|у|возле|около)\s)")
+_PROPER_WORD_RE = re.compile(r"\b[А-ЯЁІЇЄҐA-Z][а-яёіїєґa-z]{3,}\b")
+
+
+def _split_visible_clauses(sentence: str) -> list[str]:
+    """Split a sentence at semicolons, contrasts and locative list items."""
+    clauses: list[str] = []
+    for segment in re.split(r";\s*", sentence):
+        for contrast in _CONTRAST_SPLIT_RE.split(segment):
+            for part in _LOCATIVE_SPLIT_RE.split(contrast):
+                clause = part.strip(" ,—-\t\n")
+                if clause:
+                    clauses.append(clause)
+    return clauses
+
+
+def _place_locators(text: str) -> frozenset[str]:
+    """Return house («дом:91») and entrance («подъезд:7») numbers named in text."""
+    locators: set[str] = set()
+    for pattern in _HOUSE_LOCATOR_RES:
+        locators.update(f"дом:{match.group(1)}" for match in pattern.finditer(text))
+    for pattern in _ENTRANCE_LOCATOR_RES:
+        locators.update(f"подъезд:{match.group(1)}" for match in pattern.finditer(text))
+    return frozenset(locators)
+
+
+def _clause_geography(clause: str, resolver: Any) -> tuple[frozenset[str], frozenset[str]]:
+    """Return the resolved high-confidence places and area keys a clause names itself."""
+    annotation = resolver.resolve(clause)
+    places = frozenset(
+        str(entity.entity_id)
+        for entity in getattr(annotation, "entities", ())
+        if getattr(entity, "kind", "") == "place"
+        and getattr(entity, "confidence", "") == "high"
+        and getattr(entity, "entity_id", "")
+    )
+    areas = frozenset(_resolved_geographic_scopes(clause, resolver))
+    return places, areas
+
+
+def _shared_proper_words(text: str) -> frozenset[str]:
+    """Capitalised words of a clause, folded, e.g. the street name in «на улице Орджоникидзе»."""
+    return frozenset(match.casefold() for match in _PROPER_WORD_RE.findall(text))
+
+
+def _candidate_bound(
+    text: str,
+    places: frozenset[str],
+    areas: frozenset[str],
+    *,
+    other_places: set[str],
+    other_areas: set[str],
+    neighbour_names: frozenset[str],
+) -> bool:
+    """Whether a fact may carry a number that a neighbouring clause's place does not own."""
+    if _shared_proper_words(text) & neighbour_names:
+        return True
+    if other_places or other_areas:
+        return bool(places & other_places) or bool(areas & other_areas)
+    return bool(places) or bool(areas)
+
+
+def _locator_transfer_violations(
+    clauses: Sequence[str],
+    *,
+    resolver: Any,
+    candidates: Sequence[tuple[str, frozenset[str], frozenset[str]]],
+) -> list[str]:
+    """Flag a house or entrance number that borrows the place of a neighbouring clause.
+
+    A clause such as «его нет в 91 доме» or «а в 7-м подъезде света нет» names a
+    number but no street or area. Its fact must then carry a resolved place
+    that the sentence shares, or a street name that the fact and the neighbouring
+    clause both name. Otherwise the reader would take the neighbouring clause's
+    place for it. ``candidates`` holds ``(fact_text, places, areas)`` for the
+    item's facts, with unknown areas already removed.
+    """
+    if resolver is None or len(clauses) < 2:
+        return []
+    geography = [_clause_geography(clause, resolver) for clause in clauses]
+    wording = [bool(_LOCATION_WORDING_RE.search(clause)) for clause in clauses]
+    violations: list[str] = []
+    for index, clause in enumerate(clauses):
+        locators = _place_locators(clause)
+        if not locators:
+            continue
+        own_places, own_areas = geography[index]
+        if own_places or own_areas or wording[index]:
+            continue
+        other_places: set[str] = set()
+        other_areas: set[str] = set()
+        other_wording = False
+        for other_index, (places, areas) in enumerate(geography):
+            if other_index == index:
+                continue
+            other_places |= places
+            other_areas |= areas
+            other_wording = other_wording or wording[other_index]
+        if not (other_places or other_areas or other_wording):
+            continue
+        neighbour_names = _shared_proper_words(
+            " ".join(text for other_index, text in enumerate(clauses) if other_index != index)
+        )
+        for locator in sorted(locators):
+            matching = [
+                (text, places, areas)
+                for text, places, areas in candidates
+                if locator in _place_locators(text)
+            ]
+            if not matching:
+                continue
+            bound = any(
+                _candidate_bound(
+                    text,
+                    places,
+                    areas,
+                    other_places=other_places,
+                    other_areas=other_areas,
+                    neighbour_names=neighbour_names,
+                )
+                for text, places, areas in matching
+            )
+            if not bound:
+                violations.append(
+                    f"UNBOUND_LOCATOR_TRANSFER: «{locator}» is named without its own place "
+                    f"while a neighbouring clause names another place in the same sentence "
+                    f"('{clause}')"
+                )
+    return violations
 
 
 def validate_digest_narrative(
