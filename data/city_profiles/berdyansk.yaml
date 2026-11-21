@@ -1267,8 +1267,6 @@ stable_context:
       - entity_id: street:Володимира Довганюка
         canonical_name: Володимира Довганюка
         object_type: street
-        colloquial_area_ids:
-        - gora
         aliases:
         - text: Орджонікідзе
           status: historical_pre_2016
@@ -1286,26 +1284,15 @@ stable_context:
           status: common_ru_or_abbreviation
           source_ref: editorial_normalization
         area_memberships:
-        - area_set: municipal_neighborhood_committees_2021
-          area_id: sklovolokno
-          area_name: Скловолокно
-          object_type: street
-          confidence: verified
-          source_ref: brd_neighborhood_committees_2021
-          coverage:
-            kind: house_numbers
-            private_sector: true
+        # Whole street lies in Нагорная часть (editor, 2026-11-21). One municipal area keeps it
+        # high-confidence; two candidate districts (Скловолокно / Нагірна) made it ambiguous.
         - area_set: municipal_neighborhood_committees_2021
           area_id: nahirna
           area_name: Нагірна частина
           object_type: street
           confidence: verified
           source_ref: brd_neighborhood_committees_2021
-          coverage:
-            kind: segment
-            from_landmark: Sofiivska
-            to_landmark: Sevastopolska
-        resolution_policy: address_or_segment_required_when_possible; otherwise_return_all_candidate_areas
+          coverage: *id001
       - entity_id: street:Володимира Хавкіна
         canonical_name: Володимира Хавкіна
         object_type: street
@@ -5357,8 +5344,6 @@ stable_context:
       - entity_id: street:Софіївська
         canonical_name: Софіївська
         object_type: street
-        colloquial_area_ids:
-        - gora
         aliases:
         - text: Димитрова
           status: historical_pre_2016
@@ -5373,37 +5358,15 @@ stable_context:
           status: common_ru_or_abbreviation
           source_ref: editorial_normalization
         area_memberships:
-        - area_set: municipal_neighborhood_committees_2021
-          area_id: sklovolokno
-          area_name: Скловолокно
-          object_type: street
-          confidence: verified
-          source_ref: brd_neighborhood_committees_2021
-          coverage:
-            kind: any_of
-            clauses:
-            - kind: segment
-              side: even
-              from_house: '32'
-              to_landmark: end
-            - kind: segment
-              side: odd
-              to_landmark: end
-            - kind: segment
-              from_landmark: Lomonosova
-              to_landmark: end
+        # Whole street lies in Нагорная часть (editor, 2026-11-21). A single municipal area
+        # keeps it high-confidence; the former split between Скловолокно and Нагірна did not.
         - area_set: municipal_neighborhood_committees_2021
           area_id: nahirna
           area_name: Нагірна частина
           object_type: street
           confidence: verified
           source_ref: brd_neighborhood_committees_2021
-          coverage:
-            kind: segment
-            side: odd
-            from_landmark: Pravdy
-            to_landmark: Lomonosova
-        resolution_policy: address_or_segment_required_when_possible; otherwise_return_all_candidate_areas
+          coverage: *id001
       - entity_id: street:Спортивна
         canonical_name: Спортивна
         object_type: street
@@ -5858,6 +5821,18 @@ stable_context:
           confidence: verified
           source_ref: brd_neighborhood_committees_2021
           coverage: *id001
+      # Нижняя часть города (у моря), not Гора. Confirmed by the editor on 2026-11-21.
+      # Has no municipal membership in the 2021 committee map, so the street resolves
+      # to the lower city only (colloquial level), never to a Гора district.
+      - entity_id: street:Труда
+        canonical_name: Труда
+        object_type: street
+        colloquial_area_ids:
+        - lower_city
+        aliases:
+        - text: улица Труда
+          status: common_ru_or_abbreviation
+          source_ref: editor_confirmed_2026_11_21
       - entity_id: street:Тульська
         canonical_name: Тульська
         object_type: street

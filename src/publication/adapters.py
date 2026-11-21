@@ -164,6 +164,35 @@ class TelegramChannelDestinationClient(DestinationClient):
                             raise TimeoutError(
                                 f"telegram photo send timed out: {timeout_exc}"
                             ) from timeout_exc
+                    elif "Image_process_failed" in str(exc):
+                        # Telegram sometimes fails to process a valid JPEG on the first try.
+                        # One retry with the same file; a second failure falls back to text.
+                        logger.warning(
+                            "Telegram could not process photo for payload %s; retrying once",
+                            payload.id,
+                        )
+                        try:
+                            with open(photo_path, "rb") as photo_file:
+                                message = await bot.send_photo(
+                                    chat_id=destination.destination_key,
+                                    photo=photo_file,
+                                    caption=text,
+                                    **_format_kwargs(caption=True),
+                                    reply_markup=reply_markup,
+                                )
+                            return {
+                                "external_message_id": str(message.message_id),
+                                "status": "sent",
+                            }
+                        except (TimedOut, asyncio.TimeoutError) as retry_timeout:
+                            raise TimeoutError(
+                                f"telegram photo send timed out: {retry_timeout}"
+                            ) from retry_timeout
+                        except TelegramError as retry_exc:
+                            logger.warning(
+                                "Failed to send photo post after retry (%s); falling back to text delivery",
+                                retry_exc,
+                            )
                     else:
                         logger.warning(
                             "Failed to send photo post (%s); falling back to text delivery", exc
