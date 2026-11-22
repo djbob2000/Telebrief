@@ -135,6 +135,7 @@ settings:
   #   analysis_max_output_tokens: 8192  # request ceiling; provider env may only lower it
   #   analysis_reasoning_effort: "low"
   #   triage_max_attempts_per_assignment: 2
+  #   triage_singleton_recovery_enabled: true  # false: invalid Gate stories skip the single-story re-send
   #   analysis_max_attempts_per_assignment: 2
   #   triage_excerpt_chars: 320
   #   triage_min_ignore_confidence: 0.95

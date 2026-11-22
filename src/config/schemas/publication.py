@@ -157,6 +157,9 @@ class EventPipelineConfig:
     authority_shard_count: int = 1
     triage_max_input_chars: int = 48_000
     triage_split_max_extra_calls_per_cycle: int = 8
+    # Re-send each invalid story alone within the same cycle. Off: invalid stories
+    # go straight to the ordinary batch retry (no extra single-story call).
+    triage_singleton_recovery_enabled: bool = True
     live_batch_size: int = 100
     backfill_batch_size: int = 500
     revision_processing_batch_size: int = 50

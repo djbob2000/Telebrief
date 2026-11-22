@@ -72,8 +72,16 @@ SINGLETON_RECOVERY_MAX_OUTPUT_TOKENS = 8_192
 SINGLETON_UNRECOVERABLE_REASONS = frozenset({"unsupported_publish_extraction"})
 
 
-def singleton_recoverable_story_ids(result: StoryGateBatchResult) -> set[int]:
-    """Stories worth re-sending alone: missing ones, and invalid ones a batch can explain."""
+def singleton_recoverable_story_ids(
+    result: StoryGateBatchResult, *, invalid_recovery_enabled: bool = True
+) -> set[int]:
+    """Stories worth re-sending alone: missing ones, and invalid ones a batch can explain.
+
+    With invalid recovery disabled only missing stories are re-sent alone; invalid
+    stories wait for the ordinary batch retry instead.
+    """
+    if not invalid_recovery_enabled:
+        return set(result.missing_story_ids)
     return set(result.missing_story_ids) | {
         story_id
         for story_id in result.invalid_story_ids
@@ -99,14 +107,34 @@ class AuthorityBatchStats:
     retry_wait: int = 0
     terminal: int = 0
     provider_failures: int = 0
+    # Stories left unresolved by a semantically invalid Gate answer (not a provider error).
+    invalid_unresolved: int = 0
     # Gate call accounting: stories sent again after an earlier failure, singleton
     # re-sends, and how those ended. Diagnostics only; no behaviour depends on them.
     retry_calls: int = 0
     singleton_calls: int = 0
+    # Every Gate request sent in this batch, including retries and singleton re-sends.
+    gate_calls: int = 0
     recovered_after_retry: int = 0
     unresolved: int = 0
     newly_exhausted: int = 0
+    # Batch shape and recovery outcome: a normal batch of one story, singleton
+    # re-sends that returned a Gate result, and KEEP among stories recovered
+    # after an earlier failure. Diagnostics only.
+    single_story_batches: int = 0
+    singleton_recovered: int = 0
+    recovered_keep: int = 0
+    # Earliest moment a deferred story becomes sendable again; drives re-enqueueing.
+    next_retry_at: dt.datetime | None = None
     invalid_reasons: dict[str, int] = field(default_factory=dict)
+
+
+def _earliest(current: dt.datetime | None, candidate: dt.datetime | None) -> dt.datetime | None:
+    if candidate is None:
+        return current
+    if current is None or candidate < current:
+        return candidate
+    return current
 
 
 @dataclass(frozen=True)
@@ -171,6 +199,7 @@ class EventAuthorityService:
         mode: Literal["background", "publication"],
         coordination_scope: str = "default",
     ) -> AuthorityBatchResult:
+        """Run one Gate batch."""
         publication_mode = mode == "publication"
         cfg = self.config.settings.event_pipeline
         batch = list(targets[: cfg.triage_batch_size])
@@ -195,12 +224,12 @@ class EventAuthorityService:
             retry = retry_states.get((target.story_id, target.assignment_id))
             if retry is not None and retry.exhausted_at is not None:
                 stats.terminal += 1
-            elif (
-                retry is not None and retry.next_retry_at is not None and retry.next_retry_at > now
-            ):
+                continue
+            if retry is not None and retry.next_retry_at is not None and retry.next_retry_at > now:
                 stats.retry_wait += 1
-            else:
-                processable.append(target)
+                stats.next_retry_at = _earliest(stats.next_retry_at, retry.next_retry_at)
+                continue
+            processable.append(target)
         if not processable:
             return AuthorityBatchResult(stats)
 
@@ -296,6 +325,8 @@ class EventAuthorityService:
                 ]
 
             stats.provider_batch_size = len(claimed)
+            if len(claimed) == 1:
+                stats.single_story_batches += 1
             if not claimed:
                 return AuthorityBatchResult(stats)
             stats.retry_calls = sum(
@@ -355,6 +386,7 @@ class EventAuthorityService:
                 def remaining_provider_time() -> float:
                     return float(provider_deadline - loop.time())
 
+                stats.gate_calls += 1
                 try:
                     result = await asyncio.wait_for(
                         self.triage_service.triage_stories_batch(
@@ -393,7 +425,13 @@ class EventAuthorityService:
                 result_by_id = {gate.story_id: gate for gate in result.results}
                 fence_lost = set(result.fence_lost_story_ids)
                 deferred = set(result.deferred_story_ids) - fence_lost
-                recoverable = singleton_recoverable_story_ids(result) - fence_lost
+                recoverable = (
+                    singleton_recoverable_story_ids(
+                        result,
+                        invalid_recovery_enabled=cfg.triage_singleton_recovery_enabled,
+                    )
+                    - fence_lost
+                )
 
                 singleton_failures: dict[int, StoryGateBatchResult] = {}
                 recoverable_targets = [
@@ -408,6 +446,7 @@ class EventAuthorityService:
                         break
                     extra_calls_budget -= 1
                     stats.singleton_calls += 1
+                    stats.gate_calls += 1
                     try:
                         singleton_result = await asyncio.wait_for(
                             self.triage_service.triage_stories_batch(
@@ -453,6 +492,7 @@ class EventAuthorityService:
                         deferred.discard(recovered_gate.story_id)
                         recoverable.discard(recovered_gate.story_id)
                         stats.triaged += 1
+                        stats.singleton_recovered += 1
                     elif singleton_result.fence_lost_story_ids:
                         for fid in singleton_result.fence_lost_story_ids:
                             fence_lost.add(fid)
@@ -467,8 +507,6 @@ class EventAuthorityService:
 
             durable_failure_ids = deferred - recoverable
             stats.unresolved = len(durable_failure_ids)
-            if result.batch_error_kind is not None or singleton_failures:
-                stats.provider_failures += len(durable_failure_ids)
             if durable_failure_ids:
                 async with self.runtime.uow.transaction() as conn:
                     for item in claimed:
@@ -483,6 +521,14 @@ class EventAuthorityService:
                             or result.batch_error_kind
                             or "other"
                         )
+                        if result.batch_error_kind is not None or singleton_failures:
+                            # A semantic Gate refusal (invalid_response) is not a provider
+                            # failure: it must not stop the background chain. Real provider
+                            # errors (timeout, quota, server, ...) keep stopping it.
+                            if error_kind == "invalid_response":
+                                stats.invalid_unresolved += 1
+                            else:
+                                stats.provider_failures += 1
                         prompt_hash = (
                             failure_res.prompt_hash if failure_res else None
                         ) or result.prompt_hash
@@ -496,6 +542,10 @@ class EventAuthorityService:
                         )
                         if retry_decision.exhausted:
                             stats.newly_exhausted += 1
+                        else:
+                            stats.next_retry_at = _earliest(
+                                stats.next_retry_at, retry_decision.next_retry_at
+                            )
                         await self.retry_repo.record_failure(
                             conn,
                             story_id=item.target.story_id,
@@ -517,6 +567,8 @@ class EventAuthorityService:
                         continue
                     if (item.target.story_id, item.target.assignment_id) in retry_states:
                         stats.recovered_after_retry += 1
+                        if gate.retention == "KEEP":
+                            stats.recovered_keep += 1
                     await self.retry_repo.clear(
                         conn,
                         story_id=item.target.story_id,

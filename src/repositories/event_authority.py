@@ -4,11 +4,22 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 import psycopg
 
 from src.domain.event_authority import AuthorityBarrierState, AuthorityTarget
 from src.repositories.event_retries import EventProcessingRetryRepository
+
+
+@dataclass(frozen=True)
+class BackgroundBacklog:
+    """Counts of undecided dirty stories by readiness, for telemetry only."""
+
+    ready: int
+    retry_wait: int
+    exhausted: int
+    oldest_ready_last_seen_at: dt.datetime | None
 
 
 class EventAuthorityRepository:
@@ -112,6 +123,117 @@ class EventAuthorityRepository:
             )
             for row in await cursor.fetchall()
         ]
+
+    async def count_background_backlog(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        edition_id: int,
+        triage_version: str,
+        scope_version: str,
+        scope_config_hash: str,
+        now: dt.datetime,
+        active_window_hours: int | None = None,
+        shard_index: int = 0,
+        shard_count: int = 1,
+    ) -> BackgroundBacklog:
+        """Aggregate the same candidates as ``list_background_targets``, split by state.
+
+        Diagnostics only: the ready predicate mirrors the selector above, and no
+        authority decision reads these counts.
+        """
+        if shard_count <= 0:
+            raise ValueError("shard_count must be a positive integer")
+        if not 0 <= shard_index < shard_count:
+            raise ValueError(f"shard_index must be between 0 and {shard_count - 1}")
+
+        cutoff_clause = ""
+        cutoff_params: list[object] = []
+        if active_window_hours is not None:
+            cutoff_clause = "AND sc.last_seen_at >= %s"
+            cutoff_params.append(now - dt.timedelta(hours=active_window_hours))
+        shard_clause = ""
+        shard_params: list[object] = []
+        if shard_count > 1:
+            shard_clause = "AND MOD(sc.story_id, %s) = %s"
+            shard_params.extend([shard_count, shard_index])
+        # Parameter order follows the placeholder order in the SQL text below.
+        params: list[object] = [
+            now,
+            triage_version,
+            scope_config_hash,
+            edition_id,
+            scope_version,
+            scope_config_hash,
+            edition_id,
+            *cutoff_params,
+            *shard_params,
+        ]
+        cursor = await conn.execute(
+            f"""
+            WITH candidates AS (
+                SELECT sc.last_seen_at,
+                  (retry.exhausted_at IS NOT NULL) AS exhausted,
+                  (retry.next_retry_at IS NOT NULL AND retry.next_retry_at > %s) AS waiting,
+                  NOT EXISTS (
+                      SELECT 1
+                      FROM story_event_triage_decisions setd
+                      JOIN story_edition_scope_decisions sesd
+                        ON sesd.story_id = setd.story_id
+                       AND sesd.latest_assignment_id = setd.latest_assignment_id
+                       AND sesd.scope_config_hash = setd.scope_config_hash
+                      WHERE setd.story_id = sc.story_id
+                        AND setd.latest_assignment_id = sc.latest_assignment_id
+                        AND setd.triage_version = %s
+                        AND setd.scope_config_hash = %s
+                        AND sesd.edition_id = %s
+                        AND sesd.scope_version = %s
+                        AND sesd.scope_config_hash = %s
+                        AND (
+                            setd.retention <> 'KEEP'
+                            OR EXISTS (
+                                SELECT 1
+                                FROM story_revisions sr
+                                WHERE sr.story_id = sc.story_id
+                                  AND sr.event_assignment_id = sc.latest_assignment_id
+                                  AND sr.event_payload IS NOT NULL
+                                  AND sr.event_payload->>'publishability' IN ('news', 'brief')
+                            )
+                        )
+                  ) AS undecided
+                FROM story_cluster_state sc
+                JOIN stories s ON s.id = sc.story_id
+                LEFT JOIN story_event_processing_retries retry
+                  ON retry.story_id = sc.story_id
+                 AND retry.latest_assignment_id = sc.latest_assignment_id
+                 AND retry.stage = 'triage'
+                WHERE s.edition_id = %s
+                  AND s.knowledge_source = 'event_first'
+                  AND sc.analysis_dirty = TRUE
+                  {cutoff_clause}
+                  {shard_clause}
+            )
+            SELECT
+              count(*) FILTER (WHERE undecided AND NOT exhausted AND NOT waiting) AS ready,
+              count(*) FILTER (WHERE undecided AND NOT exhausted AND waiting) AS retry_wait,
+              count(*) FILTER (WHERE undecided AND exhausted) AS exhausted,
+              min(last_seen_at) FILTER (WHERE undecided AND NOT exhausted AND NOT waiting)
+                AS oldest_ready_last_seen_at
+            FROM candidates
+            """,  # noqa: S608 — static predicate template; values are bound params
+            params,
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return BackgroundBacklog(
+                ready=0, retry_wait=0, exhausted=0, oldest_ready_last_seen_at=None
+            )
+        return BackgroundBacklog(
+            ready=int(row[0] or 0),
+            retry_wait=int(row[1] or 0),
+            exhausted=int(row[2] or 0),
+            oldest_ready_last_seen_at=row[3],
+        )
 
     async def filter_unsatisfied_targets(
         self,

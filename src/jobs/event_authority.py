@@ -14,7 +14,7 @@ from src.processing.edition_scope import SCOPE_VERSION, resolve_edition_scope, s
 from src.processing.event_authority import AuthorityBatchStats, EventAuthorityService
 from src.processing.event_triage import TRIAGE_VERSION
 from src.publication.orchestrator import PublicationOrchestrator
-from src.repositories.event_authority import EventAuthorityRepository
+from src.repositories.event_authority import BackgroundBacklog, EventAuthorityRepository
 from src.runtime import get_runtime
 
 logger = logging.getLogger(__name__)
@@ -49,6 +49,11 @@ def log_authority_complete(
     continuation_enqueued: bool | None = None,
     prompt_chars: int | None = None,
     block_reason: str | None = None,
+    ready_targets: int | None = None,
+    retry_wait_targets: int | None = None,
+    exhausted_targets: int | None = None,
+    oldest_ready_age_seconds: float | None = None,
+    stop_reason: str | None = None,
 ) -> None:
     resolved_block_reason = block_reason or authority_block_reason(stats, remaining_gap or 0)
     logger.info(
@@ -62,6 +67,15 @@ def log_authority_complete(
             "backlog_after": backlog_after,
             "progressed": progressed,
             "continuation_enqueued": continuation_enqueued,
+            "ready_targets": ready_targets,
+            "retry_wait_targets": retry_wait_targets,
+            "exhausted_targets": exhausted_targets,
+            "oldest_ready_age_seconds": (
+                round(oldest_ready_age_seconds, 1) if oldest_ready_age_seconds is not None else None
+            ),
+            "stop_reason": stop_reason,
+            "gate_calls": stats.gate_calls,
+            "invalid_unresolved": stats.invalid_unresolved,
             "prompt_chars": prompt_chars,
             "block_reason": resolved_block_reason,
             "requested": stats.requested,
@@ -77,6 +91,12 @@ def log_authority_complete(
             "recovered_after_retry": stats.recovered_after_retry,
             "unresolved": stats.unresolved,
             "newly_exhausted": stats.newly_exhausted,
+            "single_story_batches": stats.single_story_batches,
+            "singleton_recovered": stats.singleton_recovered,
+            "recovered_keep": stats.recovered_keep,
+            "next_retry_at": (
+                stats.next_retry_at.isoformat() if stats.next_retry_at is not None else None
+            ),
             "invalid_reasons": stats.invalid_reasons,
             "remaining_gap": remaining_gap,
             "duration_ms": duration_ms,
@@ -89,7 +109,9 @@ def authority_block_reason(stats: AuthorityBatchStats, remaining_gap: int) -> st
         return None
     if stats.terminal > 0:
         return "terminal"
-    if stats.provider_failures > 0:
+    # Publication readiness persists this value: an invalid Gate answer still blocks
+    # the intent exactly as before, so it counts here alongside provider failures.
+    if stats.provider_failures > 0 or stats.invalid_unresolved > 0:
         return "provider_failure"
     if stats.retry_wait > 0 and stats.triaged == 0:
         return "retry_wait"
@@ -124,6 +146,113 @@ async def _load_background_targets(
         )
 
 
+async def _load_background_backlog(
+    edition_id: int, *, shard_index: int, shard_count: int
+) -> BackgroundBacklog | None:
+    """Telemetry: counts of ready, waiting and exhausted stories. Never fails the cycle."""
+    runtime = get_runtime()
+    config = getattr(runtime, "config", None) or load_config()
+    cfg = config.settings.event_pipeline
+    try:
+        async with runtime.uow.transaction() as conn:
+            _slug, scope_config = await resolve_edition_scope(conn, config, edition_id)
+            return await EventAuthorityRepository().count_background_backlog(
+                conn,
+                edition_id=edition_id,
+                triage_version=TRIAGE_VERSION,
+                scope_version=SCOPE_VERSION,
+                scope_config_hash=scope_config_hash(scope_config),
+                now=dt.datetime.now(dt.timezone.utc),
+                active_window_hours=cfg.active_window_hours,
+                shard_index=shard_index,
+                shard_count=shard_count,
+            )
+    except Exception as exc:  # noqa: BLE001 — telemetry must not change processing
+        logger.warning("could not count background authority backlog: %s", exc)
+        return None
+
+
+def _background_stop_reason(
+    stats: AuthorityBatchStats, *, can_continue: bool, remaining_after: int | None
+) -> str:
+    """Why this background chain stopped. Diagnostics only."""
+    if stats.provider_failures > 0:
+        return "provider_failure"
+    if can_continue:
+        return "continuation_scheduled" if remaining_after else "no_ready_targets"
+    if stats.retry_wait > 0 and stats.triaged == 0:
+        return "retry_wait"
+    if stats.busy > 0 and stats.triaged == 0 and stats.already_satisfied == 0:
+        return "coordination_busy"
+    if stats.invalid_unresolved > 0 and stats.triaged == 0:
+        return "invalid_no_progress"
+    return "stopped_other"
+
+
+async def _log_background_cycle(
+    *,
+    edition_id: int,
+    shard_id: int,
+    shard_count: int,
+    stats: AuthorityBatchStats,
+    stop_reason: str,
+    duration_ms: int,
+    backlog_before: int | None,
+    remaining_after: int | None,
+    progressed: bool,
+    continuation_enqueued: bool,
+) -> None:
+    backlog = await _load_background_backlog(
+        edition_id, shard_index=shard_id, shard_count=shard_count
+    )
+    oldest_age: float | None = None
+    if backlog is not None and backlog.oldest_ready_last_seen_at is not None:
+        oldest_age = (
+            dt.datetime.now(dt.timezone.utc) - backlog.oldest_ready_last_seen_at
+        ).total_seconds()
+    log_authority_complete(
+        mode="background",
+        intent_id=None,
+        edition_id=edition_id,
+        stats=stats,
+        remaining_gap=remaining_after,
+        duration_ms=duration_ms,
+        shard_id=shard_id,
+        backlog_before=backlog_before,
+        backlog_after=remaining_after,
+        progressed=progressed,
+        continuation_enqueued=continuation_enqueued,
+        ready_targets=backlog.ready if backlog is not None else None,
+        retry_wait_targets=backlog.retry_wait if backlog is not None else None,
+        exhausted_targets=backlog.exhausted if backlog is not None else None,
+        oldest_ready_age_seconds=oldest_age,
+        stop_reason=stop_reason,
+    )
+
+
+async def defer_background_authority_retry(
+    edition_id: int, shard_id: int, run_at: dt.datetime
+) -> None:
+    """Re-enqueue the background batch at the moment a deferred story becomes sendable.
+
+    Without this a retry waits for unrelated new work or the periodic dispatch.
+    The lock includes the run instant, so repeated deferrals for the same instant
+    collapse into one job.
+    """
+    from procrastinate.exceptions import AlreadyEnqueued
+
+    try:
+        await process_background_authority_batch.configure(
+            priority=BACKGROUND_AUTHORITY_PRIORITY,
+            schedule_at=run_at,
+            queueing_lock=(
+                f"authority-background-retry:{edition_id}:{shard_id}:{int(run_at.timestamp())}"
+            ),
+        ).defer_async(edition_id=edition_id, shard_id=shard_id)
+    except AlreadyEnqueued:
+        return
+
+
 async def _defer_background_authority_continuation(edition_id: int, shard_id: int = 0) -> None:
     from procrastinate.exceptions import AlreadyEnqueued
 
@@ -155,6 +284,18 @@ async def process_background_authority_batch(edition_id: int, shard_id: int = 0)
         shard_count=shard_count,
     )
     if not targets:
+        await _log_background_cycle(
+            edition_id=edition_id,
+            shard_id=shard_id,
+            shard_count=shard_count,
+            stats=AuthorityBatchStats(),
+            stop_reason="no_targets",
+            duration_ms=0,
+            backlog_before=0,
+            remaining_after=0,
+            progressed=False,
+            continuation_enqueued=False,
+        )
         return
     started = time.perf_counter()
     result = await EventAuthorityService.from_runtime(runtime, config).process_batch(
@@ -165,6 +306,7 @@ async def process_background_authority_batch(edition_id: int, shard_id: int = 0)
         and result.stats.busy == 0
         and result.stats.provider_failures == 0
         and result.stats.retry_wait == 0
+        and result.stats.invalid_unresolved == 0
     )
     can_continue = (
         progressed
@@ -176,6 +318,8 @@ async def process_background_authority_batch(edition_id: int, shard_id: int = 0)
             and result.stats.already_satisfied == 0
         )
     )
+    if result.stats.next_retry_at is not None:
+        await defer_background_authority_retry(edition_id, shard_id, result.stats.next_retry_at)
     continuation_enqueued = False
     remaining_after: int | None = None
     if can_continue:
@@ -189,16 +333,17 @@ async def process_background_authority_batch(edition_id: int, shard_id: int = 0)
         else:
             remaining_after = 0
 
-    log_authority_complete(
-        mode="background",
-        intent_id=None,
+    await _log_background_cycle(
         edition_id=edition_id,
-        stats=result.stats,
-        remaining_gap=remaining_after,
-        duration_ms=int((time.perf_counter() - started) * 1000),
         shard_id=shard_id,
+        shard_count=shard_count,
+        stats=result.stats,
+        stop_reason=_background_stop_reason(
+            result.stats, can_continue=can_continue, remaining_after=remaining_after
+        ),
+        duration_ms=int((time.perf_counter() - started) * 1000),
         backlog_before=len(targets),
-        backlog_after=remaining_after,
+        remaining_after=remaining_after,
         progressed=progressed,
         continuation_enqueued=continuation_enqueued,
     )
@@ -352,6 +497,7 @@ async def process_publication_authority_batch(intent_id: int, shard_id: int = 0)
     continuation_enqueued = False
     quarantined = (
         result.stats.provider_failures > 0
+        or result.stats.invalid_unresolved > 0
         or result.stats.retry_wait > 0
         or result.stats.terminal > 0
     )
@@ -400,6 +546,7 @@ async def process_publication_authority_batch(intent_id: int, shard_id: int = 0)
         and result.stats.retry_wait == 0
         and result.stats.terminal == 0
         and result.stats.provider_failures == 0
+        and result.stats.invalid_unresolved == 0
     ):
         await _defer_publication_reconcile(intent_id)
         raise AuthorityCoordinationBusy(

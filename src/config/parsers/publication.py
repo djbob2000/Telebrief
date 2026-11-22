@@ -653,6 +653,7 @@ def _parse_event_pipeline_config(settings_dict: dict) -> EventPipelineConfig:
         triage_split_max_extra_calls_per_cycle=_val_pos_int(
             "triage_split_max_extra_calls_per_cycle", 8
         ),
+        triage_singleton_recovery_enabled=_val_bool("triage_singleton_recovery_enabled", True),
         live_batch_size=_val_pos_int("live_batch_size", 100),
         backfill_batch_size=_val_pos_int("backfill_batch_size", 500),
         revision_processing_batch_size=_val_pos_int("revision_processing_batch_size", 50),
