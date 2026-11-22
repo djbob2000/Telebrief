@@ -12,7 +12,7 @@ import datetime as dt
 import logging
 import os
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal, Sequence
 
 from src.config_loader import load_config
@@ -99,6 +99,14 @@ class AuthorityBatchStats:
     retry_wait: int = 0
     terminal: int = 0
     provider_failures: int = 0
+    # Gate call accounting: stories sent again after an earlier failure, singleton
+    # re-sends, and how those ended. Diagnostics only; no behaviour depends on them.
+    retry_calls: int = 0
+    singleton_calls: int = 0
+    recovered_after_retry: int = 0
+    unresolved: int = 0
+    newly_exhausted: int = 0
+    invalid_reasons: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -290,6 +298,11 @@ class EventAuthorityService:
             stats.provider_batch_size = len(claimed)
             if not claimed:
                 return AuthorityBatchResult(stats)
+            stats.retry_calls = sum(
+                1
+                for item in claimed
+                if retry_states.get((item.target.story_id, item.target.assignment_id)) is not None
+            )
 
             async with self.runtime.uow.transaction() as conn:
                 _slug, scope_config = await resolve_edition_scope(conn, self.config, edition_id)
@@ -375,6 +388,8 @@ class EventAuthorityService:
                     )
 
                 stats.triaged += len(result.results)
+                for reason in result.invalid_reasons.values():
+                    stats.invalid_reasons[reason] = stats.invalid_reasons.get(reason, 0) + 1
                 result_by_id = {gate.story_id: gate for gate in result.results}
                 fence_lost = set(result.fence_lost_story_ids)
                 deferred = set(result.deferred_story_ids) - fence_lost
@@ -392,6 +407,7 @@ class EventAuthorityService:
                     if remaining <= 0:
                         break
                     extra_calls_budget -= 1
+                    stats.singleton_calls += 1
                     try:
                         singleton_result = await asyncio.wait_for(
                             self.triage_service.triage_stories_batch(
@@ -450,6 +466,7 @@ class EventAuthorityService:
                 await heartbeat_task
 
             durable_failure_ids = deferred - recoverable
+            stats.unresolved = len(durable_failure_ids)
             if result.batch_error_kind is not None or singleton_failures:
                 stats.provider_failures += len(durable_failure_ids)
             if durable_failure_ids:
@@ -477,6 +494,8 @@ class EventAuthorityService:
                             max_backoff_seconds=cfg.provider_retry_backoff_max_seconds,
                             now=now,
                         )
+                        if retry_decision.exhausted:
+                            stats.newly_exhausted += 1
                         await self.retry_repo.record_failure(
                             conn,
                             story_id=item.target.story_id,
@@ -496,6 +515,8 @@ class EventAuthorityService:
                     gate = result_by_id.get(item.target.story_id)
                     if gate is None:
                         continue
+                    if (item.target.story_id, item.target.assignment_id) in retry_states:
+                        stats.recovered_after_retry += 1
                     await self.retry_repo.clear(
                         conn,
                         story_id=item.target.story_id,

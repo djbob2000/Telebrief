@@ -242,3 +242,81 @@ async def test_changed_duration_relation_is_recoverable_not_noise(monkeypatch):
     assert result.invalid_story_ids == (10,)
     assert result.deferred_story_ids == (10,)
     assert conn.decisions == []
+
+
+class TwoStoryConnection(GateConnection):
+    """Serve two stories' fragments through the same in-memory SQL boundary."""
+
+    def __init__(self, texts: dict[int, str]) -> None:
+        super().__init__("")
+        self.texts = texts
+
+    async def execute(self, sql: str, params: tuple[Any, ...] = ()) -> Cursor:
+        query = " ".join(sql.split())
+        if "FROM story_fragments sf" in query:
+            rows = [
+                (story_id, 100 + story_id, text, 1, "Бердянск", "community", NOW, None)
+                for story_id, text in self.texts.items()
+            ]
+            return Cursor(rows)
+        return await super().execute(sql, params)
+
+
+class PartialBatchProvider:
+    """Story 10 is a valid local report; story 11 answers with an invalid scope."""
+
+    async def chat_completion(self, **kwargs: Any) -> str:
+        valid = {
+            "story_id": 10,
+            "scope": "LOCAL",
+            "scope_confidence": 1.0,
+            "scope_reason": "Primary source names Berdyansk",
+            "scope_basis_fragment_ids": [110],
+            "retention": "KEEP",
+            "enrichment": "BRIEF",
+            "confidence": 1.0,
+            "reason": "Local report",
+            "exclusion_reason": None,
+            "brief_payload": {
+                "publishability": "brief",
+                "evidence_items": [
+                    {
+                        "text": "На Павлова свет есть.",
+                        "kind": "community_report",
+                        "publication_use": "PUBLISH",
+                        "source_fragment_ids": [110],
+                    }
+                ],
+            },
+        }
+        invalid = {**valid, "story_id": 11, "scope": "NOT_A_SCOPE"}
+        return json.dumps({"results": [valid, invalid]})
+
+
+@pytest.mark.asyncio
+async def test_partial_batch_keeps_valid_decisions_and_defers_only_the_invalid_story(monkeypatch):
+    service = StoryTriageService(PartialBatchProvider())
+
+    async def no_hints(*args: Any, **kwargs: Any) -> list[Any]:
+        return []
+
+    monkeypatch.setattr(service, "_load_recent_subject_hints", no_hints)
+    conn = TwoStoryConnection({10: "В Бердянске на Павлова свет есть.", 11: "Павлова в Бердянске"})
+    stories = [
+        StoryClusterState(10, [], "test", 0, 1, 1, NOW, NOW, 1, None, None, True, NOW),
+        StoryClusterState(11, [], "test", 0, 1, 1, NOW, NOW, 1, None, None, True, NOW),
+    ]
+    result = await service.triage_stories_batch(
+        conn,
+        stories,
+        edition_id=1,
+        scope_config=load_config("config.yaml").settings.edition_scopes["berdyansk"],
+        scope_hash="test",
+        source_cutoff_at=NOW,
+    )
+    assert [gate.story_id for gate in result.results] == [10]
+    assert result.invalid_story_ids == (11,)
+    assert result.deferred_story_ids == (11,)
+    # The valid story's decision is written; the invalid one waits for its retry.
+    assert len(conn.decisions) == 1
+    assert 10 in conn.decisions[0]
