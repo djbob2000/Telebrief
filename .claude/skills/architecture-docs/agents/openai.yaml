@@ -1,0 +1,3 @@
+interface:
+  display_name: "Architecture Docs"
+  short_description: "Turn a codebase into layered L1/L2/L3 architecture docs"
